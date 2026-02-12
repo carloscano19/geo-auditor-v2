@@ -1,0 +1,64 @@
+{
+  "scoring_version": "v2.0-feb2026",
+  "dimensions": {
+    "technical_infrastructure": {
+      "weight": 0.12,
+      "subdimensions": {
+        "https": 0.25,
+        "ssr_detection": 0.30,
+        "crawlability": 0.25,
+        "render_speed": 0.20
+      }
+    },
+    "metadata_schema": {
+      "weight": 0.08,
+      "subdimensions": {}
+    },
+    "aeo_structure": {
+      "weight": 0.18,
+      "subdimensions": {}
+    },
+    "evidence_density": {
+      "weight": 0.15,
+      "subdimensions": {}
+    },
+    "eeat_authority": {
+      "weight": 0.15,
+      "subdimensions": {
+        "authorship_verification": 0.40,
+        "experience_signals": 0.35,
+        "trust_pages": 0.25
+      }
+    },
+    "entity_identification": {
+      "weight": 0.08,
+      "subdimensions": {}
+    },
+    "freshness": {
+      "weight": 0.10,
+      "subdimensions": {
+        "date_currency": 0.60,
+        "keyword_relevance": 0.40
+      }
+    },
+    "format_citability": {
+      "weight": 0.10,
+      "subdimensions": {
+        "scannability": 0.40,
+        "visual_hierarchy": 0.30,
+        "multimedia": 0.30
+      }
+    },
+    "links_verifiability": {
+      "weight": 0.10,
+      "subdimensions": {
+        "external_link_quality": 0.50,
+        "authority_sources": 0.50
+      }
+    },
+    "multiplatform_optimization": {
+      "weight": 0.02,
+      "subdimensions": {}
+    }
+  }
+}

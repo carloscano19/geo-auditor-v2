@@ -1,0 +1,36 @@
+[
+    {
+        "name": "HTTPS Site (SSR)",
+        "url": "https://example.com",
+        "expected": {
+            "is_https": true,
+            "is_ssr": true,
+            "https_score": 100,
+            "ssr_score_min": 50
+        }
+    },
+    {
+        "name": "HTTP Site (Should fail HTTPS)",
+        "url": "http://example.com",
+        "expected": {
+            "is_https": false,
+            "https_score": 0
+        }
+    },
+    {
+        "name": "Fast Loading Site",
+        "url": "https://stripe.com",
+        "expected": {
+            "is_https": true,
+            "speed_score_min": 60
+        }
+    },
+    {
+        "name": "SPA React Site (CSR)",
+        "url": "https://react.dev",
+        "expected": {
+            "is_https": true,
+            "notes": "May be CSR or SSR depending on build"
+        }
+    }
+]
