@@ -31,7 +31,7 @@ function parseBriefingToCards(markdown: string): React.ReactNode {
         if (roleMatch) {
             const role = roleMatch[1].toUpperCase();
             // Remove the tag from title and clean up residual characters
-            let cleanTitle = title
+            const cleanTitle = title
                 .replace(/\[?[✍️⚙️📊]?\s*(CONTENT|TECH|AUTHORITY)\]?\s*/gi, '')
                 .replace(/^\]\s*/, '') // Remove leading ]
                 .replace(/^\[\s*/, '') // Remove leading [
