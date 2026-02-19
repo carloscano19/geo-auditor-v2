@@ -264,23 +264,58 @@ class AEOStructureDetector(BaseDetector):
     
     def _analyze_rule_of_60(self, text: str, html: str, h1_text: str = "") -> ScoreBreakdown:
         """
-        Draconian Rule of 60: Focus ONLY on first paragraph.
-        Requires explicit definition verbs for 100/100.
+        Rule of 60: Evaluate first paragraph quality for LLM citability.
+        
+        Scoring tiers:
+        - 100/100: Explicit definition verbs ("is defined as", "refers to")
+        - 80/100: Strong factual/declarative lead (data, numbers, action verbs)
+        - 40/100: Narrative/filler start
+        - 0/100: First paragraph exceeds 60 words without substance
+        - 30/100: Weak intro (none of the above)
+        
+        A factual lead is recognized when the first paragraph contains:
+        - Numeric data (percentages, dollar amounts, quantities)
+        - Declarative action verbs (soared, rose, fell, increased, etc.)
+        - Named entities (proper nouns, ticker symbols like $GAL)
+        
+        Examples of factual leads that score 80:
+            "Trade volumes for $GAL soared 150% as Galatasaray secured a UCL win."
+            "Bitcoin surged past $50,000, marking a 20% increase this quarter."
+        
+        Examples that score 100 (definition-first):
+            "A fan token is defined as a digital asset that gives holders voting rights."
+        
+        Args:
+            text: Clean text content of the page
+            html: HTML content for paragraph extraction
+            h1_text: The H1 heading text (for context)
+            
+        Returns:
+            ScoreBreakdown with Rule of 60 evaluation
         """
-        # Extract the very first <p> tag content
-        p_match = re.search(r'<p[^>]*>(.*?)</p>', html, re.IGNORECASE | re.DOTALL)
-        if not p_match:
+        # Extract the first SUBSTANTIVE <p> tag (skip short CTA/nav paragraphs)
+        # Many sites have <p> tags for buttons, CTAs, or nav items before the article.
+        # A real article paragraph typically has ≥10 words.
+        MIN_PARAGRAPH_WORDS = 10
+        all_p_matches = re.findall(r'<p[^>]*>(.*?)</p>', html, re.IGNORECASE | re.DOTALL)
+        
+        first_p_text = ""
+        for p_html in all_p_matches:
+            candidate = re.sub(r'<[^>]+>', '', p_html).strip()
+            if len(candidate.split()) >= MIN_PARAGRAPH_WORDS:
+                first_p_text = candidate
+                break
+        
+        if not first_p_text:
             return ScoreBreakdown(
                 name="Rule of 60 (Answer First)",
                 raw_score=0.0,
                 weight=self.RULE_60_WEIGHT,
                 weighted_score=0.0,
-                explanation="❌ No first paragraph (<p>) detected to analyze.",
+                explanation="❌ No substantive first paragraph (<p> with ≥10 words) detected.",
                 recommendations=["Add an introductory paragraph starting with a direct definition."],
             )
         
-        first_p_html = p_match.group(1)
-        first_p_text = re.sub(r'<[^>]+>', '', first_p_html).strip()
         words = first_p_text.split()
         first_p_lower = first_p_text.lower()
         
@@ -296,32 +331,85 @@ class AEOStructureDetector(BaseDetector):
         
         has_definition = any(verb in first_p_lower for verb in val_definition_verbs)
         
-        # 2. NARRATIVE PENALTY: Filler starts
+        # 2. STRONG FACTUAL LEAD: News/analysis style with data and action verbs
+        # Detects information-dense intros typical of news, market analysis, reports
+        factual_action_verbs = [
+            r'\b(soared|surged|rose|fell|dropped|climbed|increased|decreased|jumped|plunged)\b',
+            r'\b(announced|reported|revealed|confirmed|launched|released|secured|achieved)\b',
+            r'\b(traded|surpassed|reached|exceeded|hit|gained|lost|outperformed)\b',
+        ]
+        has_action_verb = any(
+            re.search(pattern, first_p_lower) for pattern in factual_action_verbs
+        )
+        
+        # Numeric data signals: $X, X%, numbers, percentages
+        has_numeric_data = bool(re.search(
+            r'(\$[\d,.]+|\d+%|\d{1,3}(,\d{3})+|\d+\.\d+)', first_p_text
+        ))
+        
+        # Named entities: words starting with uppercase (excluding sentence starts),
+        # or ticker symbols ($GAL, $BTC)
+        has_ticker_symbols = bool(re.search(r'\$[A-Z]{2,}', first_p_text))
+        
+        # Count capitalized proper nouns (skip first word of sentences)
+        sentences_in_p = re.split(r'[.!?]\s+', first_p_text)
+        proper_noun_count = 0
+        for sent in sentences_in_p:
+            sent_words = sent.split()
+            # Skip first word (starts sentence), check rest for capitalized words
+            for w in sent_words[1:]:
+                clean_w = re.sub(r'[^a-zA-Z]', '', w)
+                if clean_w and clean_w[0].isupper() and len(clean_w) > 2:
+                    proper_noun_count += 1
+        has_named_entities = proper_noun_count >= 2 or has_ticker_symbols
+        
+        # A factual lead needs at least 2 of: action verbs, numeric data, named entities
+        factual_signals = sum([has_action_verb, has_numeric_data, has_named_entities])
+        is_factual_lead = factual_signals >= 2
+        
+        # 3. NARRATIVE PENALTY: Filler starts
         narrative_starts = [
-            "in today's world", "we are used to", "recently", "looking back",
-            "have you ever", "imagine if", "since the beginning", "nowadays"
+            "in today's world", "we are used to", "looking back",
+            "have you ever", "imagine if", "since the beginning", "nowadays",
+            "once upon a time", "imagine a world", "it all started"
         ]
         is_narrative = any(first_p_lower.startswith(start) for start in narrative_starts)
         
-        # 3. WORD COUNT CHECK
+        # 4. WORD COUNT CHECK
         is_too_long = len(words) > 60
         
-        # Scoring Logic
+        # Scoring Logic (prioritized tiers)
         if has_definition and not is_narrative:
             raw_score = 100.0
             explanation = "✅ Perfect Answer: Direct definition found in first paragraph."
+        elif is_factual_lead and not is_narrative:
+            raw_score = 80.0
+            explanation = (
+                f"✅ Strong Factual Lead: Information-dense intro with "
+                f"{'data, ' if has_numeric_data else ''}"
+                f"{'action verbs, ' if has_action_verb else ''}"
+                f"{'named entities' if has_named_entities else ''}."
+            ).rstrip(', ').rstrip('with ') + "."
+            if not has_definition:
+                recommendations.append(
+                    "To reach 100: consider adding an explicit definition "
+                    "(e.g., '[Entity] is...') alongside the factual lead."
+                )
         elif is_narrative:
             raw_score = 40.0
             explanation = "⚠️ Narrative Warning: Intro starts with filler/temporal context instead of a definition."
-            recommendations.append("Remove the narrative hook. Start with '[Entity] is...'")
+            recommendations.append("Remove the narrative hook. Start with '[Entity] is...' or a factual statement.")
         elif is_too_long:
             raw_score = 0.0
             explanation = "❌ Failed: First paragraph exceeds 60 words without a clear definition."
             recommendations.append("Break the first paragraph. Ensure the first 60 words define the subject.")
         else:
             raw_score = 30.0
-            explanation = "❌ Weak Intro: No explicit definition found in first paragraph."
-            recommendations.append(f"Use direct verbs like: {', '.join(val_definition_verbs[:3])}.")
+            explanation = "❌ Weak Intro: No explicit definition or factual lead found in first paragraph."
+            recommendations.append(
+                f"Start with a direct definition ({', '.join(val_definition_verbs[:3])}) "
+                f"or a factual statement with data and action verbs."
+            )
  
         return ScoreBreakdown(
             name="Rule of 60 (Answer First)",

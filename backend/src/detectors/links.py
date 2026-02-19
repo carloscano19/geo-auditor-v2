@@ -33,14 +33,24 @@ class LinksDetector(BaseDetector):
     
     AUTHORITY_TLDS = [".edu", ".gov", ".mil", ".ac.uk"]
     
+    # Social & Utility Domains (filtered from citation count)
+    SOCIAL_DOMAINS = [
+        "facebook.com", "twitter.com", "x.com", "instagram.com", 
+        "linkedin.com", "youtube.com", "tiktok.com", "pinterest.com",
+        "t.me", "discord.gg", "whatsapp.com", "telegram.org"
+    ]
+    
+    # Partner/Ecosystem domains (filtered from citation count)
+    PARTNER_DOMAINS = ["socios.com", "chiliz.com", "mediarex.com"]
+    
     async def analyze(self, page_data: PageData) -> DetectorResult:
         breakdown = []
         errors = []
         recommendations = []
         
-        # Parse links from HTML
-        # Simple regex for <a> hrefs
-        hrefs = re.findall(r'<a[^>]+href=["\'](.*?)["\']', page_data.html_raw, re.IGNORECASE)
+        # Parse links from rendered HTML (captures JS-injected links on CSR/SPA sites)
+        html = page_data.html_rendered or page_data.html_raw
+        hrefs = re.findall(r'<a[^>]+href=["\'](.*?)["\']', html, re.IGNORECASE)
         
         base_domain = ""
         try:
@@ -73,9 +83,38 @@ class LinksDetector(BaseDetector):
             except:
                 continue
 
+        # --- Refine Classification (Filter Utility/Social) ---
+        citation_links = []
+        utility_links = []
+        
+        for link in external_links:
+            try:
+                domain = urlparse(link).netloc.lower()
+                is_utility = False
+                
+                # Check Social
+                for social in self.SOCIAL_DOMAINS:
+                    if social in domain:
+                        is_utility = True
+                        break
+                
+                # Check Partners
+                if not is_utility:
+                    for partner in self.PARTNER_DOMAINS:
+                        if partner in domain:
+                            is_utility = True
+                            break
+                            
+                if is_utility:
+                    utility_links.append(link)
+                else:
+                    citation_links.append(link)
+            except:
+                citation_links.append(link) # Fallback
+
         # 1. External Link Quality (50%)
         # ----------------------------------------------------------------
-        ext_count = len(external_links)
+        ext_count = len(citation_links)
         
         if ext_count >= 3:
             link_score = 100.0
@@ -89,14 +128,18 @@ class LinksDetector(BaseDetector):
             
         link_recs = []
         if ext_count < 3:
-            link_recs.append("Cite at least 2-3 external sources to support your content.")
+            link_recs.append("Add at least 2-3 links to independent external sources to support your claims.")
+            
+        explanation_ext = f"{'✅' if link_score > 0 else '❌'} {link_status}: Found {ext_count} citation links."
+        if utility_links:
+            explanation_ext += f" (Note: {len(utility_links)} social/partner links ignored as citations)."
             
         breakdown.append(ScoreBreakdown(
             name="External Links Found",
             raw_score=link_score,
             weight=0.50,
             weighted_score=link_score * 0.50,
-            explanation=f"{'✅' if link_score > 0 else '❌'} {link_status}: Found {ext_count} external links.",
+            explanation=explanation_ext,
             recommendations=link_recs
         ))
         
@@ -104,7 +147,8 @@ class LinksDetector(BaseDetector):
         # ----------------------------------------------------------------
         authority_links_found = []
         
-        for link in external_links:
+        # Only check citation links for authority
+        for link in citation_links:
             try:
                 domain = urlparse(link).netloc.lower()
                 is_auth = False
@@ -164,5 +208,11 @@ class LinksDetector(BaseDetector):
             weight=self.weight,
             contribution=self.calculate_contribution(score),
             breakdown=breakdown,
-            errors=errors
+            errors=errors,
+            debug_info={
+                "citation_links": citation_links[:10],
+                "utility_links": utility_links[:10],
+                "internal_links_count": len(internal_links),
+                "authority_domains_found": list(set(authority_links_found)),
+            }
         )

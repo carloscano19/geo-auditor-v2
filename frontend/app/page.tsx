@@ -97,6 +97,17 @@ export default function Home() {
             <p className="text-text-muted/60 mt-4">
               v2.1 (English) | Feb 2026
             </p>
+            <p className="text-text-muted/60 mt-2">
+              Desarrollado por{" "}
+              <a
+                href="https://www.linkedin.com/in/carlos-cano-fernandez-seo-aso-manager/"
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-primary hover:text-primary/80 transition-colors underline"
+              >
+                Carlos Cano Fernandez
+              </a>
+            </p>
           </div>
         </div>
       </aside>

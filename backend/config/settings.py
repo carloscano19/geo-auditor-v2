@@ -29,6 +29,7 @@ class Settings(BaseSettings):
     port: int = 8000
     
     # CORS Configuration
+    # In production, set GEO_AUDITOR_CORS_ORIGINS='["https://your-frontend.vercel.app"]'
     cors_origins: list[str] = ["http://localhost:3000"]
     
     # Scraping Configuration
