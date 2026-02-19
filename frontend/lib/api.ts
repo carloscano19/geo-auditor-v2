@@ -28,6 +28,7 @@ export interface DetectorResult {
     contribution: number;
     breakdown: ScoreBreakdown[];
     errors: string[];
+    debug_info?: any;
 }
 
 export interface DimensionScore {
