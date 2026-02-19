@@ -156,7 +156,7 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
             {/* Debug / Transparency Info */}
             {result.debug_info && (
                 <div className="mt-4 pt-4 border-t border-surface-border">
-                    {result.debug_info.detected_headers && (
+                    {!!result.debug_info.detected_headers && (
                         <div className="mb-3">
                             <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
                                 Found Headers (Scope Check):
@@ -174,7 +174,7 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                         </div>
                     )}
 
-                    {result.debug_info.detected_entities && (
+                    {!!result.debug_info.detected_entities && (
                         <div>
                             <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
                                 Found Entities (Likely topics):
@@ -188,6 +188,36 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                                 {(result.debug_info.detected_entities as string[]).length === 0 && (
                                     <span className="text-xs text-slate-500 italic">No specific property entities found.</span>
                                 )}
+                            </div>
+                        </div>
+                    )}
+
+                    {!!result.debug_info.citation_links && (
+                        <div className="mb-3">
+                            <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
+                                Citation Links (Counted):
+                            </h4>
+                            <div className="flex flex-col gap-1">
+                                {(result.debug_info.citation_links as { url: string; domain: string }[]).map((link, i) => (
+                                    <span key={i} className="text-[11px] text-emerald-400 font-mono truncate bg-emerald-950/20 px-2 py-1 rounded border border-emerald-900/30">
+                                        🔗 {link.url}
+                                    </span>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {!!result.debug_info.utility_links && (
+                        <div className="mb-3">
+                            <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
+                                Utility Links (Ignored):
+                            </h4>
+                            <div className="flex flex-col gap-1">
+                                {(result.debug_info.utility_links as { url: string; domain: string }[]).map((link, i) => (
+                                    <span key={i} className="text-[11px] text-slate-500 font-mono truncate bg-slate-900/50 px-2 py-1 rounded border border-slate-800">
+                                        ⚙️ {link.url}
+                                    </span>
+                                ))}
                             </div>
                         </div>
                     )}
