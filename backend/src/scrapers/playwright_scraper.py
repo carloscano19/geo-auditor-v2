@@ -152,10 +152,17 @@ class PlaywrightScraper(BaseScraper):
                 raise ScraperError(url, "⛔ Scraper Blocked: Article Not Available (Geo-block/Error)")
 
             # Wait for full render (network idle)
-            await page.wait_for_load_state(
-                self.settings.scraper_wait_until,
-                timeout=self.settings.scraper_timeout_ms
-            )
+            # INCREASED TIMEOUT FOR PRODUCTION STABILITY
+            try:
+                await page.wait_for_load_state(
+                    self.settings.scraper_wait_until,
+                    timeout=self.settings.scraper_timeout_ms
+                )
+                # Additional small grace period for slow SPAs to settle
+                await page.wait_for_timeout(2000) 
+            except Exception as e:
+                # If networkidle fails, we still try to proceed with what we have
+                print(f"Warning: wait_for_load_state timed out/failed: {str(e)}")
             
             # Get rendered HTML after JS execution
             html_rendered = await page.content()

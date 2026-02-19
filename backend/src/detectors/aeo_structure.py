@@ -293,18 +293,11 @@ class AEOStructureDetector(BaseDetector):
         Returns:
             ScoreBreakdown with Rule of 60 evaluation
         """
-        # Extract the first SUBSTANTIVE <p> tag (skip short CTA/nav paragraphs)
-        # Many sites have <p> tags for buttons, CTAs, or nav items before the article.
-        # A real article paragraph typically has ≥10 words.
-        MIN_PARAGRAPH_WORDS = 10
-        all_p_matches = re.findall(r'<p[^>]*>(.*?)</p>', html, re.IGNORECASE | re.DOTALL)
+        # Extract the substantive paragraphs using robust utility
+        from src.utils.text_processing import extract_substantive_paragraphs
+        substantive_paragraphs = extract_substantive_paragraphs(html, min_words=10)
         
-        first_p_text = ""
-        for p_html in all_p_matches:
-            candidate = re.sub(r'<[^>]+>', '', p_html).strip()
-            if len(candidate.split()) >= MIN_PARAGRAPH_WORDS:
-                first_p_text = candidate
-                break
+        first_p_text = substantive_paragraphs[0] if substantive_paragraphs else ""
         
         if not first_p_text:
             return ScoreBreakdown(
@@ -312,7 +305,7 @@ class AEOStructureDetector(BaseDetector):
                 raw_score=0.0,
                 weight=self.RULE_60_WEIGHT,
                 weighted_score=0.0,
-                explanation="❌ No substantive first paragraph (<p> with ≥10 words) detected.",
+                explanation="❌ No substantive first paragraph (≥10 words) detected.",
                 recommendations=["Add an introductory paragraph starting with a direct definition."],
             )
         

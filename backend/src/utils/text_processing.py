@@ -70,7 +70,7 @@ def extract_clean_text(html: str) -> str:
     Extract text content from cleaned HTML.
     """
     cleaned_html = clean_html_for_analysis(html)
-    soup = BeautifulSoup(cleaned_html, 'lxml')
+    soup = BeautifulSoup(cleaned_html, 'html.parser') # Use html.parser for compatibility
     
     # Get text and clean whitespace
     text = soup.get_text(separator=' ')
@@ -79,33 +79,57 @@ def extract_clean_text(html: str) -> str:
 
 def extract_headers(html: str) -> list[dict]:
     """
-    Extract H1-H3 headers from HTML using pure BeautifulSoup.
+    Extract H1-H3 headers from HTML using BeautifulSoup.
     
-    Simplified logic per user request:
-    1. Parse with BeautifulSoup
-    2. Find all h1, h2, h3
-    3. Filter by length (3 < len < 150)
-    
-    Args:
-        html: Raw or cleaned HTML content
-        
-    Returns:
-        List of dicts with 'tag' and 'text' keys
+    Robustness improvements:
+    1. Uses html.parser (more forgiving in some environments)
+    2. Checks for tags (h1, h2, h3)
+    3. Checks for aria-level attributes on role="heading"
     """
     if not html:
         return []
         
-    soup = BeautifulSoup(html, 'lxml')
+    soup = BeautifulSoup(html, 'html.parser')
     headers = []
     
-    # Busca H1, H2, H3 en orden de aparición
+    # 1. Standard Tags
     for tag in soup.find_all(['h1', 'h2', 'h3']):
         text = tag.get_text(strip=True)
-        # Solo guarda si tiene texto y no es excesivamente largo (evita parrafos enteros mal marcados)
-        if text and len(text) > 3 and len(text) < 150:
+        if text and 3 < len(text) < 200:
             headers.append({
-                'tag': tag.name, # 'h2'
-                'text': text     # 'El Clic de Búsqueda...'
+                'tag': tag.name.lower(),
+                'text': text
             })
             
+    # 2. ARIA Headings (Fallback for some SPAs)
+    # Only add if not already captured by tags
+    existing_texts = {h['text'] for h in headers}
+    for tag in soup.find_all(attrs={"role": "heading"}):
+        level = tag.get("aria-level")
+        if level in ['1', '2', '3']:
+            text = tag.get_text(strip=True)
+            if text and text not in existing_texts and 3 < len(text) < 200:
+                headers.append({
+                    'tag': f'h{level}',
+                    'text': text
+                })
+            
     return headers
+
+def extract_substantive_paragraphs(html: str, min_words: int = 10) -> list[str]:
+    """
+    Extract all substantive paragraphs from HTML using BeautifulSoup.
+    Skips short fragments like CTAs, buttons, and navigation.
+    """
+    if not html:
+        return []
+        
+    soup = BeautifulSoup(html, 'html.parser')
+    paragraphs = []
+    
+    for p in soup.find_all('p'):
+        text = p.get_text(strip=True)
+        if len(text.split()) >= min_words:
+            paragraphs.append(text)
+            
+    return paragraphs

@@ -135,24 +135,23 @@ class EntityDetector(BaseDetector):
     
     def _extract_title(self, html: str) -> str:
         """
-        Extract the H1 title from HTML.
-        
-        Args:
-            html: HTML content
-            
-        Returns:
-            Title text or empty string
+        Extract the H1 title from HTML using BeautifulSoup.
         """
-        # Try H1 first
-        h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html, re.IGNORECASE | re.DOTALL)
-        if h1_match:
-            title = re.sub(r'<[^>]+>', '', h1_match.group(1)).strip()
-            return title
+        if not html:
+            return ""
+            
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'html.parser')
         
-        # Fall back to <title> tag
-        title_match = re.search(r'<title[^>]*>(.*?)</title>', html, re.IGNORECASE | re.DOTALL)
-        if title_match:
-            return title_match.group(1).strip()
+        # Try H1 first
+        h1 = soup.find('h1')
+        if h1:
+            return h1.get_text(strip=True)
+        
+        # Fall back to <title>
+        title_tag = soup.find('title')
+        if title_tag:
+            return title_tag.get_text(strip=True)
         
         return ""
     
