@@ -31,77 +31,65 @@ class FormattingDetector(BaseDetector):
         errors = []
         recommendations = []
         
-        html_lower = page_data.html_raw.lower()
-        text_content = page_data.text_content
+        from bs4 import BeautifulSoup
+        html = page_data.html_rendered
+        soup = BeautifulSoup(html, 'lxml')
         
-        # 1. Scannability (Lists & Tables) - 40% (DRACONIAN: No menus, no short lists)
+        # 1. Scannability (Lists & Tables) - 40%
         # ----------------------------------------------------------------
-        all_lists = re.findall(r'<(ul|ol|table)([^>]*)>(.*?)</\1>', page_data.html_raw, re.IGNORECASE | re.DOTALL)
-        
         valid_lists = []
-        for tag, attrs, content in all_lists:
+        
+        # Find ul, ol, and table
+        for tag in soup.find_all(['ul', 'ol', 'table']):
             # 1. Class/ID Blacklist
-            attrs_lower = attrs.lower()
-            blacklist = ['menu', 'nav', 'social', 'related', 'footer', 'share', 'breadcrumb']
-            if any(kw in attrs_lower for kw in blacklist):
+            attrs_str = str(tag.attrs).lower()
+            blacklist = ['menu', 'nav', 'social', 'related', 'footer', 'share', 'breadcrumb', 'cookie', 'consent']
+            if any(kw in attrs_str for kw in blacklist):
                 continue
             
-            # 2. Structure Check: Count <li> for lists
-            if tag in ['ul', 'ol']:
-                items = re.findall(r'<li[^>]*>(.*?)</li>', content, re.IGNORECASE | re.DOTALL)
+            # 2. Structure Check
+            if tag.name in ['ul', 'ol']:
+                items = tag.find_all('li', recursive=False)
                 if len(items) <= 3:
                     continue
                 
                 # 3. Quality Check: Average words per item
                 total_words = 0
                 for item in items:
-                    clean_item = re.sub(r'<[^>]+>', '', item).strip()
+                    clean_item = item.get_text(strip=True)
                     total_words += len(clean_item.split())
                 
                 avg_words = total_words / len(items) if items else 0
-                if avg_words < 15:
+                if avg_words < 10: # Slightly more lenient for lists
                     continue
             else: # table
-                # Check rows
-                rows = re.findall(r'<tr[^>]*>', content, re.IGNORECASE)
-                if len(rows) <= 3:
+                rows = tag.find_all('tr')
+                if len(rows) <= 2:
                     continue
-                
-            # If reached here, it's a "real" content list
-            valid_lists.append(tag)
+            
+            valid_lists.append(tag.name)
         
         total_lists = len(valid_lists)
-        
         scannability_score = 100.0 if total_lists >= 1 else 0.0
         
-        # Check for Text Walls (part of scannability here)
-        # We assume text content is plain text. Splits by double newlines usually.
-        # But `page_data.text_content` might be a single blob if not processed.
-        # Let's rely on splitting by \n\n or analyzing paragraph tags if available in HTML.
-        # Better: Count chars in P tags in HTML.
-        p_tags = re.findall(r'<p[^>]*>(.*?)</p>', page_data.html_raw, re.IGNORECASE | re.DOTALL)
+        # Check for Text Walls
         text_walls_found = 0
-        for p_content in p_tags:
-            # Strip tags
-            clean_text = re.sub(r'<[^>]+>', '', p_content).strip()
+        for p in soup.find_all('p'):
+            clean_text = p.get_text(strip=True)
             if len(clean_text) > self.MAX_CHARS_PER_BLOCK:
                 text_walls_found += 1
                 
-        # Text Wall Scoring Inversion (0=100, 1=50, 2+=0)
+        # Text Wall Scoring Inversion
         wall_score = 100.0
         if text_walls_found == 1:
             wall_score = 50.0
         elif text_walls_found >= 2:
             wall_score = 0.0
             
-        # Combine with list check (simplified for now as per user prompt context)
-        # Lists give 100, walls penalized it.
-        # User wants a general fix for 'Text Walls' score. 
-        # In formatting.py, walls were a penalty. Let's make it a dedicated part or override.
         if total_lists >= 1:
             scannability_score = wall_score
         else:
-            scannability_score = min(50.0, wall_score) # Penalize lack of lists too
+            scannability_score = min(50.0, wall_score)
             
         scan_recs = []
         if total_lists == 0:
@@ -120,10 +108,9 @@ class FormattingDetector(BaseDetector):
         
         # 2. Visual Hierarchy (Bold Highlights) - 30%
         # ----------------------------------------------------------------
-        # Look for <strong> or <b> tags
-        bold_tags = re.findall(r'<(strong|b)[^>]*>(.*?)</\1>', page_data.html_raw, re.IGNORECASE | re.DOTALL)
+        bold_elements = soup.find_all(['strong', 'b'])
         
-        bold_count = len(bold_tags)
+        bold_count = len(bold_elements)
         bold_score = 0.0
         bold_explanation = ""
         
@@ -131,16 +118,11 @@ class FormattingDetector(BaseDetector):
             bold_score = 0.0
             bold_explanation = "No bold functionality used."
         else:
-            # Analyze quality: Are they short phrases?
             good_bolds = 0
-            bad_bolds = 0 # Too long
-            
-            for _, content in bold_tags:
-                clean_content = re.sub(r'<[^>]+>', '', content).strip()
+            for bold in bold_elements:
+                clean_content = bold.get_text(strip=True)
                 words = len(clean_content.split())
-                if words > 15: # Arbitrary threshold for "Highlighter" abuse vs Sentence
-                    bad_bolds += 1
-                else:
+                if 1 <= words <= 15: # Highlighter length
                     good_bolds += 1
             
             if good_bolds >= 2:
@@ -150,7 +132,7 @@ class FormattingDetector(BaseDetector):
                 bold_score = 50.0
                 bold_explanation = "Found minimal highlighting."
             else:
-                bold_score = 30.0 # Only long bolds
+                bold_score = 30.0
                 bold_explanation = "Bold usage detected but texts are too long (scan-blockers)."
                 
         bold_recs = []
@@ -168,25 +150,23 @@ class FormattingDetector(BaseDetector):
         
         # 3. Multimedia Content - 30%
         # ----------------------------------------------------------------
-        # Only relevant for full HTML check (URL mode usually, but check content anyway)
-        img_tags = re.findall(r'<img[^>]*>', html_lower)
-        video_tags = re.findall(r'<(video|iframe|embed)[^>]*>', html_lower)
+        img_elements = soup.find_all('img')
+        video_elements = soup.find_all(['video', 'iframe', 'embed'])
         
-        has_media = False
-        media_score = 0.0
-        
-        # Check Alt Text
         imgs_with_alt = 0
-        for img in img_tags:
-            if 'alt=' in img and 'alt=""' not in img and "alt=''" not in img:
+        for img in img_elements:
+            alt = img.get('alt', '').strip()
+            # Ignore placeholder alt or empty
+            if alt and alt.lower() not in ['image', 'img', 'picture', 'photo']:
                 imgs_with_alt += 1
                 
-        total_media = len(img_tags) + len(video_tags)
+        total_media = len(img_elements) + len(video_elements)
+        media_score = 0.0
+        status = ""
         
         if total_media > 0:
-            # Quality check: Images need Alt
-            if len(img_tags) > 0:
-                if imgs_with_alt == len(img_tags):
+            if len(img_elements) > 0:
+                if imgs_with_alt == len(img_elements):
                     media_score = 100.0
                     status = "Optimized"
                 elif imgs_with_alt > 0:
@@ -196,7 +176,6 @@ class FormattingDetector(BaseDetector):
                     media_score = 50.0
                     status = "Missing Alt Text"
             else:
-                # Just video?
                 media_score = 100.0
                 status = "Video Content"
         else:
@@ -206,7 +185,7 @@ class FormattingDetector(BaseDetector):
         media_recs = []
         if total_media == 0:
             media_recs.append("Add relevant images or video to improve engagement.")
-        if len(img_tags) > 0 and imgs_with_alt < len(img_tags):
+        if len(img_elements) > 0 and imgs_with_alt < len(img_elements):
             media_recs.append("Ensure all images have descriptive 'alt' text.")
             
         breakdown.append(ScoreBreakdown(
