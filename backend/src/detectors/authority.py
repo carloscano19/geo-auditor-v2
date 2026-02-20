@@ -77,7 +77,7 @@ class AuthorityDetector(BaseDetector):
 
         # Check HTML for rel="author" or similar meta tags if text check fails
         if not has_author:
-            if 'rel="author"' in page_data.html_raw or 'class="author"' in page_data.html_raw:
+            if 'rel="author"' in page_data.html_rendered or 'class="author"' in page_data.html_rendered:
                 has_author = True
                 author_match = "Meta/HTML Attribute"
 

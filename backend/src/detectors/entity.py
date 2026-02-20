@@ -141,7 +141,7 @@ class EntityDetector(BaseDetector):
             return ""
             
         from bs4 import BeautifulSoup
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, 'lxml')
         
         # Try H1 first
         h1 = soup.find('h1')

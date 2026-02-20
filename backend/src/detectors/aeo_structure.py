@@ -137,7 +137,7 @@ class AEOStructureDetector(BaseDetector):
         
         try:
             # Use HTML from PageData (rendered if available for JS content, else raw)
-            html = page_data.html_rendered or page_data.html_raw
+            html = page_data.html_rendered
             
             # Prepare scoped HTML for analysis
             from src.utils.text_processing import clean_html_for_analysis

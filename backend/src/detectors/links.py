@@ -48,9 +48,11 @@ class LinksDetector(BaseDetector):
         errors = []
         recommendations = []
         
-        # Parse links from rendered HTML (captures JS-injected links on CSR/SPA sites)
-        html = page_data.html_rendered or page_data.html_raw
-        hrefs = re.findall(r'<a[^>]+href=["\'](.*?)["\']', html, re.IGNORECASE)
+        # Parse links from rendered HTML using BeautifulSoup
+        from bs4 import BeautifulSoup
+        html = page_data.html_rendered
+        soup = BeautifulSoup(html, 'lxml')
+        hrefs = [a.get('href', '') for a in soup.find_all('a')]
         
         base_domain = ""
         try:

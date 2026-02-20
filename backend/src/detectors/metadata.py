@@ -69,7 +69,7 @@ class MetadataDetector(BaseDetector):
         try:
             # Use raw HTML for extraction
             metadata = extruct.extract(
-                page_data.html_raw,
+                page_data.html_rendered,
                 base_url=page_data.url,
                 uniform=True,  # Normalize output
                 syntaxes=['json-ld', 'microdata', 'rdfa']

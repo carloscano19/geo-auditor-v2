@@ -70,17 +70,18 @@ class FreshnessDetector(BaseDetector):
         
         # 2. Keyword Relevance (Current Year) (40%)
         # ----------------------------------------------------------------
-        # Check Title and H1 for current year (2026) or next year (2027)
+        from bs4 import BeautifulSoup
+        html = page_data.html_rendered
+        soup = BeautifulSoup(html, 'lxml')
+        
+        # Check Title and H1 for current year
         target_years = [str(self.current_year), str(self.current_year + 1)]
         
-        html_lower = page_data.html_raw.lower()
+        title_tag = soup.find('title')
+        h1_tag = soup.find('h1')
         
-        # Extract Title and H1
-        title_match = re.search(r'<title>(.*?)</title>', html_lower)
-        h1_match = re.search(r'<h1[^>]*>(.*?)</h1>', html_lower)
-        
-        title_text = title_match.group(1) if title_match else ""
-        h1_text = h1_match.group(1) if h1_match else ""
+        title_text = title_tag.get_text().lower() if title_tag else ""
+        h1_text = h1_tag.get_text().lower() if h1_tag else ""
         
         combined_text = title_text + " " + h1_text
         
@@ -124,7 +125,7 @@ class FreshnessDetector(BaseDetector):
         
     def _extract_date(self, page_data: PageData) -> Optional[datetime]:
         """Try to extract a valid date from metadata, HTML, or text."""
-        html = page_data.html_raw
+        html = page_data.html_rendered
         
         # 1. Meta Tags (ISO Format)
         meta_patterns = [
