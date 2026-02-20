@@ -100,16 +100,51 @@ class EvidenceDensityDetector(BaseDetector):
         3. For each claim, check if the corresponding HTML block contains a link or citation.
         """
         
-        # Simple sentence splitting (can be improved with NLP lib)
+        # Simple sentence splitting
         sentences = re.split(r'(?<=[.!?]) +', text)
         
         claims: List[Tuple[str, bool]] = [] # (sentence, is_verified)
         
-        # Pre-process HTML to identify linking contexts
-        # Mapping simple text snippets to whether they are close to a link
-        # This is a heuristic approximation since we don't have full DOM tree mapping here
-        # A more robust way: use the HTML directly, split by block tags, check for 'href'.
+        # Prepare BeautifulSoup for robust proximity check
+        from bs4 import BeautifulSoup
+        # Use HTML directly (raw rendered)
+        soup = BeautifulSoup(html, 'html.parser')
         
+        # Helper to find if a sentence exists near a link or citation in the DOM
+        def is_verified_in_dom(sentence_text: str) -> bool:
+            # 1. Check for explicit citation markers in text
+            if re.search(r'\[\d+\]|\(Source:', sentence_text, re.IGNORECASE):
+                return True
+                
+            # 2. Find the sentence in the DOM and check for nearby links
+            # We truncate to 30 chars to avoid tag boundaries issues, 
+            # but we search at the element level which handles internal tags.
+            search_snippet = sentence_text[:30].strip()
+            if not search_snippet:
+                return False
+                
+            try:
+                # Find elements whose text content contains the snippet
+                # We start with tags that typically contain article text
+                for tag in soup.find_all(['p', 'li', 'span', 'div']):
+                    if search_snippet in tag.get_text():
+                        # Found the element containing the claim!
+                        # Now check for links inside this element or its siblings
+                        if tag.find('a') or 'href=' in str(tag):
+                            return True
+                        
+                        # Check immediate siblings (links often follow or precede paragraphs)
+                        for sibling in list(tag.previous_siblings)[:2] + list(tag.next_siblings)[:2]:
+                            if sibling.name == 'a' or (sibling.name and sibling.find('a')):
+                                return True
+                            # Stop if we hit a major block tag that signals a new section
+                            if sibling.name in ['h1', 'h2', 'h3', 'hr']:
+                                break
+            except Exception:
+                pass
+                        
+            return False
+
         for sentence in sentences:
             sentence = sentence.strip()
             if not sentence or len(sentence) < 20:
@@ -119,39 +154,7 @@ class EvidenceDensityDetector(BaseDetector):
             is_claim = any(re.search(p, sentence, re.IGNORECASE) for p in self.CLAIM_PATTERNS)
             
             if is_claim:
-                # Verification Logic
-                # Check 1: Does the sentence contains a citation marker?
-                has_citation_marker = bool(re.search(r'\[\d+\]|\(Source:', sentence, re.IGNORECASE))
-                
-                # Check 2: Look at the broader text for a citation marker IMMEDIATELY following this sentence
-                # (Handle splits like "Stat." and "[1]")
-                if not has_citation_marker:
-                    # Find sentence location in full text
-                    try:
-                        idx = text.find(sentence)
-                        if idx != -1:
-                            # Look ahead 20 chars
-                            lookahead = text[idx+len(sentence):idx+len(sentence)+20]
-                            if re.search(r'\[\d+\]', lookahead):
-                                has_citation_marker = True
-                    except Exception:
-                        pass
-
-                # Check 3: Link Proximity in HTML (unchanged heuristic)
-                try:
-                    safe_sent = re.escape(sentence[:30]) 
-                    match = re.search(safe_sent, html)
-                    has_link_nearby = False
-                    if match:
-                        start, end = match.span()
-                        context = html[max(0, start-200):min(len(html), end+200)]
-                        if '<a href' in context or '</a>' in context:
-                            has_link_nearby = True
-                except Exception:
-                    has_link_nearby = False
-                            
-                is_verified = has_citation_marker or has_link_nearby
-                
+                is_verified = is_verified_in_dom(sentence)
                 claims.append((sentence, is_verified))
         
         # Scoring
@@ -170,25 +173,20 @@ class EvidenceDensityDetector(BaseDetector):
         ratio = (verified_count / total_claims) * 100 if total_claims > 0 else 0
         
         # GOLD STANDARD: Volume Penalization
-        # Low volume = capped score, regardless of accuracy
         volume_message = ""
         if total_claims < 3:
-            # Cap at 60 for low volume (even if 100% verified)
+            # Cap at 60 for low volume
             evidence_score = min(ratio, 60.0)
             volume_message = " ⚠️ High accuracy but LOW VOLUME (<3 claims)."
         elif total_claims >= 5 and ratio >= 90:
-            # Full score only with 5+ claims AND high ratio
             evidence_score = 100.0
         else:
-            # Standard calculation
             evidence_score = ratio
         
         # Formatting explanation with visual markers for frontend
-        # We limit to 5 samples to avoid clutter
         formatted_claims = []
         for c, v in claims[:5]:
             marker = "✅ Verified" if v else "❌ Unverified"
-            # Truncate claim
             clean_claim = (c[:60] + '...') if len(c) > 60 else c
             formatted_claims.append(f"{marker}: \"{clean_claim}\"")
             

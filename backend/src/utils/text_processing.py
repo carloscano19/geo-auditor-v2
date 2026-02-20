@@ -15,24 +15,16 @@ def clean_html_for_analysis(html: str) -> str:
         
     soup = BeautifulSoup(html, 'lxml')
     
-    # --- BRUTE FORCE LAYER 1: MINIMAL CLEANING ---
-    # User Request: "Elimina OBLIGATORIAMENTE solo lo obvio: <script>, <style>, <svg>, <noscript>."
-    # "NO elimines <header>, <footer> o <nav> todavía."
-    
     # Elements to remove completely (Technical Noise)
     technical_tags = ['script', 'style', 'noscript', 'iframe', 'svg', 'form', 'button', 'input', 'textarea', 'select', 'option']
     for tag in technical_tags:
         for element in soup.find_all(tag):
             element.decompose()
             
-    # We DO NOT remove nav/footer/aside yet to ensure we capture content in bad layouts.
-    # The filtering will happen at the extraction level (Layer 3).
-
     return str(soup)
 
 def filter_headers_by_text(headers: list[str]) -> list[str]:
     """
-    Layer 3: Post-Extraction Filtering.
     Excludes headers containing prohibited words (navigation terms).
     """
     blacklist = [
@@ -45,32 +37,24 @@ def filter_headers_by_text(headers: list[str]) -> list[str]:
     
     clean_headers = []
     for h in headers:
-        # Check if header text contains any blacklist word (case insensitive)
         h_lower = h.lower()
-        # Strict equality might be too strict, 'contains' is safer for things like "Subscribe to our newsletter"
-        # But we don't want to kill "About Bitcoin" if "About" is blacklisted.
-        # Let's check for exact matches OR distinct phrases
-        
         is_blacklisted = False
         for bad_word in blacklist:
-            # Check for exact matches or distinct phrase presence
-            # e.g. "Related Posts" == "related posts" -> match
-            # "Login" in "User Login" -> match
             if bad_word in h_lower:
                 is_blacklisted = True
                 break
         
-        if not is_blacklisted and len(h.strip()) > 2: # Ignore empty/tiny headers
+        if not is_blacklisted and len(h.strip()) > 2:
             clean_headers.append(h)
             
     return clean_headers
 
 def extract_clean_text(html: str) -> str:
     """
-    Extract text content from cleaned HTML.
+    Extract text content from cleaned HTML using lxml.
     """
     cleaned_html = clean_html_for_analysis(html)
-    soup = BeautifulSoup(cleaned_html, 'html.parser') # Use html.parser for compatibility
+    soup = BeautifulSoup(cleaned_html, 'lxml')
     
     # Get text and clean whitespace
     text = soup.get_text(separator=' ')
@@ -79,17 +63,13 @@ def extract_clean_text(html: str) -> str:
 
 def extract_headers(html: str) -> list[dict]:
     """
-    Extract H1-H3 headers from HTML using BeautifulSoup.
-    
-    Robustness improvements:
-    1. Uses html.parser (more forgiving in some environments)
-    2. Checks for tags (h1, h2, h3)
-    3. Checks for aria-level attributes on role="heading"
+    Extract H1-H3 headers from HTML using BeautifulSoup with lxml.
+    Includes ARIA role="heading" support.
     """
     if not html:
         return []
         
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = BeautifulSoup(html, 'lxml')
     headers = []
     
     # 1. Standard Tags
@@ -101,8 +81,7 @@ def extract_headers(html: str) -> list[dict]:
                 'text': text
             })
             
-    # 2. ARIA Headings (Fallback for some SPAs)
-    # Only add if not already captured by tags
+    # 2. ARIA Headings (Fallback)
     existing_texts = {h['text'] for h in headers}
     for tag in soup.find_all(attrs={"role": "heading"}):
         level = tag.get("aria-level")
@@ -118,13 +97,12 @@ def extract_headers(html: str) -> list[dict]:
 
 def extract_substantive_paragraphs(html: str, min_words: int = 10) -> list[str]:
     """
-    Extract all substantive paragraphs from HTML using BeautifulSoup.
-    Skips short fragments like CTAs, buttons, and navigation.
+    Extract all substantive paragraphs using lxml.
     """
     if not html:
         return []
         
-    soup = BeautifulSoup(html, 'html.parser')
+    soup = BeautifulSoup(html, 'lxml')
     paragraphs = []
     
     for p in soup.find_all('p'):

@@ -64,7 +64,7 @@ class InfrastructureDetector(BaseDetector):
     SPEED_EXCELLENT = 2000   # <2s = 100 points
     SPEED_GOOD = 4000        # <4s = 80 points
     SPEED_ACCEPTABLE = 6000  # <6s = 60 points
-    SPEED_POOR = 10000       # <10s = 30 points
+    SPEED_POOR = 20000       # <20s = 30 points
     # >10s = 0 points
     
     def __init__(self):
