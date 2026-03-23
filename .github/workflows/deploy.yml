@@ -35,7 +35,7 @@ jobs:
           server: ${{ secrets.HOSTINGER_SSH_HOST }}
           username: ${{ secrets.HOSTINGER_SSH_USER }}
           password: ${{ secrets.HOSTINGER_SSH_PASSWORD }}
-          port: ${{ secrets.HOSTINGER_SSH_PORT }}
+          port: 21
           local-dir: ./frontend/out/
           server-dir: /public_html/geo-auditor/
-          protocol: ftps
+          protocol: ftp
