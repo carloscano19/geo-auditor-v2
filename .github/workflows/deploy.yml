@@ -37,5 +37,5 @@ jobs:
           password: ${{ secrets.HOSTINGER_SSH_PASSWORD }}
           port: 21
           local-dir: ./frontend/out/
-          server-dir: /public_html/geo-auditor/
+          server-dir: /domains/carloscanofernandez.com/public_html/geo-auditor/
           protocol: ftp
