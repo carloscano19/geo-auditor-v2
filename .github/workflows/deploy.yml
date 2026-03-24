@@ -29,13 +29,13 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: https://geo-auditor-v2.onrender.com
 
-      - name: Deploy via SSH/SCP
-        uses: appleboy/scp-action@v0.1.7
+      - name: Upload via FTP
+        uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:
-          host: ${{ secrets.HOSTINGER_SSH_HOST }}
+          server: carloscanofernandez.com
           username: ${{ secrets.HOSTINGER_SSH_USER }}
           password: ${{ secrets.HOSTINGER_SSH_PASSWORD }}
-          port: ${{ secrets.HOSTINGER_SSH_PORT }}
-          source: "frontend/out/*"
-          target: "/home/u252164128/domains/carloscanofernandez.com/public_html/geo-auditor"
-          strip_components: 2
+          port: 21
+          local-dir: ./frontend/out/
+          server-dir: /public_html/geo-auditor/
+          protocol: ftp
