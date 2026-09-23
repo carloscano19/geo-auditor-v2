@@ -40,9 +40,6 @@ class LinksDetector(BaseDetector):
         "t.me", "discord.gg", "whatsapp.com", "telegram.org"
     ]
     
-    # Partner/Ecosystem domains (filtered from citation count)
-    PARTNER_DOMAINS = ["socios.com", "chiliz.com", "mediarex.com"]
-    
     async def analyze(self, page_data: PageData) -> DetectorResult:
         breakdown = []
         errors = []
@@ -99,13 +96,6 @@ class LinksDetector(BaseDetector):
                     if social in domain:
                         is_utility = True
                         break
-                
-                # Check Partners
-                if not is_utility:
-                    for partner in self.PARTNER_DOMAINS:
-                        if partner in domain:
-                            is_utility = True
-                            break
                             
                 if is_utility:
                     utility_links.append(link)
@@ -134,7 +124,7 @@ class LinksDetector(BaseDetector):
             
         explanation_ext = f"{'✅' if link_score > 0 else '❌'} {link_status}: Found {ext_count} citation links."
         if utility_links:
-            explanation_ext += f" (Note: {len(utility_links)} social/partner links ignored as citations)."
+            explanation_ext += f" (Note: {len(utility_links)} social links ignored as citations)."
             
         breakdown.append(ScoreBreakdown(
             name="External Links Found",

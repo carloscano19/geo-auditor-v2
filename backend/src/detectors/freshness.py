@@ -6,7 +6,7 @@ Evaluates content currency and temporal relevance.
 """
 
 import re
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from src.detectors.base_detector import BaseDetector
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
@@ -23,12 +23,16 @@ class FreshnessDetector(BaseDetector):
     dimension_name = "freshness"
     weight = 0.10
     
-    current_year = 2026 # Hardcoded for simulation as per user prompt context (2026)
+    @property
+    def current_year(self) -> int:
+        return datetime.now(timezone.utc).year
     
     async def analyze(self, page_data: PageData) -> DetectorResult:
         breakdown = []
         errors = []
         recommendations = []
+        now_utc = datetime.now(timezone.utc)
+        current_year = now_utc.year
         
         # 1. Date Extraction & Currency (60%)
         # ----------------------------------------------------------------
@@ -39,8 +43,14 @@ class FreshnessDetector(BaseDetector):
         date_recs = []
         
         if extracted_date:
-            # Calculate age
-            age_days = (datetime(self.current_year, 2, 6) - extracted_date).days # Mock "now" as Feb 6, 2026
+            # Calculate age (handle timezone-aware and naive safely)
+            if extracted_date.tzinfo is not None:
+                diff_seconds = (now_utc - extracted_date).total_seconds()
+            else:
+                diff_seconds = (now_utc.replace(tzinfo=None) - extracted_date).total_seconds()
+            
+            # Future dates are treated as 0 age
+            age_days = max(0, int(diff_seconds // 86400))
             age_years = age_days / 365.0
             
             if age_years < 1:

@@ -9,6 +9,7 @@ Target: >85% code coverage per best practices.
 
 import pytest
 from datetime import datetime
+from typing import Optional
 
 from src.models.schemas import PageData
 from src.detectors.infrastructure import InfrastructureDetector
@@ -20,6 +21,7 @@ def create_mock_page_data(
     is_https: bool = True,
     is_ssr: bool = True,
     load_time_ms: float = 1500.0,
+    ttfb_ms: Optional[float] = 500.0,
     html_raw: str = "<html><head></head><body><h1>Title</h1><p>Content</p></body></html>",
     html_rendered: str = "<html><head></head><body><h1>Title</h1><p>Content</p></body></html>",
     headers: dict = None,
@@ -34,6 +36,7 @@ def create_mock_page_data(
         headers=headers or {},
         status_code=200,
         load_time_ms=load_time_ms,
+        ttfb_ms=ttfb_ms,
         scraped_at=datetime.utcnow(),
         is_https=is_https,
         is_ssr=is_ssr,
@@ -87,7 +90,7 @@ class TestInfrastructureDetector:
         assert https_breakdown is not None
         assert https_breakdown.raw_score == 0.0
         assert len(https_breakdown.recommendations) > 0
-        assert "CRÍTICO" in https_breakdown.recommendations[0]
+        assert "CRITICAL" in https_breakdown.recommendations[0] or "CRÍTICO" in https_breakdown.recommendations[0]
     
     @pytest.mark.asyncio
     async def test_ssr_detection_positive(self, detector):
@@ -125,8 +128,8 @@ class TestInfrastructureDetector:
     
     @pytest.mark.asyncio
     async def test_speed_excellent(self, detector):
-        """Test speed scoring for fast pages (<2s)."""
-        page_data = create_mock_page_data(load_time_ms=1500.0)
+        """Test speed scoring for fast TTFB (<800ms)."""
+        page_data = create_mock_page_data(ttfb_ms=500.0)
         
         result = await detector.analyze(page_data)
         
@@ -140,8 +143,8 @@ class TestInfrastructureDetector:
     
     @pytest.mark.asyncio
     async def test_speed_good(self, detector):
-        """Test speed scoring for good pages (2-4s)."""
-        page_data = create_mock_page_data(load_time_ms=3000.0)
+        """Test speed scoring for good TTFB (800-1500ms)."""
+        page_data = create_mock_page_data(ttfb_ms=1200.0)
         
         result = await detector.analyze(page_data)
         
@@ -155,8 +158,8 @@ class TestInfrastructureDetector:
     
     @pytest.mark.asyncio
     async def test_speed_poor(self, detector):
-        """Test speed scoring for slow pages (>10s)."""
-        page_data = create_mock_page_data(load_time_ms=12000.0)
+        """Test speed scoring for slow TTFB (>=3000ms or timeout)."""
+        page_data = create_mock_page_data(ttfb_ms=4000.0)
         
         result = await detector.analyze(page_data)
         
@@ -166,7 +169,7 @@ class TestInfrastructureDetector:
         )
         
         assert speed_breakdown is not None
-        assert speed_breakdown.raw_score == 0.0
+        assert speed_breakdown.raw_score == 20.0
     
     @pytest.mark.asyncio
     async def test_crawlability_noindex(self, detector):
@@ -193,7 +196,7 @@ class TestInfrastructureDetector:
         
         assert crawl_breakdown is not None
         assert crawl_breakdown.raw_score == 0.0
-        assert "BLOQUEADO" in crawl_breakdown.explanation
+        assert "BLOCKED" in crawl_breakdown.explanation or "BLOQUEADO" in crawl_breakdown.explanation
     
     @pytest.mark.asyncio
     async def test_crawlability_clean(self, detector):

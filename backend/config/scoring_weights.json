@@ -55,10 +55,6 @@
         "external_link_quality": 0.50,
         "authority_sources": 0.50
       }
-    },
-    "multiplatform_optimization": {
-      "weight": 0.02,
-      "subdimensions": {}
     }
   }
 }

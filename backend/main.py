@@ -13,8 +13,13 @@ CORS is configured to allow the Next.js frontend (localhost:3000).
 """
 
 import time
+import asyncio
+import logging
+import traceback
 from datetime import datetime
+from typing import Optional
 from contextlib import asynccontextmanager
+import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -32,9 +37,36 @@ from src.scrapers.base_scraper import ScraperError
 from src.detectors.infrastructure import InfrastructureDetector
 from src.detectors.evidence_density import EvidenceDensityDetector
 
+logger = logging.getLogger("geo_auditor")
 
 # Global scraper instance (reused across requests for performance)
 scraper: PlaywrightScraper = None
+
+# Concurrency limiter: ensure only 1 Playwright scraping session runs at a time
+scrape_semaphore = asyncio.Semaphore(1)
+
+
+async def measure_ttfb(url: str) -> Optional[float]:
+    """
+    Measure Time To First Byte (TTFB) using an independent HTTP GET request with httpx.
+    Uses client.stream to stop timing as soon as response headers arrive without reading the body.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    user_agent = (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    )
+    headers = {"User-Agent": user_agent}
+    start_time = time.perf_counter()
+    try:
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                ttfb_ms = (time.perf_counter() - start_time) * 1000
+                return ttfb_ms
+    except Exception as e:
+        logger.warning(f"TTFB measurement failed for {url}: {e}")
+        return None
 
 
 @asynccontextmanager
@@ -92,8 +124,8 @@ async def get_scoring_weights():
     """
     Get current scoring configuration.
     
-    Returns the weights for all 10 dimensions and their sub-dimensions.
-    Useful for frontend visualization and transparency.
+    Returns the weights for all active dimensions and their sub-dimensions.
+    Note: Multiplatform optimization (Dimension 10) is reserved for a future phase.
     
     Returns:
         dict: Scoring weights configuration
@@ -106,20 +138,17 @@ async def audit_url(request: AuditRequest):
     """
     Analyze a URL for LLM citability.
     
-    Performs a full audit of the given URL, evaluating it against
-    the 10 citability dimensions defined in the SRS.
-    
-    Currently implements:
-    - Layer 1: Technical Infrastructure (12%)
+    Performs a full audit of the given URL or pasted text, evaluating it against
+    the active citability dimensions defined in the SRS.
     
     Args:
-        request: AuditRequest containing URL to analyze
+        request: AuditRequest containing URL or content_text to analyze
         
     Returns:
         AuditResponse with scores, breakdown, and recommendations
         
     Raises:
-        HTTPException: If URL cannot be scraped or analyzed
+        HTTPException: If URL cannot be scraped or an internal error occurs
     """
     global scraper
     start_time = time.time()
@@ -130,41 +159,44 @@ async def audit_url(request: AuditRequest):
     try:
         if request.content_text:
             # Text-only mode: Mock PageData
-            # We construct a synthetic PageData object to feed the detectors
             text_len = len(request.content_text.split())
             page_data = PageData(
                 url=request.url or "https://manual-input.local",
                 final_url=request.url or "https://manual-input.local",
                 html_raw=f"<html><body><h1>Analysis</h1><p>{request.content_text}</p></body></html>",
-                # Wrap text in paragraphs for basic structure simulation if needed, 
-                # but AEO detector works better with structure. 
-                # For pure text input, AEO structure might score low on H2s unless we infer them.
-                # For now, we wrap the whole text in a generic body. 
-                # Ideally, the frontend should send HTML if it's a rich editor, but "Paste Text" implies plain text.
-                # sophisticated text-to-html could be done here, but let's keep it simple.
                 html_rendered=f"<html><body><h1>Analysis</h1><div class='content'>{request.content_text}</div></body></html>",
                 text_content=request.content_text,
                 status_code=200,
                 load_time_ms=0,
                 word_count=text_len,
                 is_ssr=True,  # Assume readable
-                is_https=True # Assume secure
+                is_https=True, # Assume secure
+                ttfb_ms=None  # Speed not evaluated in text mode
             )
         elif request.url:
-            # URL mode: Scrape
-            page_data = await scraper.scrape(request.url)
+            # URL mode: Playwright scraping limited by semaphore (concurrency=1)
+            # and TTFB measured via independent HTTP streaming request
+            async with scrape_semaphore:
+                ttfb_task = measure_ttfb(request.url)
+                scrape_task = scraper.scrape(request.url)
+                ttfb_val, page_data = await asyncio.gather(ttfb_task, scrape_task)
+                page_data.ttfb_ms = ttfb_val
         else:
             raise HTTPException(status_code=400, detail="Must provide either URL or content_text")
             
     except ScraperError as e:
+        logger.warning(f"Scraper error for {request.url}: {e.reason}")
         raise HTTPException(
             status_code=400,
             detail=f"Failed to scrape URL: {e.reason}"
         )
+    except HTTPException:
+        raise
     except Exception as e:
+        logger.error(f"Internal error during acquisition: {traceback.format_exc()}")
         raise HTTPException(
             status_code=500,
-            detail=f"Unexpected error during acquisition: {str(e)}"
+            detail="Internal error while running the audit."
         )
     
     # Step 2: Run detectors
@@ -270,21 +302,15 @@ async def audit_url(request: AuditRequest):
     except Exception as e:
         print(f"Links detector error: {e}")
 
-    # TODO: Add remaining detectors in future phases
-    # - EEATDetector (Layer 5) 
-    # - FreshnessDetector (Layer 7)
-    # - FormatDetector (Layer 8)
-    # - LinksDetector (Layer 9)
-    # - MultiPlatformDetector (Layer 10)
+    # Note: MultiPlatformDetector (Layer 10) is reserved for future phases.
     
-    # Step 3: Calculate total score
-    total_score = sum(r.contribution for r in detector_results)
-    
-    # For now, scale up since we only have 1 of 10 detectors
-    # This shows the infrastructure score at its full weight
-    if detector_results:
-        # Show the actual infrastructure contribution
-        pass
+    # Step 3: Calculate total score normalized by active detector weights
+    # This ensures a perfect score reaches 100 in both URL mode and Text mode
+    active_weights_sum = sum(r.weight for r in detector_results)
+    if active_weights_sum > 0:
+        total_score = sum(r.contribution for r in detector_results) / active_weights_sum
+    else:
+        total_score = 0.0
     
     # Step 4: Build dimension scores for response
     dimension_scores = [

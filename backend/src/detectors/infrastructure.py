@@ -60,12 +60,11 @@ class InfrastructureDetector(BaseDetector):
     CRAWLABILITY_WEIGHT = 0.25
     SPEED_WEIGHT = 0.20
     
-    # Speed thresholds (milliseconds)
-    SPEED_EXCELLENT = 2000   # <2s = 100 points
-    SPEED_GOOD = 4000        # <4s = 80 points
-    SPEED_ACCEPTABLE = 6000  # <6s = 60 points
-    SPEED_POOR = 20000       # <20s = 30 points
-    # >10s = 0 points
+    # Speed (TTFB) thresholds (milliseconds)
+    TTFB_EXCELLENT = 800   # <800ms = 100 points
+    TTFB_GOOD = 1500       # <1500ms = 80 points
+    TTFB_ACCEPTABLE = 3000 # <3000ms = 50 points
+    # >=3000ms or timeout = 20 points
     
     def __init__(self):
         """Initialize with settings."""
@@ -289,41 +288,39 @@ class InfrastructureDetector(BaseDetector):
     
     def _analyze_speed(self, page_data: PageData) -> ScoreBreakdown:
         """
-        Analyze page load speed.
+        Analyze page load speed using TTFB (Time To First Byte).
         """
-        load_time_ms = page_data.load_time_ms
+        ttfb_ms = page_data.ttfb_ms
+        recommendations = []
         
-        if load_time_ms < self.SPEED_EXCELLENT:
+        if ttfb_ms is None:
+            raw_score = 20.0
+            explanation = "TTFB measurement failed or timed out. Default score applied: 20."
+            recommendations.append("Ensure server responds promptly to initial HTTP GET requests (<800ms).")
+        elif ttfb_ms < self.TTFB_EXCELLENT:
             raw_score = 100.0
             status = "excellent"
-        elif load_time_ms < self.SPEED_GOOD:
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Server response is optimal for AI crawlers."
+        elif ttfb_ms < self.TTFB_GOOD:
             raw_score = 80.0
             status = "good"
-        elif load_time_ms < self.SPEED_ACCEPTABLE:
-            raw_score = 60.0
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Good server response time."
+            recommendations.append(f"Goal: reduce TTFB to <800ms (currently {ttfb_ms:.0f}ms).")
+        elif ttfb_ms < self.TTFB_ACCEPTABLE:
+            raw_score = 50.0
             status = "acceptable"
-        elif load_time_ms < self.SPEED_POOR:
-            raw_score = 30.0
-            status = "slow"
-        else:
-            raw_score = 0.0
-            status = "critical"
-        
-        load_time_s = load_time_ms / 1000
-        explanation = (
-            f"Load Time: {load_time_s:.2f}s ({status}). "
-            f"{'Within performance target.' if raw_score >= 60 else 'Requires urgent optimization.'}"
-        )
-        
-        recommendations = []
-        if raw_score < 100:
-            recommendations.append(
-                f"Goal: reduce load time to <2s (currently {load_time_s:.1f}s)."
-            )
-        if raw_score < 60:
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Server response is slower than optimal."
             recommendations.extend([
-                "Check Core Web Vitals in PageSpeed Insights.",
-                "Optimize images, critical CSS, and lazy loading.",
+                f"Reduce server response time (TTFB currently {ttfb_ms:.0f}ms, aim for <800ms).",
+                "Consider edge caching (CDN) or backend query optimization."
+            ])
+        else:
+            raw_score = 20.0
+            status = "slow"
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Slow server response."
+            recommendations.extend([
+                f"Critical: Reduce TTFB (currently {ttfb_ms:.0f}ms, aim for <800ms).",
+                "Slow initial server response delays AI crawler indexing and citability."
             ])
         
         return ScoreBreakdown(

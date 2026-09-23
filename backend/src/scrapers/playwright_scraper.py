@@ -158,8 +158,6 @@ class PlaywrightScraper(BaseScraper):
                     self.settings.scraper_wait_until,
                     timeout=self.settings.scraper_timeout_ms
                 )
-                # Additional small grace period for slow SPAs to settle
-                await page.wait_for_timeout(2000) 
             except Exception as e:
                 # If networkidle fails, we still try to proceed with what we have
                 print(f"Warning: wait_for_load_state timed out/failed: {str(e)}")

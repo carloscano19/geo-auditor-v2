@@ -345,10 +345,7 @@ class EntityDetector(BaseDetector):
             'who', 'whose', 'does', 'do', 'should', 'would', 'could', 'has', 'have', 'had', 'been'
         }
         
-        whitelist = {"chiliz", "fan token", "socios.com", "bitcoin", "ethereum", "blockchain", "crypto"}
-        
-        # Clean title to list of words using a method that preserves punctuation for "Socios.com"
-        # We'll just split by space and strip mild punctuation, or use regex that keeps dots inside words
+        # Clean title to list of words (generic entity extraction)
         title_words = title.split()
         
         key_entities = []
@@ -357,20 +354,7 @@ class EntityDetector(BaseDetector):
             clean_w = w.strip(".,;:!?()[]\"'")
             lower_w = clean_w.lower()
             
-            # CHECK 1: Whitelist (Accept immediately)
-            # Check if loose match in whitelist (e.g. "Bitcoin" -> "bitcoin" in whitelist)
-            is_whitelisted = False
-            for wl_item in whitelist:
-                if wl_item in lower_w: # "Can you buy Fan Tokens" -> "Fan Token" in whitelist
-                    is_whitelisted = True
-                    break
-            
-            if is_whitelisted:
-                if clean_w not in key_entities:
-                    key_entities.append(clean_w)
-                continue
-                
-            # CHECK 2: Strict Candidate Rules
+            # Candidate Rules:
             # 1. Start with Uppercase (Title Case)
             # 2. Length > 3
             # 3. NOT in Stop Words

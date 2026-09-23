@@ -59,6 +59,7 @@ class PageData(BaseModel):
     is_https: bool = False
     is_ssr: bool = True  # True if SSR, False if CSR
     word_count: int = 0
+    ttfb_ms: Optional[float] = None
 
 
 class ScoreBreakdown(BaseModel):
