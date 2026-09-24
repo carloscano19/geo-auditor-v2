@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import AuditForm from "@/components/AuditForm";
 import AuditResults from "@/components/AuditResults";
 import { apiClient, type AuditResponse } from "@/lib/api";
@@ -9,12 +9,37 @@ export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<AuditResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [lastText, setLastText] = useState<string | null>(null);
+  const [version, setVersion] = useState("v2.2");
+
+  useEffect(() => {
+    // 1. Wipe any stored API keys on load
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const key = localStorage.key(i);
+        if (key && (key.startsWith("geo_auditor_key_") || key === "geo_auditor_prev_provider")) {
+          keysToRemove.push(key);
+        }
+      }
+      keysToRemove.forEach((k) => localStorage.removeItem(k));
+    } catch {
+      // Ignore in restricted environments
+    }
+
+    // 2. Fetch backend version as single source of truth
+    apiClient
+      .getVersion()
+      .then((data) => {
+        if (data?.version) setVersion(data.version);
+      })
+      .catch(() => {
+        // Fallback default is v2.2
+      });
+  }, []);
 
   const handleAudit = async (url: string | null, text: string | null, platform: string) => {
     setIsLoading(true);
     setError(null);
-    setLastText(text); // Guardar el texto para optimización posterior
 
     try {
       const response = await apiClient.audit({
@@ -24,7 +49,7 @@ export default function Home() {
       });
       setResults(response);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Error al analizar la URL");
+      setError(err instanceof Error ? err.message : "Error analyzing content");
       setResults(null);
     } finally {
       setIsLoading(false);
@@ -88,17 +113,13 @@ export default function Home() {
           <div className="text-xs text-text-muted space-y-2">
             <p className="flex items-center gap-2">
               <span className="w-2 h-2 bg-score-excellent rounded-full" />
-              10 Citability Dimensions
-            </p>
-            <p className="flex items-center gap-2">
-              <span className="w-2 h-2 bg-primary rounded-full" />
-              Phases 1-2: Infra + NLP Active
+              9 Citability Dimensions
             </p>
             <p className="text-text-muted/60 mt-4">
-              v2.1 (English) | Feb 2026
+              {version} (English)
             </p>
             <p className="text-text-muted/60 mt-2">
-              Desarrollado por{" "}
+              Built by{" "}
               <a
                 href="https://www.linkedin.com/in/carlos-cano-fernandez-seo-aso-manager/"
                 target="_blank"
@@ -177,7 +198,7 @@ export default function Home() {
           </div>
         )}
 
-        {results && !isLoading && <AuditResults results={results} originalText={lastText || ""} />}
+        {results && !isLoading && <AuditResults results={results} />}
       </main>
     </div>
   );

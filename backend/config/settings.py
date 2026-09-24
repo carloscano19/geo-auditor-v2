@@ -17,12 +17,8 @@ class Settings(BaseSettings):
     
     # API Configuration
     app_name: str = "GEO-AUDITOR AI"
-    app_version: str = "2.0.0"
+    app_version: str = "v2.2"
     debug: bool = False
-    
-    # AI Keys
-    openai_api_key: Optional[str] = None
-    gemini_api_key: Optional[str] = None
     
     # Server Configuration
     host: str = "0.0.0.0"
@@ -46,6 +42,7 @@ class Settings(BaseSettings):
     class Config:
         env_prefix = "GEO_AUDITOR_"
         env_file = ".env"
+        extra = "ignore"
     
     @property
     def scoring_weights(self) -> dict:

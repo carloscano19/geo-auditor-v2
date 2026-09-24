@@ -127,16 +127,6 @@ class DimensionScore(BaseModel):
     status: str  # green, yellow, red
 
 
-class OptimizeRequest(BaseModel):
-    content_text: str
-    audit_results: Dict[str, Any]
-    provider: str = "openai"
-    api_key: str
-
-class OptimizeResponse(BaseModel):
-    optimized_content: str
-
-
 class AuditResponse(BaseModel):
     """
     Complete audit response.

@@ -106,27 +106,13 @@ class ApiClient {
     }
 
     /**
-     * Run optimization on audit results
+     * Get backend version (single source of truth)
      */
-    async optimize(data: {
-        content_text: string;
-        audit_results: AuditResponse;
-        provider: string;
-        api_key: string;
-    }): Promise<{ optimized_content: string }> {
-        const response = await fetch(`${this.baseUrl}/api/optimize`, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(data),
-        });
-
+    async getVersion(): Promise<{ version: string }> {
+        const response = await fetch(`${this.baseUrl}/api/version`);
         if (!response.ok) {
-            const error = await response.json();
-            throw new Error(error.detail || 'Optimization failed');
+            throw new Error('Failed to fetch version');
         }
-
         return response.json();
     }
 }

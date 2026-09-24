@@ -3,12 +3,14 @@
 interface ScoreDisplayProps {
     score: number;
     label?: string;
+    sublabel?: string;
     size?: "sm" | "md" | "lg";
 }
 
 export default function ScoreDisplay({
     score,
     label,
+    sublabel,
     size = "lg",
 }: ScoreDisplayProps) {
     // Calculate score color
@@ -74,6 +76,11 @@ export default function ScoreDisplay({
             </div>
             {label && (
                 <span className="text-sm font-medium text-text-secondary">{label}</span>
+            )}
+            {sublabel && (
+                <p className="text-[11px] text-text-muted text-center max-w-[240px] leading-relaxed mt-1">
+                    {sublabel}
+                </p>
             )}
         </div>
     );

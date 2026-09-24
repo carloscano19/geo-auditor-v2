@@ -29,8 +29,6 @@ from src.models.schemas import (
     AuditResponse,
     DimensionScore,
     PageData,
-    OptimizeRequest,
-    OptimizeResponse,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError
@@ -90,7 +88,7 @@ settings = get_settings()
 app = FastAPI(
     title=settings.app_name,
     version=settings.app_version,
-    description="Sistema Avanzado de Auditoría GEO/AEO para Optimización de Citabilidad en LLMs",
+    description="Advanced GEO/AEO Audit System for LLM Citability Optimization",
     lifespan=lifespan,
 )
 
@@ -116,6 +114,19 @@ async def health_check():
         "status": "healthy",
         "version": settings.app_version,
         "timestamp": datetime.utcnow().isoformat(),
+    }
+
+
+@app.get("/api/version")
+async def get_version():
+    """
+    Single source of version endpoint.
+    
+    Returns:
+        dict: Application and scoring version
+    """
+    return {
+        "version": settings.app_version,
     }
 
 
@@ -304,11 +315,14 @@ async def audit_url(request: AuditRequest):
 
     # Note: MultiPlatformDetector (Layer 10) is reserved for future phases.
     
-    # Step 3: Calculate total score normalized by active detector weights
-    # This ensures a perfect score reaches 100 in both URL mode and Text mode
+    # Step 3: Calculate total score and normalized contribution per dimension
+    # Normalized contribution: (score * weight) / sum(active_weights)
+    # This ensures that sum(r.contribution) matches total_score exactly in both URL and text mode.
     active_weights_sum = sum(r.weight for r in detector_results)
     if active_weights_sum > 0:
-        total_score = sum(r.contribution for r in detector_results) / active_weights_sum
+        for r in detector_results:
+            r.contribution = (r.score * r.weight) / active_weights_sum
+        total_score = sum(r.contribution for r in detector_results)
     else:
         total_score = 0.0
     
@@ -327,8 +341,8 @@ async def audit_url(request: AuditRequest):
     # Calculate analysis time
     analysis_time_ms = (time.time() - start_time) * 1000
     
-    # Get scoring version
-    scoring_version = settings.scoring_weights.get("scoring_version", "v2.0-feb2026")
+    # Single source of version from settings
+    scoring_version = settings.app_version
     
     # Prioritize recommendations (show top 5)
     top_recommendations = all_recommendations[:5]
@@ -343,23 +357,6 @@ async def audit_url(request: AuditRequest):
         recommendations=top_recommendations,
         detector_results=detector_results,
     )
-
-@app.post("/api/optimize", response_model=OptimizeResponse)
-async def optimize_content(request: OptimizeRequest):
-    """
-    Optimize content using GenAI based on audit findings.
-    """
-    from src.llm_engine.service import LLMService
-    llm_service = LLMService()
-    
-    optimized_text = await llm_service.optimize_content(
-        request.content_text, 
-        request.audit_results,
-        request.provider,
-        request.api_key
-    )
-    
-    return OptimizeResponse(optimized_content=optimized_text)
 
 
 if __name__ == "__main__":
