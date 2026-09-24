@@ -20,6 +20,7 @@ import re
 from typing import Optional
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
 from src.detectors.base_detector import BaseDetector
+from src.utils.lang_patterns import get_lang_patterns, resolve_language, is_interrogative_h2
 from config.settings import get_settings
 
 
@@ -96,17 +97,11 @@ class AEOStructureDetector(BaseDetector):
         r'long ago',
     ]
 
-    # NEW: Logical Connectors (Cohesion)
-    LOGICAL_CONNECTORS = [
-        'therefore', 'however', 'because', 'thus', 'consequently', 
-        'furthermore', 'in contrast', 'for example', 'as a result', 'since'
-    ]
+    # Logical Connectors (Default English, loaded centrally)
+    LOGICAL_CONNECTORS = get_lang_patterns("en")["logical_connectors"]
 
-    # NEW: Generic Headers Blacklist
-    GENERIC_HEADERS_BLACKLIST = [
-        'introduction', 'conclusion', 'summary', 'overview', 
-        'final thoughts', 'background', 'the basics'
-    ]
+    # Generic Headers Blacklist (Default English, loaded centrally)
+    GENERIC_HEADERS_BLACKLIST = get_lang_patterns("en")["generic_headers"]
     
     def __init__(self):
         """Initialize with settings."""
@@ -161,6 +156,10 @@ class AEOStructureDetector(BaseDetector):
             from src.utils.text_processing import extract_clean_text
             scoped_text = extract_clean_text(scoped_html)
             
+            # Resolve language patterns
+            lang = resolve_language(page_data)
+            patterns = get_lang_patterns(lang)
+            
             # 1. Regla de 60 Check (Uses scoped text)
             try:
                 rule_60_result = self._analyze_rule_of_60(scoped_text, scoped_html, h1_text)
@@ -205,7 +204,10 @@ class AEOStructureDetector(BaseDetector):
     
             # 6. Logical Connectors Check (NEW)
             try:
-                connectors_result, count_val = self._analyze_logical_connectors(scoped_text)
+                connectors_result, count_val = self._analyze_logical_connectors(
+                    scoped_text,
+                    connectors=patterns["logical_connectors"]
+                )
                 connector_count = count_val
                 breakdown.append(connectors_result)
             except Exception as e:
@@ -214,7 +216,10 @@ class AEOStructureDetector(BaseDetector):
     
             # 7. Generic Headers Check (NEW)
             try:
-                generic_result = self._analyze_generic_headers(h2_texts)
+                generic_result = self._analyze_generic_headers(
+                    h2_texts,
+                    generic_blacklist=patterns["generic_headers"]
+                )
                 breakdown.append(generic_result)
             except Exception as e:
                 errors.append(f"Generic headers check failed: {str(e)}")
@@ -430,13 +435,8 @@ class AEOStructureDetector(BaseDetector):
                 ],
             )
         
-        # Count interrogative H2s
-        interrogative_count = 0
-        for h2_text in h2_texts:
-            # Check for explicit question mark AT END
-            if h2_text.strip().endswith('?'):
-                interrogative_count += 1
-                continue
+        # Count interrogative H2s (ends with '?', starts with '¿', or interrogative word in EN or ES)
+        interrogative_count = sum(1 for h2_text in h2_texts if is_interrogative_h2(h2_text))
         
         # Calculate score
         total_h2s = len(h2_texts)
@@ -453,7 +453,7 @@ class AEOStructureDetector(BaseDetector):
             raw_score = 30.0
         
         if interrogative_ratio < 0.1 and total_h2s > 0:
-            recommendations = [f"Rephrase H2s as questions (ending in '?'). Found {interrogative_count}/{total_h2s}."]
+            recommendations = [f"Rephrase H2s as questions (e.g. 'What is...', '¿Cómo...?'). Found {interrogative_count}/{total_h2s}."]
         else:
             recommendations = []
         
@@ -658,7 +658,7 @@ class AEOStructureDetector(BaseDetector):
             recommendations=recommendations,
         ), avg_length)
 
-    def _analyze_logical_connectors(self, text: str) -> tuple[ScoreBreakdown, int]:
+    def _analyze_logical_connectors(self, text: str, connectors: list[str] = None) -> tuple[ScoreBreakdown, int]:
         """
         Analyze presence of logical connectors (Cohesion).
         Returns tuple: (ScoreBreakdown, count)
@@ -673,10 +673,11 @@ class AEOStructureDetector(BaseDetector):
                 recommendations=[],
             ), 0)
 
+        active_connectors = connectors if connectors is not None else self.LOGICAL_CONNECTORS
         text_lower = text.lower()
         found_connectors = []
         
-        for connector in self.LOGICAL_CONNECTORS:
+        for connector in active_connectors:
             # Check distinct word boundaries
             if re.search(r'\b' + re.escape(connector) + r'\b', text_lower):
                 found_connectors.append(connector)
@@ -709,15 +710,16 @@ class AEOStructureDetector(BaseDetector):
             recommendations=recommendations,
         ), count)
 
-    def _analyze_generic_headers(self, h2_texts: list[str]) -> ScoreBreakdown:
+    def _analyze_generic_headers(self, h2_texts: list[str], generic_blacklist: list[str] = None) -> ScoreBreakdown:
         """
         Check for generic H2 headers (Banned H2s).
         """
+        active_blacklist = generic_blacklist if generic_blacklist is not None else self.GENERIC_HEADERS_BLACKLIST
         bad_headers = []
         for h2 in h2_texts:
             h2_lower = h2.lower().strip()
             # Exact match or very generic phrase
-            if h2_lower in self.GENERIC_HEADERS_BLACKLIST:
+            if h2_lower in active_blacklist:
                 bad_headers.append(h2)
                 
         recommendations = []

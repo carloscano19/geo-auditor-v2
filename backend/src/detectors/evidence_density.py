@@ -17,6 +17,7 @@ import re
 from typing import List, Tuple
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
 from src.detectors.base_detector import BaseDetector
+from src.utils.lang_patterns import get_lang_patterns, resolve_language
 from config.settings import get_settings
 
 
@@ -40,19 +41,8 @@ class EvidenceDensityDetector(BaseDetector):
     dimension_name: str = "evidence_density"
     weight: float = 0.15
     
-    # Claim Detection Patterns
-    CLAIM_PATTERNS = [
-        # Statistical / Numerical
-        r'\d+(\.\d+)?%', # Percentage (e.g., 75%)
-        r'\b\d{1,3}(,\d{3})* (million|billion|trillion|users|customers|dollars|euros)\b', # Large numbers
-        r'\bincreased by \d+', # Growth stats
-        r'\bdecreased by \d+',
-        r'\bgrew to \d+',
-        # Authoritative Phrasing
-        r'\b(studies|research|reports|data) (show|indicate|prove|suggest|demonstrate)s?\b',
-        r'\baccording to \w+',
-        r'\bas stated by \w+',
-    ]
+    # Claim Detection Patterns (Default English, loaded centrally)
+    CLAIM_PATTERNS = get_lang_patterns("en")["claims"]
     
     def __init__(self):
         """Initialize with settings."""
@@ -71,9 +61,15 @@ class EvidenceDensityDetector(BaseDetector):
         errors: list[str] = []
         breakdown: list[ScoreBreakdown] = []
         
-        # Analyze Claims
+        # Analyze Claims using detected language patterns
         try:
-            claims_result = self._analyze_claims(page_data.html_rendered, page_data.text_content)
+            lang = resolve_language(page_data)
+            patterns = get_lang_patterns(lang)
+            claims_result = self._analyze_claims(
+                page_data.html_rendered,
+                page_data.text_content,
+                claim_patterns=patterns["claims"]
+            )
             breakdown.append(claims_result)
         except Exception as e:
             errors.append(f"Claim analysis failed: {str(e)}")
@@ -91,14 +87,15 @@ class EvidenceDensityDetector(BaseDetector):
             errors=errors,
         )
     
-    def _analyze_claims(self, html: str, text: str) -> ScoreBreakdown:
+    def _analyze_claims(self, html: str, text: str, claim_patterns: list[str] = None) -> ScoreBreakdown:
         """
         Extract claims and verify against sources.
         Logic:
         1. Split text into sentences.
-        2. Filter sentences that match CLAIM_PATTERNS.
+        2. Filter sentences that match claim patterns.
         3. For each claim, check if the corresponding HTML block contains a link or citation.
         """
+        patterns = claim_patterns if claim_patterns is not None else self.CLAIM_PATTERNS
         
         # Simple sentence splitting
         sentences = re.split(r'(?<=[.!?]) +', text)
@@ -151,7 +148,7 @@ class EvidenceDensityDetector(BaseDetector):
                 continue
                 
             # Check if sentence is a Claim
-            is_claim = any(re.search(p, sentence, re.IGNORECASE) for p in self.CLAIM_PATTERNS)
+            is_claim = any(re.search(p, sentence, re.IGNORECASE) for p in patterns)
             
             if is_claim:
                 is_verified = is_verified_in_dom(sentence)

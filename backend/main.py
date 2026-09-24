@@ -34,6 +34,7 @@ from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError
 from src.detectors.infrastructure import InfrastructureDetector
 from src.detectors.evidence_density import EvidenceDensityDetector
+from src.utils.lang_patterns import detect_language
 
 logger = logging.getLogger("geo_auditor")
 
@@ -210,6 +211,10 @@ async def audit_url(request: AuditRequest):
             detail="Internal error while running the audit."
         )
     
+    # Step 1.5: Language Detection
+    detected_lang = detect_language(page_data.text_content)
+    page_data.language = detected_lang
+    
     # Step 2: Run detectors
     detector_results = []
     all_recommendations = []
@@ -352,6 +357,7 @@ async def audit_url(request: AuditRequest):
         total_score=total_score,
         dimensions=dimension_scores,
         scoring_version=scoring_version,
+        language=detected_lang,
         analysis_time_ms=analysis_time_ms,
         analyzed_at=datetime.utcnow(),
         recommendations=top_recommendations,

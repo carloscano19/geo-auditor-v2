@@ -90,7 +90,7 @@ class TestInfrastructureDetector:
         assert https_breakdown is not None
         assert https_breakdown.raw_score == 0.0
         assert len(https_breakdown.recommendations) > 0
-        assert "CRITICAL" in https_breakdown.recommendations[0] or "CRÍTICO" in https_breakdown.recommendations[0]
+        assert "CRITICAL" in https_breakdown.recommendations[0]
     
     @pytest.mark.asyncio
     async def test_ssr_detection_positive(self, detector):
@@ -196,7 +196,7 @@ class TestInfrastructureDetector:
         
         assert crawl_breakdown is not None
         assert crawl_breakdown.raw_score == 0.0
-        assert "BLOCKED" in crawl_breakdown.explanation or "BLOQUEADO" in crawl_breakdown.explanation
+        assert "BLOCKED" in crawl_breakdown.explanation
     
     @pytest.mark.asyncio
     async def test_crawlability_clean(self, detector):

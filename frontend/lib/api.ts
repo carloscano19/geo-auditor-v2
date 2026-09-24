@@ -44,6 +44,7 @@ export interface AuditResponse {
     total_score: number;
     dimensions: DimensionScore[];
     scoring_version: string;
+    language?: string;
     analysis_time_ms: number;
     analyzed_at: string;
     recommendations: string[];

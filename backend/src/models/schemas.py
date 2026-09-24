@@ -60,6 +60,7 @@ class PageData(BaseModel):
     is_ssr: bool = True  # True if SSR, False if CSR
     word_count: int = 0
     ttfb_ms: Optional[float] = None
+    language: str = "en"
 
 
 class ScoreBreakdown(BaseModel):
@@ -147,6 +148,7 @@ class AuditResponse(BaseModel):
     total_score: float = Field(..., ge=0, le=100)
     dimensions: list[DimensionScore]
     scoring_version: str
+    language: str = "en"
     analysis_time_ms: float
     analyzed_at: datetime = Field(default_factory=datetime.utcnow)
     recommendations: list[str] = Field(default_factory=list)

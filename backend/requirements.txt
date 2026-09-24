@@ -15,8 +15,8 @@ extruct>=0.14.0
 pydantic>=2.5.0
 pydantic-settings>=2.1.0
 
-# NLP (for future detectors)
-# spacy>=3.7.0
+# NLP & Language Detection
+langdetect>=1.0.9
 
 # Testing
 pytest>=7.4.0

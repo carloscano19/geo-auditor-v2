@@ -103,6 +103,7 @@ export default function AuditResults({ results }: AuditResultsProps) {
                                 ⏱️ {(results.analysis_time_ms / 1000).toFixed(2)}s
                             </span>
                             <span>📊 Version: {results.scoring_version}</span>
+                            <span>🌐 Language: {(results.language || "en").toUpperCase()}</span>
                             <span>
                                 📅{" "}
                                 {new Date(results.analyzed_at).toLocaleString("en-US", {

@@ -10,6 +10,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from src.detectors.base_detector import BaseDetector
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
+from src.utils.lang_patterns import get_lang_patterns, resolve_language, parse_date_string
 
 class FreshnessDetector(BaseDetector):
     """
@@ -36,7 +37,8 @@ class FreshnessDetector(BaseDetector):
         
         # 1. Date Extraction & Currency (60%)
         # ----------------------------------------------------------------
-        extracted_date: Optional[datetime] = self._extract_date(page_data)
+        lang = resolve_language(page_data)
+        extracted_date: Optional[datetime] = self._extract_date(page_data, lang=lang)
         
         date_score = 0.0
         date_explanation = "No publication or update date found."
@@ -133,7 +135,7 @@ class FreshnessDetector(BaseDetector):
             errors=errors
         )
         
-    def _extract_date(self, page_data: PageData) -> Optional[datetime]:
+    def _extract_date(self, page_data: PageData, lang: str = "en") -> Optional[datetime]:
         """Try to extract a valid date from metadata, HTML, or text."""
         html = page_data.html_rendered
         
@@ -149,37 +151,42 @@ class FreshnessDetector(BaseDetector):
             if match:
                 for group in match.groups():
                     if group and len(group) > 5:
-                        parsed = self._parse_date(group)
+                        parsed = self._parse_date(group, lang=lang)
                         if parsed: return parsed
 
         # 2. Time Tag
         time_match = re.search(r'<time[^>]+datetime=["\']([^"\']+)["\']', html, re.IGNORECASE)
         if time_match:
-            parsed = self._parse_date(time_match.group(1))
+            parsed = self._parse_date(time_match.group(1), lang=lang)
             if parsed: return parsed
             
         # 3. Visual Backup (Regex) - Scan top 200 words of text
         first_200_words = " ".join(page_data.text_content.split()[:200])
         
-        # Patterns: January 29, 2026 or 29/01/2026
-        visual_patterns = [
-            r'(?:January|February|March|April|May|June|July|August|September|October|November|December)\s+\d{1,2},\s+\d{4}',
-            r'\b\d{1,2}/\d{1,2}/\d{4}\b',
-            r'(?:updated|published|posted)\s*(?:on)?\s*:?\s*(\d{4}-\d{2}-\d{2})'
-        ]
+        # Load language visual patterns
+        patterns_dict = get_lang_patterns(lang)
+        visual_patterns = patterns_dict.get("visual_date_patterns", [])
         
         for pattern in visual_patterns:
             match = re.search(pattern, first_200_words, re.IGNORECASE)
             if match:
                 # If there's a group, use it, else use whole match
                 date_str = match.group(1) if match.groups() else match.group(0)
-                parsed = self._parse_date(date_str)
+                parsed = self._parse_date(date_str, lang=lang)
                 if parsed: return parsed
 
         return None
 
-    def _parse_date(self, date_str: str) -> Optional[datetime]:
-        """Helper to parse common date formats."""
+    def _parse_date(self, date_str: str, lang: str = "en") -> Optional[datetime]:
+        """Helper to parse common date formats across languages."""
+        if not date_str:
+            return None
+            
+        # Try centralized bilingual parser first
+        parsed = parse_date_string(date_str, lang=lang)
+        if parsed:
+            return parsed
+            
         formats = [
             "%Y-%m-%dT%H:%M:%S%z", # ISO with timezone
             "%Y-%m-%dT%H:%M:%S",   # ISO simple
@@ -191,12 +198,12 @@ class FreshnessDetector(BaseDetector):
         ]
         
         # Clean string
-        date_str = date_str.strip()
+        cleaned_date_str = date_str.strip()
         
         for fmt in formats:
             try:
                 # Handle Z for UTC
-                tmp_date_str = date_str
+                tmp_date_str = cleaned_date_str
                 if tmp_date_str.endswith('Z'):
                     tmp_date_str = tmp_date_str[:-1]
                 # Truncate fractional seconds

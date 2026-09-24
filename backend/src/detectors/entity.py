@@ -19,6 +19,7 @@ import re
 from typing import Optional
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
 from src.detectors.base_detector import BaseDetector
+from src.utils.lang_patterns import get_lang_patterns, resolve_language
 from config.settings import get_settings
 
 
@@ -91,9 +92,13 @@ class EntityDetector(BaseDetector):
         # Extract title (H1)
         title = self._extract_title(html)
         
+        # Resolve language patterns
+        lang = resolve_language(page_data)
+        patterns = get_lang_patterns(lang)
+        
         # 1. Power Lead Check
         try:
-            power_lead_result = self._analyze_power_lead(text, title)
+            power_lead_result = self._analyze_power_lead(text, title, patterns=patterns)
             breakdown.append(power_lead_result)
         except Exception as e:
             errors.append(f"Power Lead check failed: {str(e)}")
@@ -101,7 +106,7 @@ class EntityDetector(BaseDetector):
         
         # 2. Title Entity Check
         try:
-            title_result = self._analyze_title_entities(title)
+            title_result = self._analyze_title_entities(title, lang=lang)
             breakdown.append(title_result)
         except Exception as e:
             errors.append(f"Title entity check failed: {str(e)}")
@@ -110,7 +115,7 @@ class EntityDetector(BaseDetector):
         # 3. Entity Density Check
         detected_entities = []
         try:
-            density_result, detected_entities = self._analyze_entity_density(text, title)
+            density_result, detected_entities = self._analyze_entity_density(text, title, patterns=patterns)
             breakdown.append(density_result)
         except Exception as e:
             errors.append(f"Entity density check failed: {str(e)}")
@@ -155,7 +160,7 @@ class EntityDetector(BaseDetector):
         
         return ""
     
-    def _analyze_power_lead(self, text: str, title: str) -> ScoreBreakdown:
+    def _analyze_power_lead(self, text: str, title: str, patterns: dict = None) -> ScoreBreakdown:
         """
         Analyze Power Lead presence.
         """
@@ -172,14 +177,10 @@ class EntityDetector(BaseDetector):
                 recommendations=["Add a clear H1 header with the main entity."],
             )
         
-        # Extract key words from title (exclude stop words - English)
-        stop_words = {
-            'the', 'a', 'an', 'of', 'to', 'in', 'with', 'for', 'and', 'or',
-            'is', 'are', 'was', 'were', 'how', 'what', 'when', 'where', 'why', 'which',
-            'best', 'top', 'guide', 'review', 'vs', 'versus', 'on', 'at', 'by'
-        }
+        # Extract key words from title (exclude stop words per language)
+        stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
         
-        title_words = re.findall(r'\b[a-z0-9]+\b', title.lower())
+        title_words = re.findall(r'\b[a-záéíóúüñ0-9]+\b', title.lower())
         key_entities = [w for w in title_words if w not in stop_words and len(w) > 2]
         
         if not key_entities:
@@ -196,11 +197,9 @@ class EntityDetector(BaseDetector):
         found_entities = [e for e in key_entities if e in first_150_chars]
         found_ratio = len(found_entities) / len(key_entities) if key_entities else 0
         
-        # Check for declarative structure in first 150 chars (English verbs)
-        has_declarative = bool(re.search(
-            r'\b(is|are|means|refers to|defined as|consists of|offers|provides|allows|announces|launches|reveals|demonstrates|shows)\b',
-            first_150_chars
-        ))
+        # Check for declarative structure in first 150 chars (per language verbs)
+        decl_regex = patterns["declarative_verbs_regex"] if patterns else get_lang_patterns("en")["declarative_verbs_regex"]
+        has_declarative = bool(re.search(decl_regex, first_150_chars, re.IGNORECASE))
         
         # Score calculation
         if found_ratio >= 0.8 and has_declarative:
@@ -247,8 +246,8 @@ class EntityDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_title_entities(self, title: str) -> ScoreBreakdown:
-        """Analyze entity presence in the title (English optimized)."""
+    def _analyze_title_entities(self, title: str, lang: str = "en") -> ScoreBreakdown:
+        """Analyze entity presence in the title (English and Spanish optimized)."""
         recommendations = []
         
         if not title:
@@ -268,13 +267,17 @@ class EntityDetector(BaseDetector):
         has_number = bool(re.search(r'\d+', title))
         has_year = bool(re.search(r'20[2-9]\d', title))
         has_specific_terms = bool(re.search(
-            r'\b(guide|tutorial|step by step|complete|ultimate|best|top|review|example|free|easy|how to|checklist)\b',
+            r'\b(guide|tutorial|step by step|complete|ultimate|best|top|review|example|free|easy|how to|checklist|'
+            r'guía|guia|tutorial|paso a paso|completo|completa|definitivo|definitiva|mejor|mejores|análisis|analisis|reseña|ejemplo|gratis|fácil|facil|cómo|como|lista)\b',
             title_lower
         ))
         
-        # Check for capitalized words (brands/names) excluding common starters
-        capitalized_words = re.findall(r'\b[A-Z][a-z0-9]+\b', title)
-        common_caps = {'The', 'A', 'An', 'How', 'What', 'Why', 'When', 'Where', 'Is', 'Are', 'Best', 'Top'}
+        # Check for capitalized words (brands/names) excluding common starters (English + Spanish)
+        capitalized_words = re.findall(r'\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ0-9]+\b', title)
+        common_caps = {
+            'The', 'A', 'An', 'How', 'What', 'Why', 'When', 'Where', 'Is', 'Are', 'Best', 'Top',
+            'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Cómo', 'Como', 'Qué', 'Que', 'Por', 'Para', 'Mejor', 'Mejores'
+        }
         brand_like = [w for w in capitalized_words if w not in common_caps]
         
         # Calculate score
@@ -321,7 +324,7 @@ class EntityDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_entity_density(self, text: str, title: str) -> tuple[ScoreBreakdown, list[str]]:
+    def _analyze_entity_density(self, text: str, title: str, patterns: dict = None) -> tuple[ScoreBreakdown, list[str]]:
         """Analyze entity density throughout content."""
         recommendations = []
         found_entities_list = []
@@ -336,14 +339,8 @@ class EntityDetector(BaseDetector):
                 recommendations=["Ensure content has consistent entity mentions."],
             ), []
         
-        # Extract key entities from title (English stop words)
-        # Expanded Stoplist per user request "Over, The, What, How, About, News, More"
-        stop_words = {
-            'the', 'a', 'an', 'of', 'to', 'in', 'is', 'are', 'how', 'what', 'for', 'with', 'and', 'or',
-            'guide', 'review', 'best', 'top', 'vs', 'over', 'about', 'news', 'more', 'this', 'that',
-            'drives', 'really', 'just', 'from', 'your', 'will', 'can', 'why', 'when', 'where', 'which',
-            'who', 'whose', 'does', 'do', 'should', 'would', 'could', 'has', 'have', 'had', 'been'
-        }
+        # Extract key entities from title using language stop words
+        stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
         
         # Clean title to list of words (generic entity extraction)
         title_words = title.split()

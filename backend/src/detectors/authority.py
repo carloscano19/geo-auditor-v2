@@ -8,6 +8,7 @@ Focuses on identifying authors, first-person experience evidence, and trust page
 import re
 from src.detectors.base_detector import BaseDetector
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
+from src.utils.lang_patterns import get_lang_patterns, resolve_language
 
 class AuthorityDetector(BaseDetector):
     """
@@ -22,23 +23,11 @@ class AuthorityDetector(BaseDetector):
     dimension_name = "eeat_authority"
     weight = 0.15  # 15% of total score
     
-    # Regex patterns for authorship - Strict: Requires triggered by words + 2 Capitalized Words (Name Surname)
-    AUTHOR_PATTERNS = [
-        r"(?i:written by)\s+[A-Z][a-z]+\s+[A-Z][a-z]+",
-        r"(?i:author:)\s+[A-Z][a-z]+\s+[A-Z][a-z]+",
-        r"(?i:by)\s+(?!the\b)[A-Z][a-z]+\s+[A-Z][a-z]+",
-        r"(?i:reviewed by)\s+[A-Z][a-z]+\s+[A-Z][a-z]+",
-        r"(?i:fact checked by)\s+[A-Z][a-z]+\s+[A-Z][a-z]+"
-    ]
+    # Regex patterns for authorship (Default English, loaded centrally)
+    AUTHOR_PATTERNS = get_lang_patterns("en")["authorship"]
     
-    # Regex for Experience Signals (First-person verbs)
-    EXPERIENCE_PATTERNS = [
-        r"(?i)\b(i|we)\s+(tested|analyzed|found|discovered|observed|evaluated|reviewed|verified)",
-        r"(?i)\bin\s+(my|our)\s+(experience|opinion|view|analysis|testing)",
-        r"(?i)\b(i|we)\s+have\s+(used|tried|spent)",
-        r"(?i)\b(i|we)\s+personally",
-        r"(?i)\bhand-on\s+(test|review|experience)"
-    ]
+    # Regex for Experience Signals (Default English, loaded centrally)
+    EXPERIENCE_PATTERNS = get_lang_patterns("en")["experience"]
 
     async def analyze(self, page_data: PageData) -> DetectorResult:
         score = 0.0
@@ -46,16 +35,22 @@ class AuthorityDetector(BaseDetector):
         errors = []
         recommendations = []
         
+        # Resolve language patterns
+        lang = resolve_language(page_data)
+        patterns = get_lang_patterns(lang)
+        author_patterns = patterns["authorship"]
+        experience_patterns = patterns["experience"]
+        
         # 1. Authorship Verification (40%)
         # ----------------------------------------------------------------
         has_author = False
         author_match = None
         
-        # Pattern 'Credential': Detects lines like "Name: Job Title"
-        CREDENTIAL_PATTERN = r"(?i)[A-Z][a-zA-Z]+\s+[A-Z][a-zA-Z]+:\s+[A-Z][a-zA-Z\s]+"
+        # Pattern 'Credential': Detects lines like "Name Surname: Job Title"
+        CREDENTIAL_PATTERN = r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+\s+[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+:\s+[A-ZÁÉÍÓÚÑ][a-zA-ZáéíóúñÁÉÍÓÚÑ\s]+"
         
         # Check text content (Normal patterns)
-        for pattern in self.AUTHOR_PATTERNS:
+        for pattern in author_patterns:
             match = re.search(pattern, page_data.text_content)
             if match:
                 has_author = True
@@ -68,7 +63,7 @@ class AuthorityDetector(BaseDetector):
             bottom_10_start = int(len(words) * 0.9)
             bottom_text = " ".join(words[bottom_10_start:])
             
-            for pattern in self.AUTHOR_PATTERNS + [CREDENTIAL_PATTERN]:
+            for pattern in author_patterns + [CREDENTIAL_PATTERN]:
                 match = re.search(pattern, bottom_text)
                 if match:
                     has_author = True
@@ -100,7 +95,7 @@ class AuthorityDetector(BaseDetector):
         # 2. Experience Signals (35%)
         # ----------------------------------------------------------------
         exp_matches = []
-        for pattern in self.EXPERIENCE_PATTERNS:
+        for pattern in experience_patterns:
             matches = re.findall(pattern, page_data.text_content)
             exp_matches.extend(matches)
             
@@ -134,9 +129,9 @@ class AuthorityDetector(BaseDetector):
         # 3. Trust Pages (25%) - STRICT CRITERIA
         # ----------------------------------------------------------------
         trust_pages_found = []
-        # Categories
-        HIGH_VALUE = ["about", "team", "editorial", "authors", "staff"]
-        BASIC = ["privacy", "terms", "policy", "legal", "contact"]
+        # Categories (supports English and Spanish trust paths)
+        HIGH_VALUE = ["about", "team", "editorial", "authors", "staff", "sobre-nosotros", "equipo", "quienes-somos", "autores"]
+        BASIC = ["privacy", "terms", "policy", "legal", "contact", "privacidad", "terminos", "contacto", "aviso-legal"]
         
         html_lower = page_data.html_rendered.lower()
         
