@@ -37,7 +37,8 @@ class LinksDetector(BaseDetector):
     SOCIAL_DOMAINS = [
         "facebook.com", "twitter.com", "x.com", "instagram.com", 
         "linkedin.com", "youtube.com", "tiktok.com", "pinterest.com",
-        "t.me", "discord.gg", "whatsapp.com", "telegram.org"
+        "t.me", "discord.gg", "whatsapp.com", "telegram.org",
+        "bsky.app", "threads.net", "wa.me", "reddit.com"
     ]
     
     async def analyze(self, page_data: PageData) -> DetectorResult:
@@ -55,8 +56,9 @@ class LinksDetector(BaseDetector):
         
         base_domain = ""
         try:
-            if page_data.url and page_data.url.startswith("http"):
-                base_domain = urlparse(page_data.url).netloc.lower()
+            target_url = page_data.final_url or page_data.url
+            if target_url and target_url.startswith("http"):
+                base_domain = urlparse(target_url).netloc.lower().replace("www.", "")
         except:
             pass
             
@@ -71,7 +73,7 @@ class LinksDetector(BaseDetector):
             try:
                 # Basic classification
                 if href.startswith("http"):
-                    domain = urlparse(href).netloc.lower()
+                    domain = urlparse(href).netloc.lower().replace("www.", "")
                     if base_domain and (domain == base_domain or domain.endswith("." + base_domain)):
                         internal_links.append(href)
                     else:

@@ -21,6 +21,9 @@ from src.utils.lang_patterns import get_lang_patterns, resolve_language
 from config.settings import get_settings
 
 
+from urllib.parse import urlparse
+
+
 class EvidenceDensityDetector(BaseDetector):
     """
     Evidence Density Detector.
@@ -31,11 +34,11 @@ class EvidenceDensityDetector(BaseDetector):
     This detector:
     1. Extracts quantifiable claims (numbers, %, dates)
     2. Extracts authoritative statements ("studies show")
-    3. Checks proximity of citation signals (<a href>, [1], (Source: ...))
+    3. Checks proximity of citation signals (<a href>, [1], (Source: ...), (Fuente: ...))
     
     Attributes:
         dimension_name: "evidence_density"
-        weight: 0.15 (15% of total score)
+        weight: 0.20 (20% of total score)
     """
     
     dimension_name: str = "evidence_density"
@@ -43,6 +46,14 @@ class EvidenceDensityDetector(BaseDetector):
     
     # Claim Detection Patterns (Default English, loaded centrally)
     CLAIM_PATTERNS = get_lang_patterns("en")["claims"]
+    
+    # Social & Utility Domains (filtered from claim verification)
+    SOCIAL_DOMAINS = [
+        "facebook.com", "twitter.com", "x.com", "instagram.com", 
+        "linkedin.com", "youtube.com", "tiktok.com", "pinterest.com",
+        "t.me", "discord.gg", "whatsapp.com", "telegram.org",
+        "bsky.app", "threads.net", "wa.me", "reddit.com"
+    ]
     
     def __init__(self):
         """Initialize with settings."""
@@ -68,9 +79,10 @@ class EvidenceDensityDetector(BaseDetector):
             from src.utils.text_processing import extract_main_content
             scoped_html, scoped_text = extract_main_content(page_data.html_rendered)
             claims_result = self._analyze_claims(
-                scoped_html,
-                scoped_text or page_data.text_content,
-                claim_patterns=patterns["claims"]
+                html=scoped_html,
+                text=scoped_text or page_data.text_content,
+                claim_patterns=patterns["claims"],
+                base_url=page_data.final_url or page_data.url or ""
             )
             breakdown.append(claims_result)
         except Exception as e:
@@ -89,7 +101,13 @@ class EvidenceDensityDetector(BaseDetector):
             errors=errors,
         )
     
-    def _analyze_claims(self, html: str, text: str, claim_patterns: list[str] = None) -> ScoreBreakdown:
+    def _analyze_claims(
+        self,
+        html: str = "",
+        text: str = "",
+        claim_patterns: list[str] = None,
+        base_url: str = ""
+    ) -> ScoreBreakdown:
         """
         Extract claims and verify against sources.
         Logic:
@@ -97,7 +115,8 @@ class EvidenceDensityDetector(BaseDetector):
         2. Treat each block element (p, li, h1-h6, td, etc.) separately before splitting into sentences,
            ensuring an H2 is never concatenated with following paragraphs.
         3. Filter sentences that match claim patterns.
-        4. For each claim, check if the corresponding HTML block or surrounding DOM contains a link or citation.
+        4. For each claim, check if the corresponding HTML block or immediately previous/next block contains
+           a citation marker or an external, non-social link.
         """
         patterns = claim_patterns if claim_patterns is not None else self.CLAIM_PATTERNS
         from bs4 import BeautifulSoup
@@ -106,7 +125,6 @@ class EvidenceDensityDetector(BaseDetector):
         # 1. Boilerplate removal: exclude nav, header, footer, aside, menu, etc.
         cleaned_html = clean_html_for_analysis(html) if html else ""
         scoped_soup = BeautifulSoup(cleaned_html, 'lxml') if cleaned_html else None
-        full_soup = BeautifulSoup(html, 'lxml') if html else None
         
         # 2. Extract blocks separately
         block_tags = ['p', 'li', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6', 'td', 'th', 'blockquote', 'figcaption']
@@ -139,38 +157,46 @@ class EvidenceDensityDetector(BaseDetector):
         
         claims: List[Tuple[str, bool]] = []  # (sentence, is_verified)
         
+        # Extract base domain for external link verification
+        base_domain = ""
+        if base_url:
+            try:
+                base_domain = urlparse(base_url).netloc.lower().replace("www.", "")
+            except Exception:
+                pass
+        
         # Helper to find if a sentence exists near a link or citation in the DOM
         def is_verified_in_dom(sentence_text: str, source_block = None) -> bool:
-            # 1. Check for explicit citation markers in text
-            if re.search(r'\[\d+\]|\(Source:', sentence_text, re.IGNORECASE):
+            # 1. Check for explicit citation markers in text: [1], (Source:, (Fuente:
+            if re.search(r'\[\d+\]|\(Source:|\(Fuente:', sentence_text, re.IGNORECASE):
                 return True
                 
-            # 2. If source_block exists, check links in source block or siblings
+            # 2. If source_block exists, check external non-social links in source block or immediate siblings
             if source_block:
-                if source_block.find('a') or 'href=' in str(source_block):
-                    return True
-                for sibling in list(source_block.previous_siblings)[:2] + list(source_block.next_siblings)[:2]:
-                    if getattr(sibling, 'name', None) == 'a' or (getattr(sibling, 'name', None) and sibling.find('a')):
-                        return True
-                    if getattr(sibling, 'name', None) in ['h1', 'h2', 'h3', 'hr']:
-                        break
-            
-            # 3. Search in full DOM as fallback
-            if full_soup:
-                search_snippet = sentence_text[:30].strip()
-                if search_snippet:
-                    try:
-                        for tag in full_soup.find_all(['p', 'li', 'span', 'div', 'td']):
-                            if search_snippet in tag.get_text():
-                                if tag.find('a') or 'href=' in str(tag):
-                                    return True
-                                for sibling in list(tag.previous_siblings)[:2] + list(tag.next_siblings)[:2]:
-                                    if getattr(sibling, 'name', None) == 'a' or (getattr(sibling, 'name', None) and sibling.find('a')):
-                                        return True
-                                    if getattr(sibling, 'name', None) in ['h1', 'h2', 'h3', 'hr']:
-                                        break
-                    except Exception:
-                        pass
+                blocks_to_check = [source_block]
+                prev_block = source_block.find_previous_sibling(['p', 'li', 'td', 'th', 'blockquote', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                if prev_block:
+                    blocks_to_check.append(prev_block)
+                next_block = source_block.find_next_sibling(['p', 'li', 'td', 'th', 'blockquote', 'div', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'])
+                if next_block:
+                    blocks_to_check.append(next_block)
+
+                for b in blocks_to_check:
+                    for a in b.find_all('a'):
+                        href = a.get('href', '').strip()
+                        if not href.startswith(('http://', 'https://')):
+                            continue
+                        try:
+                            domain = urlparse(href).netloc.lower().replace("www.", "")
+                            if not domain:
+                                continue
+                            if base_domain and (domain == base_domain or domain.endswith("." + base_domain)):
+                                continue
+                            if any(social in domain for social in self.SOCIAL_DOMAINS):
+                                continue
+                            return True
+                        except Exception:
+                            continue
                         
             return False
 

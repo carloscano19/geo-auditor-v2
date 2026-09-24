@@ -152,12 +152,19 @@ class FormattingDetector(BaseDetector):
         if len(img_elements) > 0 and imgs_with_alt < len(img_elements):
             media_recs.append("Ensure all images have descriptive 'alt' text.")
             
+        if total_media == 0:
+            media_icon = "❌"
+        elif status in ["Partial Alt Text", "Missing Alt Text"]:
+            media_icon = "⚠️"
+        else:
+            media_icon = "✅"
+            
         breakdown.append(ScoreBreakdown(
             name="Multimedia Content",
             raw_score=media_score,
             weight=self.MULTIMEDIA_WEIGHT,
             weighted_score=media_score * self.MULTIMEDIA_WEIGHT,
-            explanation=f"{'✅' if total_media > 0 else '❌'} {status}: {total_media} items found.",
+            explanation=f"{media_icon} {status}: {total_media} items found.",
             recommendations=media_recs
         ))
         

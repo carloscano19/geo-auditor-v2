@@ -101,9 +101,12 @@ class EntityDetector(BaseDetector):
         lang = resolve_language(page_data)
         patterns = get_lang_patterns(lang)
         
+        # Single source of truth for entities across Power Lead, Title Entities, and Entity Density
+        entities = self._extract_title_entities(title, text=text)
+        
         # 1. Power Lead Check
         try:
-            power_lead_result = self._analyze_power_lead(text, title, patterns=patterns)
+            power_lead_result = self._analyze_power_lead(text, title, entities=entities, patterns=patterns)
             breakdown.append(power_lead_result)
         except Exception as e:
             errors.append(f"Power Lead check failed: {str(e)}")
@@ -111,16 +114,15 @@ class EntityDetector(BaseDetector):
         
         # 2. Title Entity Check
         try:
-            title_result = self._analyze_title_entities(title, text=text, lang=lang)
+            title_result = self._analyze_title_entities(title, entities=entities, text=text, lang=lang)
             breakdown.append(title_result)
         except Exception as e:
             errors.append(f"Title entity check failed: {str(e)}")
             breakdown.append(self._create_error_breakdown("Title Entities", self.TITLE_ENTITY_WEIGHT))
         
         # 3. Entity Density Check
-        detected_entities = []
         try:
-            density_result, detected_entities = self._analyze_entity_density(text, title, patterns=patterns)
+            density_result = self._analyze_entity_density(text, title, entities=entities, patterns=patterns)
             breakdown.append(density_result)
         except Exception as e:
             errors.append(f"Entity density check failed: {str(e)}")
@@ -139,7 +141,7 @@ class EntityDetector(BaseDetector):
             debug_info={
                 "title_entities": breakdown[1].explanation if len(breakdown) > 1 else "",
                 "detected_entities_found": breakdown[2].explanation if len(breakdown) > 2 else "", 
-                "detected_entities": detected_entities[:15] # Limit for UI
+                "detected_entities": entities[:15] # Exact same list!
             }
         )
     
@@ -165,7 +167,7 @@ class EntityDetector(BaseDetector):
         
         return ""
     
-    def _analyze_power_lead(self, text: str, title: str, patterns: dict = None) -> ScoreBreakdown:
+    def _analyze_power_lead(self, text: str, title: str, entities: list[str] = None, patterns: dict = None) -> ScoreBreakdown:
         """
         Analyze Power Lead presence.
         """
@@ -182,11 +184,12 @@ class EntityDetector(BaseDetector):
                 recommendations=["Add a clear H1 header with the main entity."],
             )
         
-        # Extract key words from title (exclude stop words per language)
-        stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
+        key_entities = entities if entities is not None else self._extract_title_entities(title, text=text)
         
-        title_words = re.findall(r'\b[a-záéíóúüñ0-9]+\b', title.lower())
-        key_entities = [w for w in title_words if w not in stop_words and len(w) > 2]
+        if not key_entities:
+            stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
+            title_words = re.findall(r'\b[a-záéíóúüñ0-9]+\b', title.lower())
+            key_entities = [w for w in title_words if w not in stop_words and len(w) > 2]
         
         if not key_entities:
             return ScoreBreakdown(
@@ -199,7 +202,7 @@ class EntityDetector(BaseDetector):
             )
         
         # Count how many key entities appear in first 150 chars
-        found_entities = [e for e in key_entities if e in first_150_chars]
+        found_entities = [e for e in key_entities if e.lower() in first_150_chars]
         found_ratio = len(found_entities) / len(key_entities) if key_entities else 0
         
         # Check for declarative structure in first 150 chars (per language verbs)
@@ -266,8 +269,10 @@ class EntityDetector(BaseDetector):
         """
         Extract core entities from title.
         - Consecutive capitalized words form a single entity ('AI Overview', 'Fan Token', 'Google Search Console').
+        - Multi-word entities are only valid if that exact sequence appears >= 2 times in the body text.
+        - Cuts groups on punctuation marks, brackets, parentheses, colons, dashes, etc.
         - Discards entities of 4 characters or fewer unless they are uppercase acronyms ('AI', 'SEO', 'CHZ') or tickers ('$CHZ').
-        - If title is in Title Case, verifies words/phrases against body text or ticker/acronym rules.
+        - If title is in Title Case, verifies single words against mid-sentence capitalization in body text or ticker/acronym rules.
         """
         if not title:
             return []
@@ -275,11 +280,11 @@ class EntityDetector(BaseDetector):
         common_caps = {
             'The', 'A', 'An', 'How', 'What', 'Why', 'When', 'Where', 'Is', 'Are', 'Best', 'Top',
             'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Cómo', 'Como', 'Qué', 'Que',
-            'Por', 'Para', 'Mejor', 'Mejores'
+            'Por', 'Para', 'Mejor', 'Mejores', 'To', 'In', 'On', 'Of', 'At', 'By', 'For', 'With',
+            'From', 'Across', 'And', 'Or'
         }
         
         is_tc = self._is_title_case(title)
-        tokens = title.split()
         
         def is_ticker_or_symbol(w: str) -> bool:
             return bool('$' in w or '@' in w)
@@ -291,88 +296,89 @@ class EntityDetector(BaseDetector):
         def appears_capitalized_mid_sentence(w: str, body_text: str) -> bool:
             if not body_text:
                 return False
-            pattern = rf'(?:\b[a-záéíóúüñ]+|\b[a-záéíóúüñ]+[,;:)]|\b[a-záéíóúüñ]+\))\s+{re.escape(w)}\b'
+            # Matches if word appears capitalized and not immediately following a sentence start
+            pattern = rf'(?<![.!?])\s+{re.escape(w)}\b'
             return bool(re.search(pattern, body_text))
 
-        # 1. Group consecutive capitalized tokens into initial clusters
-        raw_clusters = []
-        current_cluster = []
-        for raw_w in tokens:
-            clean_w = raw_w.strip(".,;:!?()[]\"'")
-            if not clean_w:
-                if current_cluster:
-                    raw_clusters.append(current_cluster)
-                    current_cluster = []
-                continue
-            is_cap = clean_w[0].isupper() or clean_w.startswith('$')
-            if is_cap:
-                current_cluster.append(clean_w)
-            else:
-                if current_cluster:
-                    raw_clusters.append(current_cluster)
-                    current_cluster = []
-        if current_cluster:
-            raw_clusters.append(current_cluster)
-
-        # 2. Extract candidate phrases per cluster
+        # Cut groups on punctuation, brackets, parentheses, colons, dashes, slashes, etc.
+        segments = re.split(r'[,;:!?"\'\(\)\[\]\{\}\-–—|/\\]+|\.(?:\s|$)', title)
         extracted: list[str] = []
-        for cluster in raw_clusters:
-            if not is_tc:
-                # Not Title Case: entire consecutive capitalized cluster forms an entity
-                words = list(cluster)
-                while words and words[0] in common_caps:
-                    words.pop(0)
-                while words and words[-1] in common_caps:
-                    words.pop()
-                if words:
-                    extracted.append(' '.join(words))
-            else:
-                # Title Case: find maximal sub-phrases verified in body or valid tickers/acronyms
-                n = len(cluster)
-                i = 0
-                while i < n:
-                    matched = False
-                    for j in range(n, i, -1):
-                        subphrase = ' '.join(cluster[i:j])
-                        if j == i + 1:
-                            w = cluster[i]
-                            if is_ticker_or_symbol(w) or is_valid_acronym(w) or any(c.isdigit() for c in w) or appears_capitalized_mid_sentence(w, text):
-                                extracted.append(w)
-                                i = j
-                                matched = True
-                                break
-                        else:
-                            if appears_capitalized_mid_sentence(subphrase, text):
-                                extracted.append(subphrase)
-                                i = j
-                                matched = True
-                                break
-                    if not matched:
-                        i += 1
 
-        # 3. Filter rule:
-        # Descarta como entidad los fragmentos de 4 letras o menos salvo acrónimos en mayúsculas (AI, SEO, CHZ) o tickers
+        for seg in segments:
+            tokens = [t.strip('.,') for t in seg.split() if t.strip('.,')]
+            if not tokens:
+                continue
+            
+            i = 0
+            n = len(tokens)
+            while i < n:
+                token = tokens[i]
+                is_cap = token[0].isupper() or token.startswith('$')
+                if not is_cap:
+                    i += 1
+                    continue
+                
+                # Find the full span of capitalized tokens starting at i
+                j = i
+                while j < n and (tokens[j][0].isupper() or tokens[j].startswith('$')):
+                    j += 1
+                
+                cluster = tokens[i:j]
+                cluster_len = len(cluster)
+                
+                # 1. Search for multiword subphrases (length >= 2) that appear >= 2 times in body
+                used_indices = set()
+                for span in range(cluster_len, 1, -1):
+                    for start_idx in range(cluster_len - span + 1):
+                        end_idx = start_idx + span
+                        if any(idx in used_indices for idx in range(start_idx, end_idx)):
+                            continue
+                            
+                        sub = cluster[start_idx : end_idx]
+                        while sub and sub[0] in common_caps:
+                            sub = sub[1:]
+                        while sub and sub[-1] in common_caps:
+                            sub = sub[:-1]
+                            
+                        if len(sub) >= 2:
+                            phrase = ' '.join(sub)
+                            # Multi-word entity valid ONLY if appears >= 2 times in body
+                            if text:
+                                cnt = len(re.findall(rf'\b{re.escape(phrase.lower())}\b', text.lower()))
+                                if cnt >= 2:
+                                    extracted.append(phrase)
+                                    for idx in range(start_idx, end_idx):
+                                        used_indices.add(idx)
+                            else:
+                                extracted.append(phrase)
+                                for idx in range(start_idx, end_idx):
+                                    used_indices.add(idx)
+                
+                # 2. For tokens not part of a multiword entity, evaluate individually
+                for idx, w in enumerate(cluster):
+                    if idx in used_indices:
+                        continue
+                    if w in common_caps:
+                        continue
+                    if is_ticker_or_symbol(w) or is_valid_acronym(w):
+                        extracted.append(w)
+                    elif len(w) > 4:
+                        if text and appears_capitalized_mid_sentence(w, text):
+                            extracted.append(w)
+                        elif not text and not is_tc:
+                            extracted.append(w)
+                
+                i = j
+
+        # Filter out duplicates while preserving order
         final_entities: list[str] = []
         for ent in extracted:
-            words = ent.split()
-            while words and words[0] in common_caps:
-                words.pop(0)
-            while words and words[-1] in common_caps:
-                words.pop()
-            if not words:
-                continue
-            cleaned_ent = ' '.join(words)
-            
-            letter_count = len(re.sub(r'[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]', '', cleaned_ent))
-            if letter_count <= 4:
-                if not (is_valid_acronym(cleaned_ent) or is_ticker_or_symbol(cleaned_ent)):
-                    continue
-            if cleaned_ent not in final_entities:
-                final_entities.append(cleaned_ent)
-
+            if ent not in final_entities:
+                final_entities.append(ent)
+                
         return final_entities
 
-    def _analyze_title_entities(self, title: str, text: str = "", lang: str = "en") -> ScoreBreakdown:
+    def _analyze_title_entities(self, title: str, entities: list[str] = None, text: str = "", lang: str = "en") -> ScoreBreakdown:
         """Analyze entity presence in the title (English and Spanish optimized)."""
         recommendations = []
         
@@ -391,7 +397,7 @@ class EntityDetector(BaseDetector):
         has_year = bool(re.search(r'20[2-9]\d', title))
         
         # Extract title entities (Title Case aware)
-        brand_like = self._extract_title_entities(title, text=text)
+        brand_like = entities if entities is not None else self._extract_title_entities(title, text=text)
         
         # Calculate score (redistributed 40/25/20/15 = 100, removing value terms)
         score_factors = []
@@ -433,10 +439,9 @@ class EntityDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_entity_density(self, text: str, title: str, patterns: dict = None) -> tuple[ScoreBreakdown, list[str]]:
+    def _analyze_entity_density(self, text: str, title: str, entities: list[str] = None, patterns: dict = None) -> ScoreBreakdown:
         """Analyze entity density throughout content."""
         recommendations = []
-        found_entities_list = []
         
         if not title or not text:
             return ScoreBreakdown(
@@ -446,10 +451,10 @@ class EntityDetector(BaseDetector):
                 weighted_score=50.0 * self.ENTITY_DENSITY_WEIGHT,
                 explanation="Insufficient content for density analysis.",
                 recommendations=["Ensure content has consistent entity mentions."],
-            ), []
+            )
         
-        # Extract key entities from title using Title Case aware extraction
-        key_entities = self._extract_title_entities(title, text=text)
+        # Use exact same key entities list
+        key_entities = entities if entities is not None else self._extract_title_entities(title, text=text)
         
         # If no strict entities found, fall back to non-stop words > 4 chars
         if not key_entities:
@@ -468,24 +473,21 @@ class EntityDetector(BaseDetector):
                 weighted_score=60.0 * self.ENTITY_DENSITY_WEIGHT,
                 explanation="No specific key entities identified in title for density check.",
                 recommendations=["Use more specific proper nouns (Brand, Product) in title."],
-            ), []
+            )
         
         # Count mentions
         text_lower = text.lower()
         entity_counts = {}
         for entity in key_entities:
-            # Simple word bound check
             count = len(re.findall(rf'\b{re.escape(entity.lower())}\b', text_lower))
             entity_counts[entity] = count
-            if count > 0:
-                found_entities_list.append(f"{entity} ({count})")
         
         total_mentions = sum(entity_counts.values())
         avg_mentions = total_mentions / len(key_entities) if key_entities else 0
         word_count = len(text.split())
         density_ratio = (total_mentions / word_count * 100) if word_count > 0 else 0
         
-        if avg_mentions >= 4: # Strict
+        if avg_mentions >= 4:
             raw_score = 100.0
             explanation = (
                 f"Excellent density: Key entities ({', '.join(key_entities[:3])}) "
@@ -521,7 +523,7 @@ class EntityDetector(BaseDetector):
             weighted_score=raw_score * self.ENTITY_DENSITY_WEIGHT,
             explanation=explanation,
             recommendations=recommendations,
-        ), found_entities_list
+        )
     
     def _create_error_breakdown(self, name: str, weight: float) -> ScoreBreakdown:
         """Create a zero-score breakdown for failed checks."""

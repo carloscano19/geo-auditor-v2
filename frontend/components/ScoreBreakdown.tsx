@@ -216,9 +216,16 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                                 {(result.debug_info.citation_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
                                     const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
                                     return (
-                                        <span key={i} title={linkStr} className="text-[11px] text-emerald-400 font-mono truncate bg-emerald-950/20 px-2 py-1 rounded border border-emerald-900/30">
+                                        <a
+                                            key={i}
+                                            href={linkStr}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title={linkStr}
+                                            className="text-[11px] text-emerald-400 hover:text-emerald-300 hover:underline font-mono truncate bg-emerald-950/20 px-2 py-1 rounded border border-emerald-900/30 transition-colors block"
+                                        >
                                             🔗 {linkStr}
-                                        </span>
+                                        </a>
                                     );
                                 })}
                             </div>
@@ -234,9 +241,16 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                                 {(result.debug_info.utility_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
                                     const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
                                     return (
-                                        <span key={i} title={linkStr} className="text-[11px] text-slate-500 font-mono truncate bg-slate-900/50 px-2 py-1 rounded border border-slate-800">
+                                        <a
+                                            key={i}
+                                            href={linkStr}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title={linkStr}
+                                            className="text-[11px] text-slate-400 hover:text-slate-300 hover:underline font-mono truncate bg-slate-900/50 px-2 py-1 rounded border border-slate-800 transition-colors block"
+                                        >
                                             ⚙️ {linkStr}
-                                        </span>
+                                        </a>
                                     );
                                 })}
                             </div>

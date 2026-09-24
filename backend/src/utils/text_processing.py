@@ -94,7 +94,8 @@ def extract_main_content(html: str) -> tuple[str, str]:
     # Protection: Do NOT delete an element if it contains the H1 or >40% of the root text (e.g. Elementor widgets)
     prohibited_keywords = [
         'sidebar', 'widget', 'related', 'relacionad', 'author-box', 'author-bio',
-        'post-navigation', 'nav-links', 'comments', 'share', 'newsletter', 'breadcrumb'
+        'post-navigation', 'nav-links', 'comments', 'share', 'newsletter', 'breadcrumb',
+        'about-author', 'author-info', 'sobre-autor', 'caja-autor', 'autor-box', 'author-card'
     ]
     
     for el in root.find_all(True):
