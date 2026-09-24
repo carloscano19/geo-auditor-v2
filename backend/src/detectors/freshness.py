@@ -22,7 +22,7 @@ class FreshnessDetector(BaseDetector):
     """
     
     dimension_name = "freshness"
-    weight = 0.10
+    weight = 0.05
     
     @property
     def current_year(self) -> int:
@@ -33,9 +33,8 @@ class FreshnessDetector(BaseDetector):
         errors = []
         recommendations = []
         now_utc = datetime.now(timezone.utc)
-        current_year = now_utc.year
         
-        # 1. Date Extraction & Currency (60%)
+        # 1. Date Extraction & Currency (100%)
         # ----------------------------------------------------------------
         lang = resolve_language(page_data)
         extracted_date: Optional[datetime] = self._extract_date(page_data, lang=lang)
@@ -74,50 +73,10 @@ class FreshnessDetector(BaseDetector):
         breakdown.append(ScoreBreakdown(
             name="Date Currency",
             raw_score=date_score,
-            weight=0.60,
-            weighted_score=date_score * 0.60,
+            weight=1.00,
+            weighted_score=date_score * 1.00,
             explanation=f"{'✅' if date_score >= 50 else '❌'} {date_explanation}",
             recommendations=date_recs
-        ))
-        
-        # 2. Keyword Relevance (Current Year) (40%)
-        # ----------------------------------------------------------------
-        from bs4 import BeautifulSoup
-        html = page_data.html_rendered
-        soup = BeautifulSoup(html, 'lxml')
-        
-        # Check Title and H1 for current year
-        target_years = [str(self.current_year), str(self.current_year + 1)]
-        
-        title_tag = soup.find('title')
-        h1_tag = soup.find('h1')
-        
-        title_text = title_tag.get_text().lower() if title_tag else ""
-        h1_text = h1_tag.get_text().lower() if h1_tag else ""
-        
-        combined_text = title_text + " " + h1_text
-        
-        found_year = False
-        for year in target_years:
-            if year in combined_text:
-                found_year = True
-                break
-                
-        year_score = 100.0 if found_year else 0.0
-        
-        year_explanation = f"Current year ({self.current_year}) found in Title/H1." if found_year else f"Current year ({self.current_year}) NOT found in Title/H1."
-        year_recs = []
-        
-        if not found_year:
-            year_recs.append(f"Include the current year ({self.current_year}) in your Title tag or H1 to signal relevance.")
-            
-        breakdown.append(ScoreBreakdown(
-            name="Current Year Compliant",
-            raw_score=year_score,
-            weight=0.40,
-            weighted_score=year_score * 0.40,
-            explanation=f"{'✅' if found_year else '❌'} {year_explanation}",
-            recommendations=year_recs
         ))
         
         # Calculate Total
@@ -134,6 +93,7 @@ class FreshnessDetector(BaseDetector):
             breakdown=breakdown,
             errors=errors
         )
+
         
     def _extract_date(self, page_data: PageData, lang: str = "en") -> Optional[datetime]:
         """Try to extract a valid date from metadata, HTML, or text."""

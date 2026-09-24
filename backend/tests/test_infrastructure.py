@@ -250,12 +250,13 @@ class TestInfrastructureDetector:
         
         result = await detector.analyze(page_data)
         
-        assert len(result.breakdown) == 4
+        assert len(result.breakdown) == 5
         
         breakdown_names = [b.name for b in result.breakdown]
         assert any("HTTPS" in n for n in breakdown_names)
         assert any("Rendering" in n or "SSR" in n for n in breakdown_names)
         assert any("Crawlability" in n for n in breakdown_names)
+        assert any("AI Bot Access" in n for n in breakdown_names)
         assert any("Speed" in n for n in breakdown_names)
     
     @pytest.mark.asyncio

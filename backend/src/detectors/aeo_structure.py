@@ -49,16 +49,13 @@ class AEOStructureDetector(BaseDetector):
     """
     
     dimension_name: str = "aeo_structure"
-    weight: float = 0.18
+    weight: float = 0.20
     
-    # Sub-dimension weights (Redistributed for 7 metrics)
-    RULE_60_WEIGHT = 0.20           # Was 0.30
-    INTERROGATIVE_H2_WEIGHT = 0.15  # Was 0.25
-    HEADING_STRUCTURE_WEIGHT = 0.15 # Was 0.25
-    TEXT_WALLS_WEIGHT = 0.10        # Was 0.20
-    SENTENCE_LENGTH_WEIGHT = 0.15   # NEW
-    LOGICAL_CONNECTORS_WEIGHT = 0.15 # NEW
-    GENERIC_HEADERS_WEIGHT = 0.10   # NEW
+    # Sub-dimension weights (Redistributed across remaining metrics: Rule of 60, Heading Structure, Text Walls, Logical Connectors)
+    RULE_60_WEIGHT = 0.3333           # Was 0.20
+    HEADING_STRUCTURE_WEIGHT = 0.2500 # Was 0.15
+    TEXT_WALLS_WEIGHT = 0.1667        # Was 0.10
+    LOGICAL_CONNECTORS_WEIGHT = 0.2500 # Was 0.15
     
     # Thresholds
     OPTIMAL_WORDS_PER_H2 = 200
@@ -66,8 +63,7 @@ class AEOStructureDetector(BaseDetector):
     FIRST_N_WORDS_FOR_ANSWER = 60
     MIN_WORDS_PER_H2 = 80
     MAX_WORDS_PER_H2 = 350
-    MAX_AVG_SENTENCE_LENGTH = 25    # NEW: Max words per sentence
-    MIN_LOGICAL_CONNECTORS = 3      # NEW: Min connectors required
+    MIN_LOGICAL_CONNECTORS = 3      # Min connectors required
     
     # Question patterns (English + Spanish legacy support)
     QUESTION_PATTERNS = [
@@ -78,23 +74,35 @@ class AEOStructureDetector(BaseDetector):
         r'^(qué|cómo|cuándo|dónde|por qué|cuál|quién|cuánto)\s',
     ]
     
-    # Fluff patterns
-    FLUFF_PATTERNS = [
-        r'in this (article|post|guide)',
-        r"we('re| are) going to",
-        r'we will (explore|discuss|cover|show)',
-        r'let me show you',
-        r'today we will',
-        r'welcome to',
-        r'read on to',
-        r'keep reading',
-        r'en este (artículo|post)',
-        r'vamos a ver',
-        r'once upon a time',
-        r'imagine a world',
-        r'story about',
-        r'it all started',
-        r'long ago',
+    # Fluff and narrative starter patterns
+    NARRATIVE_PATTERNS = [
+        r'^in this (article|post|guide)',
+        r"^we('re| are) going to",
+        r'^we will (explore|discuss|cover|show)',
+        r'^let me show you',
+        r'^today we will',
+        r'^welcome to',
+        r'^read on to',
+        r'^keep reading',
+        r'^en este (artículo|articulo|post)',
+        r'^vamos a ver',
+        r'^once upon a time',
+        r'^imagine a world',
+        r'^imagine if',
+        r'^story about',
+        r'^it all started',
+        r'^long ago',
+        r"^in today's",
+        r'^we are used to',
+        r'^looking back',
+        r'^have you ever',
+        r'^since the beginning',
+        r'^nowadays',
+        r'^hoy en día',
+        r'^hoy en dia',
+        r'^en la actualidad',
+        r'^a lo largo de la historia',
+        r'^alguna vez te has preguntado',
     ]
 
     # Logical Connectors (Default English, loaded centrally)
@@ -127,7 +135,6 @@ class AEOStructureDetector(BaseDetector):
         h2_texts = []
         h1_text = ""
         scoped_text = ""
-        avg_sentence_length = 0.0
         connector_count = 0
         
         try:
@@ -148,8 +155,6 @@ class AEOStructureDetector(BaseDetector):
             h3_headers = [h for h in all_headers if h['tag'] == 'h3']
             
             h2_texts = [h['text'] for h in h2_headers]
-            # h3_texts = [h['text'] for h in h3_headers] # Unused variable
-            
             h1_text = h1_headers[0]['text'] if h1_headers else ""
             
             # EXTRACT SCOPED TEXT (Centralized)
@@ -167,16 +172,8 @@ class AEOStructureDetector(BaseDetector):
             except Exception as e:
                 errors.append(f"Rule of 60 check failed: {str(e)}")
                 breakdown.append(self._create_error_breakdown("Rule of 60", self.RULE_60_WEIGHT))
-            
-            # 2. Interrogative H2s Check
-            try:
-                h2_result = self._analyze_interrogative_h2s(h2_texts)
-                breakdown.append(h2_result)
-            except Exception as e:
-                errors.append(f"Interrogative H2s check failed: {str(e)}")
-                breakdown.append(self._create_error_breakdown("Interrogative H2s", self.INTERROGATIVE_H2_WEIGHT))
                 
-            # 3. Heading Structure Check
+            # 2. Heading Structure Check
             try:
                 # Use scoped text word count for more accurate ratio
                 structure_result = self._analyze_heading_structure(len(h2_headers), len(h3_headers), scoped_text)
@@ -185,7 +182,7 @@ class AEOStructureDetector(BaseDetector):
                 errors.append(f"Heading structure check failed: {str(e)}")
                 breakdown.append(self._create_error_breakdown("Heading Structure", self.HEADING_STRUCTURE_WEIGHT))
             
-            # 4. Text Walls Check (Uses SCOPED html)
+            # 3. Text Walls Check (Uses SCOPED html)
             try:
                 walls_result = self._analyze_text_walls(scoped_html)
                 breakdown.append(walls_result)
@@ -193,16 +190,7 @@ class AEOStructureDetector(BaseDetector):
                 errors.append(f"Text walls check failed: {str(e)}")
                 breakdown.append(self._create_error_breakdown("Text Walls", self.TEXT_WALLS_WEIGHT))
     
-            # 5. Sentence Length Check (NEW)
-            try:
-                sentence_result, avg_val = self._analyze_sentence_length(scoped_text)
-                avg_sentence_length = avg_val
-                breakdown.append(sentence_result)
-            except Exception as e:
-                errors.append(f"Sentence length check failed: {str(e)}")
-                breakdown.append(self._create_error_breakdown("Sentence Length", self.SENTENCE_LENGTH_WEIGHT))
-    
-            # 6. Logical Connectors Check (NEW)
+            # 4. Logical Connectors Check
             try:
                 connectors_result, count_val = self._analyze_logical_connectors(
                     scoped_text,
@@ -213,21 +201,9 @@ class AEOStructureDetector(BaseDetector):
             except Exception as e:
                 errors.append(f"Logical connectors check failed: {str(e)}")
                 breakdown.append(self._create_error_breakdown("Logical Connectors", self.LOGICAL_CONNECTORS_WEIGHT))
-    
-            # 7. Generic Headers Check (NEW)
-            try:
-                generic_result = self._analyze_generic_headers(
-                    h2_texts,
-                    generic_blacklist=patterns["generic_headers"]
-                )
-                breakdown.append(generic_result)
-            except Exception as e:
-                errors.append(f"Generic headers check failed: {str(e)}")
-                breakdown.append(self._create_error_breakdown("Generic Headers", self.GENERIC_HEADERS_WEIGHT))
                 
         except Exception as e:
             # Global catch-all to prevent module crash
-            # Ensure we return at least a basic result if everything explodes
             import traceback
             traceback.print_exc() # Log to stderr
             errors.append(f"Critical error in AEO module: {str(e)}")
@@ -242,14 +218,13 @@ class AEOStructureDetector(BaseDetector):
         # Calculate total dimension score
         total_score = sum(item.weighted_score for item in breakdown)
         
-        # STRUCTURE METRICS for Debugging - Now Safely Constructed
+        # STRUCTURE METRICS for Debugging
         structure_metrics = {
             "h1_count": len(h1_headers),
             "h2_count": len(h2_headers),
             "h3_count": len(h3_headers),
             "h1_text": h1_text,
             "total_words": len(scoped_text.split()) if scoped_text else 0,
-            "avg_sentence_length": avg_sentence_length,
             "connector_count": connector_count
         }
         
@@ -262,47 +237,31 @@ class AEOStructureDetector(BaseDetector):
             errors=errors,
             debug_info={
                 "detected_headers": h2_texts[:15], # Limit for UI
-                "structure_metrics": structure_metrics, # REQUIRED BY USER
+                "structure_metrics": structure_metrics,
                 "header_count": len(h2_texts)
             }
         )
     
-    def _analyze_rule_of_60(self, text: str, html: str, h1_text: str = "") -> ScoreBreakdown:
+    def _analyze_rule_of_60(self, text: str, html: str = "", h1_text: str = "") -> ScoreBreakdown:
         """
         Rule of 60: Evaluate first paragraph quality for LLM citability.
         
-        Scoring tiers:
-        - 100/100: Explicit definition verbs ("is defined as", "refers to")
-        - 80/100: Strong factual/declarative lead (data, numbers, action verbs)
-        - 40/100: Narrative/filler start
-        - 0/100: First paragraph exceeds 60 words without substance
-        - 30/100: Weak intro (none of the above)
-        
-        A factual lead is recognized when the first paragraph contains:
-        - Numeric data (percentages, dollar amounts, quantities)
-        - Declarative action verbs (soared, rose, fell, increased, etc.)
-        - Named entities (proper nouns, ticker symbols like $GAL)
-        
-        Examples of factual leads that score 80:
-            "Trade volumes for $GAL soared 150% as Galatasaray secured a UCL win."
-            "Bitcoin surged past $50,000, marking a 20% increase this quarter."
-        
-        Examples that score 100 (definition-first):
-            "A fan token is defined as a digital asset that gives holders voting rights."
-        
-        Args:
-            text: Clean text content of the page
-            html: HTML content for paragraph extraction
-            h1_text: The H1 heading text (for context)
-            
-        Returns:
-            ScoreBreakdown with Rule of 60 evaluation
+        Scoring logic:
+        - 100/100 if the first paragraph does NOT start with narrative/filler hook.
+        - 40/100 if it starts with narrative filler.
         """
-        # Extract the substantive paragraphs using robust utility
-        from src.utils.text_processing import extract_substantive_paragraphs
-        substantive_paragraphs = extract_substantive_paragraphs(html, min_words=10)
-        
-        first_p_text = substantive_paragraphs[0] if substantive_paragraphs else ""
+        first_p_text = ""
+        if html:
+            from src.utils.text_processing import extract_substantive_paragraphs
+            substantive_paragraphs = extract_substantive_paragraphs(html, min_words=10)
+            first_p_text = substantive_paragraphs[0] if substantive_paragraphs else ""
+        if not first_p_text and text:
+            paragraphs = [p.strip() for p in text.split("\n\n") if len(p.split()) >= 5]
+            if not paragraphs:
+                paragraphs = [p.strip() for p in text.split("\n") if len(p.split()) >= 5]
+            if not paragraphs and text.strip():
+                paragraphs = [text.strip()]
+            first_p_text = paragraphs[0] if paragraphs else ""
         
         if not first_p_text:
             return ScoreBreakdown(
@@ -311,104 +270,23 @@ class AEOStructureDetector(BaseDetector):
                 weight=self.RULE_60_WEIGHT,
                 weighted_score=0.0,
                 explanation="❌ No substantive first paragraph (≥10 words) detected.",
-                recommendations=["Add an introductory paragraph starting with a direct definition."],
+                recommendations=["Add an introductory paragraph answering user intent directly."],
             )
         
-        words = first_p_text.split()
-        first_p_lower = first_p_text.lower()
-        
-        raw_score = 0.0
-        explanation = ""
+        first_p_lower = first_p_text.lower().strip()
         recommendations = []
         
-        # 1. PERFECT SCORE: Explicit Definition Verbs
-        val_definition_verbs = [
-            "is defined as", "refers to", "is a type of", "consists of", 
-            "is the process of", "is a primary", "represents a"
-        ]
+        # Check if first paragraph starts with narrative/filler hook
+        is_narrative = any(re.search(pat, first_p_lower, re.IGNORECASE) for pat in self.NARRATIVE_PATTERNS)
         
-        has_definition = any(verb in first_p_lower for verb in val_definition_verbs)
-        
-        # 2. STRONG FACTUAL LEAD: News/analysis style with data and action verbs
-        # Detects information-dense intros typical of news, market analysis, reports
-        factual_action_verbs = [
-            r'\b(soared|surged|rose|fell|dropped|climbed|increased|decreased|jumped|plunged)\b',
-            r'\b(announced|reported|revealed|confirmed|launched|released|secured|achieved)\b',
-            r'\b(traded|surpassed|reached|exceeded|hit|gained|lost|outperformed)\b',
-        ]
-        has_action_verb = any(
-            re.search(pattern, first_p_lower) for pattern in factual_action_verbs
-        )
-        
-        # Numeric data signals: $X, X%, numbers, percentages
-        has_numeric_data = bool(re.search(
-            r'(\$[\d,.]+|\d+%|\d{1,3}(,\d{3})+|\d+\.\d+)', first_p_text
-        ))
-        
-        # Named entities: words starting with uppercase (excluding sentence starts),
-        # or ticker symbols ($GAL, $BTC)
-        has_ticker_symbols = bool(re.search(r'\$[A-Z]{2,}', first_p_text))
-        
-        # Count capitalized proper nouns (skip first word of sentences)
-        sentences_in_p = re.split(r'[.!?]\s+', first_p_text)
-        proper_noun_count = 0
-        for sent in sentences_in_p:
-            sent_words = sent.split()
-            # Skip first word (starts sentence), check rest for capitalized words
-            for w in sent_words[1:]:
-                clean_w = re.sub(r'[^a-zA-Z]', '', w)
-                if clean_w and clean_w[0].isupper() and len(clean_w) > 2:
-                    proper_noun_count += 1
-        has_named_entities = proper_noun_count >= 2 or has_ticker_symbols
-        
-        # A factual lead needs at least 2 of: action verbs, numeric data, named entities
-        factual_signals = sum([has_action_verb, has_numeric_data, has_named_entities])
-        is_factual_lead = factual_signals >= 2
-        
-        # 3. NARRATIVE PENALTY: Filler starts
-        narrative_starts = [
-            "in today's world", "we are used to", "looking back",
-            "have you ever", "imagine if", "since the beginning", "nowadays",
-            "once upon a time", "imagine a world", "it all started"
-        ]
-        is_narrative = any(first_p_lower.startswith(start) for start in narrative_starts)
-        
-        # 4. WORD COUNT CHECK
-        is_too_long = len(words) > 60
-        
-        # Scoring Logic (prioritized tiers)
-        if has_definition and not is_narrative:
-            raw_score = 100.0
-            explanation = "✅ Perfect Answer: Direct definition found in first paragraph."
-        elif is_factual_lead and not is_narrative:
-            raw_score = 80.0
-            explanation = (
-                f"✅ Strong Factual Lead: Information-dense intro with "
-                f"{'data, ' if has_numeric_data else ''}"
-                f"{'action verbs, ' if has_action_verb else ''}"
-                f"{'named entities' if has_named_entities else ''}."
-            ).rstrip(', ').rstrip('with ') + "."
-            if not has_definition:
-                recommendations.append(
-                    "To reach 100: consider adding an explicit definition "
-                    "(e.g., '[Entity] is...') alongside the factual lead."
-                )
-        elif is_narrative:
+        if is_narrative:
             raw_score = 40.0
-            explanation = "⚠️ Narrative Warning: Intro starts with filler/temporal context instead of a definition."
-            recommendations.append("Remove the narrative hook. Start with '[Entity] is...' or a factual statement.")
-        elif is_too_long:
-            raw_score = 0.0
-            explanation = "❌ Failed: First paragraph exceeds 60 words without a clear definition."
-            recommendations.append("Break the first paragraph. Ensure the first 60 words define the subject.")
+            explanation = "⚠️ Narrative Warning: Intro starts with filler/narrative hook instead of direct substance."
+            recommendations.append("Remove narrative filler at the opening. Start directly with the core answer or factual substance.")
         else:
-            raw_score = 30.0
-            explanation = "❌ Weak Intro: No explicit definition or factual lead found in first paragraph."
-            recommendations.append(
-                f"Start with a direct definition ({', '.join(val_definition_verbs[:3])}) "
-                f"or a factual statement with data and action verbs."
-            )
- 
+            raw_score = 100.0
+            explanation = "✅ Direct Answer: First paragraph gets straight to the point without narrative filler."
+
         return ScoreBreakdown(
             name="Rule of 60 (Answer First)",
             raw_score=raw_score,
@@ -417,6 +295,7 @@ class AEOStructureDetector(BaseDetector):
             explanation=explanation,
             recommendations=recommendations,
         )
+
     
     def _analyze_interrogative_h2s(self, h2_texts: list[str]) -> ScoreBreakdown:
         """

@@ -39,7 +39,7 @@ class EvidenceDensityDetector(BaseDetector):
     """
     
     dimension_name: str = "evidence_density"
-    weight: float = 0.15
+    weight: float = 0.20
     
     # Claim Detection Patterns (Default English, loaded centrally)
     CLAIM_PATTERNS = get_lang_patterns("en")["claims"]

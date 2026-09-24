@@ -48,6 +48,8 @@ export interface AuditResponse {
     analysis_time_ms: number;
     analyzed_at: string;
     recommendations: string[];
+    score_capped?: boolean;
+    cap_reason?: string;
     detector_results: DetectorResult[];
 }
 

@@ -23,6 +23,7 @@ import httpx
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
+from urllib.parse import urlparse
 from config.settings import get_settings
 from src.models.schemas import (
     AuditRequest,
@@ -65,6 +66,31 @@ async def measure_ttfb(url: str) -> Optional[float]:
                 return ttfb_ms
     except Exception as e:
         logger.warning(f"TTFB measurement failed for {url}: {e}")
+        return None
+
+
+async def fetch_robots_txt(url: str) -> Optional[str]:
+    """
+    Fetch /robots.txt with httpx (timeout 5s).
+    Returns robots.txt content string, or None if not found or on error.
+    """
+    if not url or not url.startswith(("http://", "https://")):
+        return None
+    try:
+        parsed = urlparse(url)
+        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
+        user_agent = (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+        )
+        headers = {"User-Agent": user_agent}
+        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
+            resp = await client.get(robots_url, headers=headers)
+            if resp.status_code == 200:
+                return resp.text
+            return None
+    except Exception as e:
+        logger.warning(f"Failed to fetch robots.txt for {url}: {e}")
         return None
 
 
@@ -183,16 +209,21 @@ async def audit_url(request: AuditRequest):
                 word_count=text_len,
                 is_ssr=True,  # Assume readable
                 is_https=True, # Assume secure
-                ttfb_ms=None  # Speed not evaluated in text mode
+                ttfb_ms=None,  # Speed not evaluated in text mode
+                robots_txt_content=None
             )
         elif request.url:
-            # URL mode: Playwright scraping limited by semaphore (concurrency=1)
-            # and TTFB measured via independent HTTP streaming request
+            # URL mode: Playwright scraping limited by semaphore (concurrency=1),
+            # TTFB measured via independent HTTP streaming request,
+            # and /robots.txt fetched with httpx using final_url after redirects
             async with scrape_semaphore:
                 ttfb_task = measure_ttfb(request.url)
                 scrape_task = scraper.scrape(request.url)
                 ttfb_val, page_data = await asyncio.gather(ttfb_task, scrape_task)
                 page_data.ttfb_ms = ttfb_val
+                # Use final_url (post-redirect) for robots.txt
+                target_url_for_robots = page_data.final_url or request.url
+                page_data.robots_txt_content = await fetch_robots_txt(target_url_for_robots)
         else:
             raise HTTPException(status_code=400, detail="Must provide either URL or content_text")
             
@@ -330,6 +361,30 @@ async def audit_url(request: AuditRequest):
         total_score = sum(r.contribution for r in detector_results)
     else:
         total_score = 0.0
+
+    # Critical bot block check:
+    # If any AI search bot is blocked or page has noindex/nosnippet/max-snippet:0,
+    # cap audit total score to max 30 and prepend CRITICAL recommendation.
+    has_critical_bot_block = False
+    critical_block_reasons = []
+    for r in detector_results:
+        if r.dimension == "technical_infrastructure" and r.debug_info:
+            if r.debug_info.get("has_critical_bot_block"):
+                has_critical_bot_block = True
+                critical_block_reasons = r.debug_info.get("critical_block_reasons", [])
+                break
+
+    score_capped = False
+    cap_reason = None
+
+    if has_critical_bot_block:
+        score_capped = True
+        cap_reason = "; ".join(critical_block_reasons) if critical_block_reasons else "AI search bots or snippet directives blocked"
+        total_score = min(30.0, total_score)
+        if critical_block_reasons:
+            critical_rec = f"CRITICAL: {'; '.join(critical_block_reasons)}"
+            if critical_rec not in all_recommendations:
+                all_recommendations.insert(0, critical_rec)
     
     # Step 4: Build dimension scores for response
     dimension_scores = [
@@ -361,6 +416,8 @@ async def audit_url(request: AuditRequest):
         analysis_time_ms=analysis_time_ms,
         analyzed_at=datetime.utcnow(),
         recommendations=top_recommendations,
+        score_capped=score_capped,
+        cap_reason=cap_reason,
         detector_results=detector_results,
     )
 

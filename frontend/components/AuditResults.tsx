@@ -66,11 +66,18 @@ export default function AuditResults({ results }: AuditResultsProps) {
             <div className="glass-card p-8">
                 <div className="flex flex-col lg:flex-row items-center gap-8">
                     {/* Score Circle */}
-                    <ScoreDisplay
-                        score={results.total_score}
-                        label="Citation Score"
-                        sublabel="Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
-                    />
+                    <div className="flex flex-col items-center">
+                        <ScoreDisplay
+                            score={results.total_score}
+                            label="Citation Score"
+                            sublabel="Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
+                        />
+                        {results.score_capped && (
+                            <div className="mt-3 px-3 py-2 rounded-md bg-red-950/60 border border-red-500/50 text-red-400 text-xs font-medium text-center max-w-xs">
+                                ⚠️ Score capped at 30: {results.cap_reason}
+                            </div>
+                        )}
+                    </div>
 
                     {/* Info */}
                     <div className="flex-1 text-center lg:text-left">

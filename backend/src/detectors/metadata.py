@@ -37,7 +37,7 @@ class MetadataDetector(BaseDetector):
     """
     
     dimension_name: str = "metadata_schema"
-    weight: float = 0.08
+    weight: float = 0.05
     
     # Sub-dimension weights
     SCHEMA_PRESENCE_WEIGHT = 0.40
@@ -116,10 +116,6 @@ class MetadataDetector(BaseDetector):
             
         # Calculate total dimension score
         total_score = sum(item.weighted_score for item in breakdown)
-        
-        # STRICT CAP: If no critical types, cap at 30
-        if types_result.raw_score == 0:
-            total_score = min(30.0, total_score)
         
         return DetectorResult(
             dimension=self.dimension_name,

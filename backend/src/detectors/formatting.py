@@ -21,10 +21,14 @@ class FormattingDetector(BaseDetector):
     """
     
     dimension_name = "format_citability"
-    weight = 0.10
+    weight = 0.07
     
     # Text Wall Thresholds - GOLD STANDARD: Raised to 7 lines (~700 chars)
     MAX_CHARS_PER_BLOCK = 700  # Approx 7 lines / 100-120 words
+    
+    # Sub-dimension weights (Redistributed: 0.40/0.70 and 0.30/0.70)
+    SCANNABILITY_WEIGHT = 4.0 / 7.0
+    MULTIMEDIA_WEIGHT = 3.0 / 7.0
     
     async def analyze(self, page_data: PageData) -> DetectorResult:
         breakdown = []
@@ -35,7 +39,7 @@ class FormattingDetector(BaseDetector):
         html = page_data.html_rendered
         soup = BeautifulSoup(html, 'lxml')
         
-        # 1. Scannability (Lists & Tables) - 40%
+        # 1. Scannability (Lists & Tables) - 57.14%
         # ----------------------------------------------------------------
         valid_lists = []
         
@@ -100,55 +104,13 @@ class FormattingDetector(BaseDetector):
         breakdown.append(ScoreBreakdown(
             name="Lists/Tables Used",
             raw_score=scannability_score,
-            weight=0.40,
-            weighted_score=scannability_score * 0.40,
+            weight=self.SCANNABILITY_WEIGHT,
+            weighted_score=scannability_score * self.SCANNABILITY_WEIGHT,
             explanation=f"{'✅' if total_lists > 0 else '❌'} Found {total_lists} lists/tables. {'⚠️ ' + str(text_walls_found) + ' text walls.' if text_walls_found else ''}",
             recommendations=scan_recs
         ))
         
-        # 2. Visual Hierarchy (Bold Highlights) - 30%
-        # ----------------------------------------------------------------
-        bold_elements = soup.find_all(['strong', 'b'])
-        
-        bold_count = len(bold_elements)
-        bold_score = 0.0
-        bold_explanation = ""
-        
-        if bold_count == 0:
-            bold_score = 0.0
-            bold_explanation = "No bold functionality used."
-        else:
-            good_bolds = 0
-            for bold in bold_elements:
-                clean_content = bold.get_text(strip=True)
-                words = len(clean_content.split())
-                if 1 <= words <= 15: # Highlighter length
-                    good_bolds += 1
-            
-            if good_bolds >= 2:
-                bold_score = 100.0
-                bold_explanation = f"Found {good_bolds} keyword highlights."
-            elif good_bolds == 1:
-                bold_score = 50.0
-                bold_explanation = "Found minimal highlighting."
-            else:
-                bold_score = 30.0
-                bold_explanation = "Bold usage detected but texts are too long (scan-blockers)."
-                
-        bold_recs = []
-        if bold_score < 80:
-            bold_recs.append("Use bold (<strong>) to highlight key concepts, not full sentences.")
-            
-        breakdown.append(ScoreBreakdown(
-            name="Bold Highlights",
-            raw_score=bold_score,
-            weight=0.30,
-            weighted_score=bold_score * 0.30,
-            explanation=f"{'✅' if bold_score >= 50 else '❌'} {bold_explanation}",
-            recommendations=bold_recs
-        ))
-        
-        # 3. Multimedia Content - 30%
+        # 2. Multimedia Content - 42.86%
         # ----------------------------------------------------------------
         img_elements = soup.find_all('img')
         video_elements = soup.find_all(['video', 'iframe', 'embed'])
@@ -191,8 +153,8 @@ class FormattingDetector(BaseDetector):
         breakdown.append(ScoreBreakdown(
             name="Multimedia Content",
             raw_score=media_score,
-            weight=0.30,
-            weighted_score=media_score * 0.30,
+            weight=self.MULTIMEDIA_WEIGHT,
+            weighted_score=media_score * self.MULTIMEDIA_WEIGHT,
             explanation=f"{'✅' if total_media > 0 else '❌'} {status}: {total_media} items found.",
             recommendations=media_recs
         ))

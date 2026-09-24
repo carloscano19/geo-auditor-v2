@@ -20,7 +20,7 @@ class LinksDetector(BaseDetector):
     """
     
     dimension_name = "links_verifiability"
-    weight = 0.10
+    weight = 0.08
     
     # Authority Markers
     AUTHORITY_DOMAINS = [

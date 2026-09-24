@@ -61,6 +61,7 @@ class PageData(BaseModel):
     word_count: int = 0
     ttfb_ms: Optional[float] = None
     language: str = "en"
+    robots_txt_content: Optional[str] = None
 
 
 class ScoreBreakdown(BaseModel):
@@ -152,6 +153,8 @@ class AuditResponse(BaseModel):
     analysis_time_ms: float
     analyzed_at: datetime = Field(default_factory=datetime.utcnow)
     recommendations: list[str] = Field(default_factory=list)
+    score_capped: bool = False
+    cap_reason: Optional[str] = None
     
     # Raw detector results for detailed view
     detector_results: list[DetectorResult] = Field(default_factory=list)

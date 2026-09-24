@@ -230,9 +230,11 @@ async def test_aeo_structure_spanish():
     detector = AEOStructureDetector()
     es_text = (
         "GEO Auditor es una herramienta diseñada para optimizar páginas web para citabilidad en IA. "
-        "Por tanto, los creadores de contenido pueden entender cómo los motores de búsqueda citan sus fuentes. "
-        "Sin embargo, muchas páginas web no cuentan con la estructura necesaria. "
-        "Además, un estudio reciente muestra que la claridad semántica es decisiva."
+        "Por tanto, los creadores de contenido pueden entender cómo los motores de búsqueda citan sus fuentes de manera efectiva. "
+        "Sin embargo, muchas páginas web no cuentan con la estructura necesaria para ser procesadas correctamente por los rastreadores modernos. "
+        "Además, un estudio reciente muestra que la claridad semántica y la jerarquía de encabezados son decisivas para el posicionamiento sintético. "
+        "En consecuencia, estructurar cada sección con encabezados temáticos descriptivos permite que los modelos de lenguaje extraigan fragmentos directos sin ambigüedades. "
+        "Finalmente, la adopción temprana de estas técnicas proporciona una ventaja competitiva sostenible en el nuevo paradigma de búsqueda conversacional."
     )
     page_es = create_page_data(
         text=es_text,
@@ -240,12 +242,11 @@ async def test_aeo_structure_spanish():
         h2s=[
             "¿Cómo funciona la citabilidad en IA?",
             "Por qué es importante la optimización",
-            "Métricas clave de evaluación"
         ]
     )
     res_es = await detector.analyze(page_es)
-    h2_breakdown = next(b for b in res_es.breakdown if b.name == "Interrogative H2s")
-    assert h2_breakdown.raw_score == 100.0  # 2 out of 3 = 66% >= 30% threshold
+    h2_breakdown = next(b for b in res_es.breakdown if b.name == "Heading Structure")
+    assert h2_breakdown.raw_score >= 80.0
     
     conn_breakdown = next(b for b in res_es.breakdown if b.name == "Logical Connectors")
     assert conn_breakdown.raw_score == 100.0  # por tanto, sin embargo, además >= 3

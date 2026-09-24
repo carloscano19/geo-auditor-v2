@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     
     # Scraping Configuration
     scraper_timeout_ms: int = 30000
-    scraper_wait_until: str = "networkidle"
+    scraper_wait_until: str = "load"
     max_content_length: int = 5000000  # 5MB max
     
     # Performance Targets (from SRS)

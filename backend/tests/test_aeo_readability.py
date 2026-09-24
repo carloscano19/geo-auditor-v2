@@ -43,54 +43,21 @@ GOOD_HEADERS_HTML = """
 """
 
 @pytest.mark.asyncio
-async def test_sentence_length():
-    print("\n--- Testing Sentence Length ---")
+async def test_rule_of_60():
+    print("\n--- Testing Rule of 60 ---")
     detector = AEOStructureDetector()
     
-    # Test Long Sentences
-    res_long, avg = detector._analyze_sentence_length(LONG_SENTENCES_TEXT)
-    print(f"Long Text Score: {res_long.raw_score} (Expected < 50)")
-    assert res_long.raw_score < 50
-    assert "Simplify sentences" in res_long.recommendations[0]
+    # Test without narrative filler (direct answer)
+    direct_text = "Vector search uses dense embeddings to find semantically similar documents in multi-dimensional space."
+    res_direct = detector._analyze_rule_of_60(direct_text)
+    assert res_direct.raw_score == 100.0
+    assert "Direct Answer" in res_direct.explanation
 
-    # Test Short Sentences
-    res_short, avg = detector._analyze_sentence_length(SHORT_SENTENCES_TEXT)
-    print(f"Short Text Score: {res_short.raw_score} (Expected > 80)")
-    assert res_short.raw_score >= 80
-
-@pytest.mark.asyncio
-async def test_logical_connectors():
-    print("\n--- Testing Logical Connectors ---")
-    detector = AEOStructureDetector()
-    
-    # Test No Connectors
-    res_none, count = detector._analyze_logical_connectors(NO_CONNECTORS_TEXT)
-    print(f"No Connectors Score: {res_none.raw_score} (Expected <= 20)")
-    assert res_none.raw_score <= 20
-    assert "Use logical connectors" in res_none.recommendations[0]
-
-    # Test Many Connectors
-    res_many, count = detector._analyze_logical_connectors(MANY_CONNECTORS_TEXT)
-    print(f"Many Connectors Score: {res_many.raw_score} (Expected 100)")
-    assert res_many.raw_score == 100
-
-@pytest.mark.asyncio
-async def test_generic_headers():
-    print("\n--- Testing Generic Headers ---")
-    detector = AEOStructureDetector()
-    
-    # Test Generic Headers
-    bad_headers = ['Introduction', 'Conclusion', 'Summary']
-    res_bad = detector._analyze_generic_headers(bad_headers)
-    print(f"Bad Headers Score: {res_bad.raw_score} (Expected 0)")
-    assert res_bad.raw_score == 0
-    assert "Avoid generic headers" in res_bad.recommendations[0]
-
-    # Test Good Headers
-    good_headers = ['Bitcoin History', 'SEO Strategy Conclusion']
-    res_good = detector._analyze_generic_headers(good_headers)
-    print(f"Good Headers Score: {res_good.raw_score} (Expected 100)")
-    assert res_good.raw_score == 100
+    # Test with narrative filler
+    filler_text = "In today's fast-paced world, finding information quickly has become more important than ever before."
+    res_filler = detector._analyze_rule_of_60(filler_text)
+    assert res_filler.raw_score == 40.0
+    assert "Narrative Warning" in res_filler.explanation
 
 @pytest.mark.asyncio
 async def test_robustness():

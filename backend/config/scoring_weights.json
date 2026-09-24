@@ -4,22 +4,23 @@
     "technical_infrastructure": {
       "weight": 0.12,
       "subdimensions": {
-        "https": 0.25,
-        "ssr_detection": 0.30,
-        "crawlability": 0.25,
+        "https": 0.20,
+        "ssr_detection": 0.20,
+        "crawlability": 0.20,
+        "ai_bot_access": 0.20,
         "render_speed": 0.20
       }
     },
     "metadata_schema": {
-      "weight": 0.08,
+      "weight": 0.05,
       "subdimensions": {}
     },
     "aeo_structure": {
-      "weight": 0.18,
+      "weight": 0.20,
       "subdimensions": {}
     },
     "evidence_density": {
-      "weight": 0.15,
+      "weight": 0.20,
       "subdimensions": {}
     },
     "eeat_authority": {
@@ -35,22 +36,20 @@
       "subdimensions": {}
     },
     "freshness": {
-      "weight": 0.10,
+      "weight": 0.05,
       "subdimensions": {
-        "date_currency": 0.60,
-        "keyword_relevance": 0.40
+        "date_currency": 1.00
       }
     },
     "format_citability": {
-      "weight": 0.10,
+      "weight": 0.07,
       "subdimensions": {
-        "scannability": 0.40,
-        "visual_hierarchy": 0.30,
-        "multimedia": 0.30
+        "scannability": 0.5714,
+        "multimedia": 0.4286
       }
     },
     "links_verifiability": {
-      "weight": 0.10,
+      "weight": 0.08,
       "subdimensions": {
         "external_link_quality": 0.50,
         "authority_sources": 0.50
