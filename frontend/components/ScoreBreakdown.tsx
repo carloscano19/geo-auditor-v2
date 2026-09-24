@@ -207,32 +207,38 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                         </div>
                     )}
 
-                    {!!result.debug_info.citation_links && (
+                    {Array.isArray(result.debug_info.citation_links) && result.debug_info.citation_links.length > 0 && (
                         <div className="mb-3">
                             <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
                                 Citation Links (Counted):
                             </h4>
                             <div className="flex flex-col gap-1">
-                                {(result.debug_info.citation_links as { url: string; domain: string }[]).map((link, i) => (
-                                    <span key={i} className="text-[11px] text-emerald-400 font-mono truncate bg-emerald-950/20 px-2 py-1 rounded border border-emerald-900/30">
-                                        🔗 {link.url}
-                                    </span>
-                                ))}
+                                {(result.debug_info.citation_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
+                                    const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
+                                    return (
+                                        <span key={i} title={linkStr} className="text-[11px] text-emerald-400 font-mono truncate bg-emerald-950/20 px-2 py-1 rounded border border-emerald-900/30">
+                                            🔗 {linkStr}
+                                        </span>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}
 
-                    {!!result.debug_info.utility_links && (
+                    {Array.isArray(result.debug_info.utility_links) && result.debug_info.utility_links.length > 0 && (
                         <div className="mb-3">
                             <h4 className="text-xs font-bold text-text-muted uppercase tracking-wider mb-2">
                                 Utility Links (Ignored):
                             </h4>
                             <div className="flex flex-col gap-1">
-                                {(result.debug_info.utility_links as { url: string; domain: string }[]).map((link, i) => (
-                                    <span key={i} className="text-[11px] text-slate-500 font-mono truncate bg-slate-900/50 px-2 py-1 rounded border border-slate-800">
-                                        ⚙️ {link.url}
-                                    </span>
-                                ))}
+                                {(result.debug_info.utility_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
+                                    const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
+                                    return (
+                                        <span key={i} title={linkStr} className="text-[11px] text-slate-500 font-mono truncate bg-slate-900/50 px-2 py-1 rounded border border-slate-800">
+                                            ⚙️ {linkStr}
+                                        </span>
+                                    );
+                                })}
                             </div>
                         </div>
                     )}

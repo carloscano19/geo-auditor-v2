@@ -2,26 +2,133 @@
 import re
 from bs4 import BeautifulSoup
 
-def clean_html_for_analysis(html: str) -> str:
+def extract_main_content(html: str) -> tuple[str, str]:
     """
-    Perform aggressive cleaning and SCOPING of HTML.
+    Centralized extraction of article/main content.
+    Used across all detectors (aeo_structure, evidence_density, entity, formatting, links).
     
-    1. Scope Restriction: Attempts to find the main content container (<article>, <main>, .post-content).
-       If found, it discards the rest of the separate DOM tree.
-    2. Noise Removal: Removes nav, footer, aside, and noise classes from the scoped content.
+    Priority:
+    1. <article>
+    2. [role=main]
+    3. <main>
+    4. Block with the most text if none of the above exist (div, section, or body).
+    
+    Header & Footer preservation:
+    - Preserves <header> and <footer> INSIDE <article> or <main> (contains H1, date, author).
+    - Removes <header> and <footer> that are OUTSIDE the main content.
+    
+    Boilerplate & Noise exclusion:
+    - Removes technical noise: script, style, noscript, iframe, svg, form, button, input, textarea, select, option.
+    - Always excludes: nav, aside, and elements whose class or id contains:
+      sidebar, widget, related, relacionad, author-box, author-bio, post-navigation,
+      nav-links, comments, share, newsletter, breadcrumb.
+      
+    Returns:
+        tuple[str, str]: (scoped_html, scoped_clean_text)
     """
     if not html:
-        return ""
+        return "", ""
         
     soup = BeautifulSoup(html, 'lxml')
     
-    # Elements to remove completely (Technical Noise)
-    technical_tags = ['script', 'style', 'noscript', 'iframe', 'svg', 'form', 'button', 'input', 'textarea', 'select', 'option']
+    # 1. Technical noise to remove everywhere
+    technical_tags = [
+        'script', 'style', 'noscript', 'iframe', 'svg', 'form',
+        'button', 'input', 'textarea', 'select', 'option'
+    ]
     for tag in technical_tags:
-        for element in soup.find_all(tag):
-            element.decompose()
+        for el in soup.find_all(tag):
+            el.decompose()
             
-    return str(soup)
+    # 2. Select main content container by priority
+    # If multiple <article>, [role=main], or <main> tags exist, pick the one with the most text
+    articles = soup.find_all('article')
+    target = None
+    is_article_or_main = False
+    
+    if articles:
+        target = max(articles, key=lambda a: len(a.get_text(separator=' ', strip=True)))
+        is_article_or_main = True
+    else:
+        roles_main = soup.find_all(attrs={"role": "main"})
+        if roles_main:
+            target = max(roles_main, key=lambda m: len(m.get_text(separator=' ', strip=True)))
+            is_article_or_main = True
+        else:
+            mains = soup.find_all('main')
+            if mains:
+                target = max(mains, key=lambda m: len(m.get_text(separator=' ', strip=True)))
+                is_article_or_main = True
+            else:
+                candidates = soup.find_all(['div', 'section'])
+                best_candidate = None
+                max_len = 0
+                for cand in candidates:
+                    cand_text_len = len(cand.get_text(separator=' ', strip=True))
+                    if cand_text_len > max_len:
+                        max_len = cand_text_len
+                        best_candidate = cand
+                if best_candidate and max_len > 100:
+                    target = best_candidate
+                else:
+                    target = soup.body or soup
+
+    # Work on a clone/scoped parse to isolate the container
+    scoped_soup = BeautifulSoup(str(target), 'lxml')
+    root = scoped_soup.body if scoped_soup.body else scoped_soup
+
+    # Total text length in root for percentage protection checks
+    root_text_len = len(root.get_text(separator=' ', strip=True))
+
+    # 3. Header and footer scoping:
+    # Preserve <header> and <footer> inside <article> or <main>, remove only if outside
+    if not is_article_or_main:
+        for el in root.find_all(['header', 'footer']):
+            el.decompose()
+
+    # 4. Always exclude nav and aside
+    for el in root.find_all(['nav', 'aside']):
+        el.decompose()
+
+    # 5. Always exclude elements whose class or id contains prohibited noise keywords
+    # Protection: Do NOT delete an element if it contains the H1 or >40% of the root text (e.g. Elementor widgets)
+    prohibited_keywords = [
+        'sidebar', 'widget', 'related', 'relacionad', 'author-box', 'author-bio',
+        'post-navigation', 'nav-links', 'comments', 'share', 'newsletter', 'breadcrumb'
+    ]
+    
+    for el in root.find_all(True):
+        attrs = getattr(el, 'attrs', None)
+        if not attrs:
+            continue
+        classes = " ".join(attrs.get('class', [])).lower() if isinstance(attrs.get('class'), list) else str(attrs.get('class', '')).lower()
+        elem_id = str(attrs.get('id', '')).lower()
+        combined_attrs = f"{classes} {elem_id}"
+        
+        if any(kw in combined_attrs for kw in prohibited_keywords):
+            has_h1 = bool(el.find('h1')) or el.name == 'h1'
+            el_text_len = len(el.get_text(separator=' ', strip=True))
+            is_substantial = (root_text_len > 0 and (el_text_len / root_text_len) > 0.40)
+            if has_h1 or is_substantial:
+                continue
+            el.decompose()
+            
+    # Also remove landmark navigation/complementary roles if any remain
+    for el in root.find_all(attrs={"role": ['navigation', 'complementary', 'menu']}):
+        el.decompose()
+
+    scoped_html = str(root)
+    text = root.get_text(separator=' ')
+    scoped_text = re.sub(r'\s+', ' ', text).strip()
+    
+    return scoped_html, scoped_text
+
+def clean_html_for_analysis(html: str) -> str:
+    """
+    Perform aggressive cleaning and scoping of HTML returning scoped HTML.
+    Delegates to extract_main_content.
+    """
+    return extract_main_content(html)[0]
 
 def filter_headers_by_text(headers: list[str]) -> list[str]:
     """
@@ -51,15 +158,10 @@ def filter_headers_by_text(headers: list[str]) -> list[str]:
 
 def extract_clean_text(html: str) -> str:
     """
-    Extract text content from cleaned HTML using lxml.
+    Extract text content from cleaned main article content.
+    Delegates to extract_main_content.
     """
-    cleaned_html = clean_html_for_analysis(html)
-    soup = BeautifulSoup(cleaned_html, 'lxml')
-    
-    # Get text and clean whitespace
-    text = soup.get_text(separator=' ')
-    text = re.sub(r'\s+', ' ', text).strip()
-    return text
+    return extract_main_content(html)[1]
 
 def extract_headers(html: str) -> list[dict]:
     """

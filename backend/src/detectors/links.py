@@ -45,10 +45,12 @@ class LinksDetector(BaseDetector):
         errors = []
         recommendations = []
         
-        # Parse links from rendered HTML using BeautifulSoup
+        # Parse links from main article content using BeautifulSoup
         from bs4 import BeautifulSoup
+        from src.utils.text_processing import extract_main_content
         html = page_data.html_rendered
-        soup = BeautifulSoup(html, 'lxml')
+        scoped_html, _ = extract_main_content(html)
+        soup = BeautifulSoup(scoped_html if scoped_html else html, 'lxml')
         hrefs = [a.get('href', '') for a in soup.find_all('a')]
         
         base_domain = ""

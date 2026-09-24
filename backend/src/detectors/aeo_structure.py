@@ -141,25 +141,24 @@ class AEOStructureDetector(BaseDetector):
             # Use HTML from PageData (rendered if available for JS content, else raw)
             html = page_data.html_rendered
             
-            # Prepare scoped HTML for analysis
-            from src.utils.text_processing import clean_html_for_analysis
-            scoped_html = clean_html_for_analysis(html)
+            # Prepare scoped HTML and text using centralized main content extraction
+            from src.utils.text_processing import extract_main_content, extract_headers
+            scoped_html, scoped_text = extract_main_content(html)
             
-            # EXTRACT HEADERS (Simplified Logic)
-            from src.utils.text_processing import extract_headers
-            all_headers = extract_headers(html) # Use full HTML for headers to avoid losing them in scoping
+            # EXTRACT HEADERS from scoped main content (excludes aside/related/nav)
+            all_headers = extract_headers(scoped_html)
             
             # Filter for specific levels
             h1_headers = [h for h in all_headers if h['tag'] == 'h1']
+            if not h1_headers and html:
+                # Fallback to full HTML for H1 if placed outside main content
+                h1_headers = [h for h in extract_headers(html) if h['tag'] == 'h1']
+                
             h2_headers = [h for h in all_headers if h['tag'] == 'h2']
             h3_headers = [h for h in all_headers if h['tag'] == 'h3']
             
             h2_texts = [h['text'] for h in h2_headers]
             h1_text = h1_headers[0]['text'] if h1_headers else ""
-            
-            # EXTRACT SCOPED TEXT (Centralized)
-            from src.utils.text_processing import extract_clean_text
-            scoped_text = extract_clean_text(scoped_html)
             
             # Resolve language patterns
             lang = resolve_language(page_data)

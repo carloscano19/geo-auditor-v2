@@ -279,7 +279,7 @@ class AuthorityDetector(BaseDetector):
             
         trust_recs = []
         if not has_high_value:
-             trust_recs.append("CRITICAL: Add 'About Us' and 'Our Team' pages to build Authority.")
+             trust_recs.append("Add 'About Us' and 'Our Team' pages to build Authority.")
         if len(trust_pages_found) < 3:
              trust_recs.append("Increase transparency by linking Editorial Guidelines and Staff profiles.")
                 

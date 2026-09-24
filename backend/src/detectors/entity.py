@@ -86,11 +86,16 @@ class EntityDetector(BaseDetector):
         errors: list[str] = []
         breakdown: list[ScoreBreakdown] = []
         
-        html = page_data.html_rendered
-        text = page_data.text_content
+        from src.utils.text_processing import extract_main_content
+        scoped_html, scoped_text = extract_main_content(page_data.html_rendered)
         
-        # Extract title (H1)
-        title = self._extract_title(html)
+        # Extract title (H1) from scoped HTML first (which preserves header in article/main)
+        title = self._extract_title(scoped_html)
+        if not title:
+            title = self._extract_title(page_data.html_rendered)
+            
+        text = scoped_text if scoped_text else page_data.text_content
+        html = scoped_html if scoped_html else page_data.html_rendered
         
         # Resolve language patterns
         lang = resolve_language(page_data)
@@ -106,7 +111,7 @@ class EntityDetector(BaseDetector):
         
         # 2. Title Entity Check
         try:
-            title_result = self._analyze_title_entities(title, lang=lang)
+            title_result = self._analyze_title_entities(title, text=text, lang=lang)
             breakdown.append(title_result)
         except Exception as e:
             errors.append(f"Title entity check failed: {str(e)}")
@@ -246,7 +251,128 @@ class EntityDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_title_entities(self, title: str, lang: str = "en") -> ScoreBreakdown:
+    def _is_title_case(self, title: str) -> bool:
+        """
+        Check if title is written in Title Case (majority of words capitalized).
+        """
+        words = re.findall(r'\b[a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9\$\-]+\b', title)
+        alpha_words = [w for w in words if re.search(r'[a-záéíóúüñA-ZÁÉÍÓÚÜÑ]', w)]
+        if len(alpha_words) <= 2:
+            return False
+        capitalized = [w for w in alpha_words if w[0].isupper()]
+        return (len(capitalized) / len(alpha_words)) >= 0.70
+
+    def _extract_title_entities(self, title: str, text: str = "") -> list[str]:
+        """
+        Extract core entities from title.
+        - Consecutive capitalized words form a single entity ('AI Overview', 'Fan Token', 'Google Search Console').
+        - Discards entities of 4 characters or fewer unless they are uppercase acronyms ('AI', 'SEO', 'CHZ') or tickers ('$CHZ').
+        - If title is in Title Case, verifies words/phrases against body text or ticker/acronym rules.
+        """
+        if not title:
+            return []
+            
+        common_caps = {
+            'The', 'A', 'An', 'How', 'What', 'Why', 'When', 'Where', 'Is', 'Are', 'Best', 'Top',
+            'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Cómo', 'Como', 'Qué', 'Que',
+            'Por', 'Para', 'Mejor', 'Mejores'
+        }
+        
+        is_tc = self._is_title_case(title)
+        tokens = title.split()
+        
+        def is_ticker_or_symbol(w: str) -> bool:
+            return bool('$' in w or '@' in w)
+
+        def is_valid_acronym(w: str) -> bool:
+            clean = re.sub(r'[^\w]', '', w)
+            return bool(clean and clean.isupper() and 2 <= len(clean) <= 6)
+            
+        def appears_capitalized_mid_sentence(w: str, body_text: str) -> bool:
+            if not body_text:
+                return False
+            pattern = rf'(?:\b[a-záéíóúüñ]+|\b[a-záéíóúüñ]+[,;:)]|\b[a-záéíóúüñ]+\))\s+{re.escape(w)}\b'
+            return bool(re.search(pattern, body_text))
+
+        # 1. Group consecutive capitalized tokens into initial clusters
+        raw_clusters = []
+        current_cluster = []
+        for raw_w in tokens:
+            clean_w = raw_w.strip(".,;:!?()[]\"'")
+            if not clean_w:
+                if current_cluster:
+                    raw_clusters.append(current_cluster)
+                    current_cluster = []
+                continue
+            is_cap = clean_w[0].isupper() or clean_w.startswith('$')
+            if is_cap:
+                current_cluster.append(clean_w)
+            else:
+                if current_cluster:
+                    raw_clusters.append(current_cluster)
+                    current_cluster = []
+        if current_cluster:
+            raw_clusters.append(current_cluster)
+
+        # 2. Extract candidate phrases per cluster
+        extracted: list[str] = []
+        for cluster in raw_clusters:
+            if not is_tc:
+                # Not Title Case: entire consecutive capitalized cluster forms an entity
+                words = list(cluster)
+                while words and words[0] in common_caps:
+                    words.pop(0)
+                while words and words[-1] in common_caps:
+                    words.pop()
+                if words:
+                    extracted.append(' '.join(words))
+            else:
+                # Title Case: find maximal sub-phrases verified in body or valid tickers/acronyms
+                n = len(cluster)
+                i = 0
+                while i < n:
+                    matched = False
+                    for j in range(n, i, -1):
+                        subphrase = ' '.join(cluster[i:j])
+                        if j == i + 1:
+                            w = cluster[i]
+                            if is_ticker_or_symbol(w) or is_valid_acronym(w) or any(c.isdigit() for c in w) or appears_capitalized_mid_sentence(w, text):
+                                extracted.append(w)
+                                i = j
+                                matched = True
+                                break
+                        else:
+                            if appears_capitalized_mid_sentence(subphrase, text):
+                                extracted.append(subphrase)
+                                i = j
+                                matched = True
+                                break
+                    if not matched:
+                        i += 1
+
+        # 3. Filter rule:
+        # Descarta como entidad los fragmentos de 4 letras o menos salvo acrónimos en mayúsculas (AI, SEO, CHZ) o tickers
+        final_entities: list[str] = []
+        for ent in extracted:
+            words = ent.split()
+            while words and words[0] in common_caps:
+                words.pop(0)
+            while words and words[-1] in common_caps:
+                words.pop()
+            if not words:
+                continue
+            cleaned_ent = ' '.join(words)
+            
+            letter_count = len(re.sub(r'[^a-záéíóúüñA-ZÁÉÍÓÚÜÑ0-9]', '', cleaned_ent))
+            if letter_count <= 4:
+                if not (is_valid_acronym(cleaned_ent) or is_ticker_or_symbol(cleaned_ent)):
+                    continue
+            if cleaned_ent not in final_entities:
+                final_entities.append(cleaned_ent)
+
+        return final_entities
+
+    def _analyze_title_entities(self, title: str, text: str = "", lang: str = "en") -> ScoreBreakdown:
         """Analyze entity presence in the title (English and Spanish optimized)."""
         recommendations = []
         
@@ -260,49 +386,32 @@ class EntityDetector(BaseDetector):
                 recommendations=["Add a clear H1 header."],
             )
         
-        # Analyze title characteristics
-        title_lower = title.lower()
-        
         # Check for specificity markers
         has_number = bool(re.search(r'\d+', title))
         has_year = bool(re.search(r'20[2-9]\d', title))
-        has_specific_terms = bool(re.search(
-            r'\b(guide|tutorial|step by step|complete|ultimate|best|top|review|example|free|easy|how to|checklist|'
-            r'guía|guia|tutorial|paso a paso|completo|completa|definitivo|definitiva|mejor|mejores|análisis|analisis|reseña|ejemplo|gratis|fácil|facil|cómo|como|lista)\b',
-            title_lower
-        ))
         
-        # Check for capitalized words (brands/names) excluding common starters (English + Spanish)
-        capitalized_words = re.findall(r'\b[A-ZÁÉÍÓÚÑ][a-záéíóúñ0-9]+\b', title)
-        common_caps = {
-            'The', 'A', 'An', 'How', 'What', 'Why', 'When', 'Where', 'Is', 'Are', 'Best', 'Top',
-            'El', 'La', 'Los', 'Las', 'Un', 'Una', 'Unos', 'Unas', 'Cómo', 'Como', 'Qué', 'Que', 'Por', 'Para', 'Mejor', 'Mejores'
-        }
-        brand_like = [w for w in capitalized_words if w not in common_caps]
+        # Extract title entities (Title Case aware)
+        brand_like = self._extract_title_entities(title, text=text)
         
-        # Calculate score
+        # Calculate score (redistributed 40/25/20/15 = 100, removing value terms)
         score_factors = []
-        if has_number:
-            score_factors.append(("specific number", 20))
-        if has_year:
-            score_factors.append(("current year", 15))
-        if has_specific_terms:
-            score_factors.append(("value terms", 25))
         if brand_like:
-            score_factors.append((f"entities: {', '.join(brand_like[:3])}", 30))
+            score_factors.append((f"entities: {', '.join(brand_like[:3])}", 40))
+        if has_number:
+            score_factors.append(("specific number", 25))
+        if has_year:
+            score_factors.append(("current year", 20))
         if len(title.split()) >= 4:
-            score_factors.append(("good length", 10))
+            score_factors.append(("good length", 15))
         
-        raw_score = min(100, sum(f[1] for f in score_factors))
+        raw_score = min(100.0, sum(f[1] for f in score_factors))
         
         if raw_score < 100:
             missing = []
-            if not has_number:
-                missing.append("specific numbers")
-            if not has_specific_terms:
-                missing.append("value terms (guide, best, complete)")
             if not brand_like:
                 missing.append("recognizable brands/entities")
+            if not has_number:
+                missing.append("specific numbers")
             
             if missing:
                 recommendations.append(
@@ -339,36 +448,17 @@ class EntityDetector(BaseDetector):
                 recommendations=["Ensure content has consistent entity mentions."],
             ), []
         
-        # Extract key entities from title using language stop words
-        stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
+        # Extract key entities from title using Title Case aware extraction
+        key_entities = self._extract_title_entities(title, text=text)
         
-        # Clean title to list of words (generic entity extraction)
-        title_words = title.split()
-        
-        key_entities = []
-        for w in title_words:
-            # Clean word: remove trailing/leading punctuation but allow internal dots/hyphens
-            clean_w = w.strip(".,;:!?()[]\"'")
-            lower_w = clean_w.lower()
-            
-            # Candidate Rules:
-            # 1. Start with Uppercase (Title Case)
-            # 2. Length > 3
-            # 3. NOT in Stop Words
-            if (len(clean_w) > 3 and 
-                clean_w[0].isupper() and 
-                lower_w not in stop_words):
-                
-                if clean_w not in key_entities:
-                    key_entities.append(clean_w)
-                    
-        # If no entities found after strict check (unlikely for proper titles), fall back to simple
+        # If no strict entities found, fall back to non-stop words > 4 chars
         if not key_entities:
-             # Just take significant words > 4 chars not in stop words
-            for w in title_words:
+            stop_words = patterns["stop_words"] if patterns else get_lang_patterns("en")["stop_words"]
+            for w in title.split():
                 clean_w = w.strip(".,;:!?()[]\"'")
                 if len(clean_w) > 4 and clean_w.lower() not in stop_words:
-                     key_entities.append(clean_w)
+                    if clean_w not in key_entities:
+                        key_entities.append(clean_w)
         
         if not key_entities:
             return ScoreBreakdown(
