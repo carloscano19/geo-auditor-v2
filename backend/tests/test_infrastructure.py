@@ -170,6 +170,22 @@ class TestInfrastructureDetector:
         
         assert speed_breakdown is not None
         assert speed_breakdown.raw_score == 20.0
+
+    @pytest.mark.asyncio
+    async def test_speed_with_samples(self, detector):
+        """Test speed scoring displays median and all 3 samples in explanation."""
+        page_data = create_mock_page_data(ttfb_ms=650.0)
+        page_data.ttfb_samples = [600.0, 650.0, 720.0]
+
+        result = await detector.analyze(page_data)
+        speed_breakdown = next(
+            (b for b in result.breakdown if "Speed" in b.name),
+            None
+        )
+        assert speed_breakdown is not None
+        assert "650ms (excellent)" in speed_breakdown.explanation
+        assert "samples: 600ms, 650ms, 720ms" in speed_breakdown.explanation
+
     
     @pytest.mark.asyncio
     async def test_crawlability_noindex(self, detector):

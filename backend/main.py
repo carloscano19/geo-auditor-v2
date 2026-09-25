@@ -17,7 +17,7 @@ import asyncio
 import logging
 import traceback
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple
 from contextlib import asynccontextmanager
 import httpx
 from fastapi import FastAPI, HTTPException
@@ -46,27 +46,43 @@ scraper: PlaywrightScraper = None
 scrape_semaphore = asyncio.Semaphore(1)
 
 
-async def measure_ttfb(url: str) -> Optional[float]:
+async def _measure_single_ttfb(client: httpx.AsyncClient, url: str, headers: dict) -> Optional[float]:
+    """Single TTFB measurement."""
+    try:
+        start_time = time.perf_counter()
+        async with client.stream("GET", url, headers=headers) as response:
+            return (time.perf_counter() - start_time) * 1000
+    except Exception:
+        return None
+
+
+async def measure_ttfb(url: str) -> Tuple[Optional[float], Optional[list[float]]]:
     """
-    Measure Time To First Byte (TTFB) using an independent HTTP GET request with httpx.
+    Measure Time To First Byte (TTFB) 3 times sequentially and return (median_ttfb, samples).
     Uses client.stream to stop timing as soon as response headers arrive without reading the body.
     """
     if not url or not url.startswith(("http://", "https://")):
-        return None
+        return None, None
     user_agent = (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     )
     headers = {"User-Agent": user_agent}
-    start_time = time.perf_counter()
+    samples: list[float] = []
     try:
         async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            async with client.stream("GET", url, headers=headers) as response:
-                ttfb_ms = (time.perf_counter() - start_time) * 1000
-                return ttfb_ms
+            for _ in range(3):
+                sample = await _measure_single_ttfb(client, url, headers)
+                if sample is not None:
+                    samples.append(sample)
+        if not samples:
+            return None, None
+        import statistics
+        median_val = statistics.median(samples)
+        return median_val, samples
     except Exception as e:
         logger.warning(f"TTFB measurement failed for {url}: {e}")
-        return None
+        return None, None
 
 
 async def fetch_robots_txt(url: str) -> Optional[str]:
@@ -219,8 +235,15 @@ async def audit_url(request: AuditRequest):
             async with scrape_semaphore:
                 ttfb_task = measure_ttfb(request.url)
                 scrape_task = scraper.scrape(request.url)
-                ttfb_val, page_data = await asyncio.gather(ttfb_task, scrape_task)
-                page_data.ttfb_ms = ttfb_val
+                ttfb_res, page_data = await asyncio.gather(ttfb_task, scrape_task)
+                if isinstance(ttfb_res, tuple) and len(ttfb_res) == 2:
+                    ttfb_median, ttfb_samples = ttfb_res
+                elif isinstance(ttfb_res, (int, float)):
+                    ttfb_median, ttfb_samples = float(ttfb_res), [float(ttfb_res)]
+                else:
+                    ttfb_median, ttfb_samples = None, None
+                page_data.ttfb_ms = ttfb_median
+                page_data.ttfb_samples = ttfb_samples
                 # Use final_url (post-redirect) for robots.txt
                 target_url_for_robots = page_data.final_url or request.url
                 page_data.robots_txt_content = await fetch_robots_txt(target_url_for_robots)

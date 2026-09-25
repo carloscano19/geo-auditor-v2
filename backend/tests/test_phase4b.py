@@ -173,7 +173,7 @@ async def test_newsroom_page_detected_as_news_without_experience_signals():
     assert abs(total_weights - 1.0) < 0.01
 
 
-# 5. First-party data claim with methodology signal marked as verified
+# 5. First-party data claims: >=2 methodology signals verify claims, except third-party attributions
 @pytest.mark.asyncio
 async def test_first_party_data_claim_with_methodology_verified():
     html = """
@@ -181,15 +181,17 @@ async def test_first_party_data_claim_with_methodology_verified():
         <body>
             <article>
                 <h1>Estudio de Visibilidad y Citabilidad en IA</h1>
-                <p>Metodología: analizamos una muestra de 500 aplicaciones web en entornos de producción durante seis meses.</p>
-                <p>En nuestro estudio observamos que el 68% de las páginas analizadas sufren problemas críticos de rastreo.</p>
+                <p>He lanzado un estudio de 500 consultas y he medido 50 aspectos técnicos.</p>
+                <p>El 84% de las frases no conserva las palabras originales del texto analizado.</p>
+                <p>Según Statista, el 60% de usuarios utiliza motores de inteligencia artificial.</p>
             </article>
         </body>
     </html>
     """
     text = (
-        "Metodología: analizamos una muestra de 500 aplicaciones web en entornos de producción durante seis meses. "
-        "En nuestro estudio observamos que el 68% de las páginas analizadas sufren problemas críticos de rastreo."
+        "He lanzado un estudio de 500 consultas y he medido 50 aspectos técnicos. "
+        "El 84% de las frases no conserva las palabras originales del texto analizado. "
+        "Según Statista, el 60% de usuarios utiliza motores de inteligencia artificial."
     )
     page = make_page(html=html, text=text, url="https://example.com/es/estudio")
     page.language = "es"
@@ -199,7 +201,10 @@ async def test_first_party_data_claim_with_methodology_verified():
 
     evidence_bd = next(b for b in result.breakdown if b.name == "Evidence Density")
     assert "Verified (first-party data)" in evidence_bd.explanation
-    assert "Found 1/1 verified claims" in evidence_bd.explanation
+    # 3 claims found: 84% and the study description are verified first-party, while 60% is unverified because it is according to Statista without link
+    assert "Found 2/3 verified claims" in evidence_bd.explanation
+    assert 'Verified (first-party data): "El 84% de las frases no conserva las palabras' in evidence_bd.explanation
+    assert 'Unverified: "Según Statista, el 60% de usuarios utiliza' in evidence_bd.explanation
 
 
 # 6. Title Entities: Recognizable entities (70) and proper length (30) without number/year factors

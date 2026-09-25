@@ -415,6 +415,9 @@ class InfrastructureDetector(BaseDetector):
         ttfb_ms = page_data.ttfb_ms
         recommendations = []
         
+        ttfb_samples = getattr(page_data, "ttfb_samples", None)
+        samples_str = f" [samples: {', '.join(f'{s:.0f}ms' for s in ttfb_samples)}]" if ttfb_samples and len(ttfb_samples) > 1 else ""
+
         if ttfb_ms is None:
             raw_score = 20.0
             explanation = "TTFB measurement failed or timed out. Default score applied: 20."
@@ -422,16 +425,16 @@ class InfrastructureDetector(BaseDetector):
         elif ttfb_ms < self.TTFB_EXCELLENT:
             raw_score = 100.0
             status = "excellent"
-            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Server response is optimal for AI crawlers."
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}){samples_str}. Server response is optimal for AI crawlers."
         elif ttfb_ms < self.TTFB_GOOD:
             raw_score = 80.0
             status = "good"
-            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Good server response time."
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}){samples_str}. Good server response time."
             recommendations.append(f"Goal: reduce TTFB to <800ms (currently {ttfb_ms:.0f}ms).")
         elif ttfb_ms < self.TTFB_ACCEPTABLE:
             raw_score = 50.0
             status = "acceptable"
-            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Server response is slower than optimal."
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}){samples_str}. Server response is slower than optimal."
             recommendations.extend([
                 f"Reduce server response time (TTFB currently {ttfb_ms:.0f}ms, aim for <800ms).",
                 "Consider edge caching (CDN) or backend query optimization."
@@ -439,7 +442,7 @@ class InfrastructureDetector(BaseDetector):
         else:
             raw_score = 20.0
             status = "slow"
-            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}). Slow server response."
+            explanation = f"TTFB: {ttfb_ms:.0f}ms ({status}){samples_str}. Slow server response."
             recommendations.extend([
                 f"Critical: Reduce TTFB (currently {ttfb_ms:.0f}ms, aim for <800ms).",
                 "Slow initial server response delays AI crawler indexing and citability."

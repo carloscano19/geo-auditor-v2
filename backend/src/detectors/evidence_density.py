@@ -202,22 +202,30 @@ class EvidenceDensityDetector(BaseDetector):
                         
             return False
 
-        # Check methodology signals across full text
-        has_methodology = False
+        # Check methodology signals across full text (>= 2 distinct signals required for study status)
         methodology_patterns = []
-        first_party_patterns = []
         if lang_patterns:
             methodology_patterns = lang_patterns.get("methodology_signals", [])
-            first_party_patterns = lang_patterns.get("first_party_claims", [])
         else:
             from src.utils.lang_patterns import PATTERNS_BY_LANG
             methodology_patterns = PATTERNS_BY_LANG["en"]["methodology_signals"] + PATTERNS_BY_LANG["es"]["methodology_signals"]
-            first_party_patterns = PATTERNS_BY_LANG["en"]["first_party_claims"] + PATTERNS_BY_LANG["es"]["first_party_claims"]
 
+        matched_methodology_signals = set()
         for pat in methodology_patterns:
             if re.search(pat, text, re.IGNORECASE):
-                has_methodology = True
-                break
+                matched_methodology_signals.add(pat)
+
+        is_own_study = len(matched_methodology_signals) >= 2
+
+        # Third-party attribution patterns (these claims explicitly cite third parties and still require external links)
+        third_party_patterns = [
+            r'\baccording\s+to\b',
+            r'\bseg[uú]n\b',
+            r'\bde\s+acuerdo\s+con\b',
+            r'\b\w+\s+reports?\b',
+            r'\bas\s+reported\s+by\b',
+            r'\bas\s+stated\s+by\b',
+        ]
 
         claims: List[Tuple[str, bool, Optional[str]]] = []  # (sentence, is_verified, verified_type)
 
@@ -232,10 +240,13 @@ class EvidenceDensityDetector(BaseDetector):
                 if is_verified_in_dom(sentence, block):
                     is_verified = True
                     verified_type = "external"
-                # 2. First-party methodology verification
-                elif has_methodology and any(re.search(p, sentence, re.IGNORECASE) for p in first_party_patterns):
-                    is_verified = True
-                    verified_type = "first_party"
+                # 2. First-party study verification: if page has >= 2 distinct methodology signals,
+                # all claims count as verified (first-party data), UNLESS explicitly attributed to a third party
+                elif is_own_study:
+                    is_third_party = any(re.search(tp, sentence, re.IGNORECASE) for tp in third_party_patterns)
+                    if not is_third_party:
+                        is_verified = True
+                        verified_type = "first_party"
 
                 claims.append((sentence, is_verified, verified_type))
         

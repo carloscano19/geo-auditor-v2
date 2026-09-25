@@ -64,6 +64,7 @@ class PageData(BaseModel):
     is_ssr: bool = True  # True if SSR, False if CSR
     word_count: int = 0
     ttfb_ms: Optional[float] = None
+    ttfb_samples: Optional[list[float]] = None
     language: str = "en"
     content_type: str = "guide_blog"
     robots_txt_content: Optional[str] = None
