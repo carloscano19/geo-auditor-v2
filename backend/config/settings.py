@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     
     # API Configuration
     app_name: str = "GEO-AUDITOR AI"
-    app_version: str = "v2.2"
+    app_version: str = "v2.3"
     debug: bool = False
     
     # Server Configuration

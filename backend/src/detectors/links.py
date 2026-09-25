@@ -20,7 +20,7 @@ class LinksDetector(BaseDetector):
     """
     
     dimension_name = "links_verifiability"
-    weight = 0.08
+    weight = 0.06
     
     # Authority Markers
     AUTHORITY_DOMAINS = [
@@ -139,57 +139,47 @@ class LinksDetector(BaseDetector):
             recommendations=link_recs
         ))
         
-        # 2. Authority Sources (50%)
+        # 2. Source Diversity (50%)
         # ----------------------------------------------------------------
-        authority_links_found = []
-        
-        # Only check citation links for authority
+        cited_domains = set()
         for link in citation_links:
             try:
-                domain = urlparse(link).netloc.lower()
-                is_auth = False
-                
-                # Check predefined domains
-                for auth_dom in self.AUTHORITY_DOMAINS:
-                    if auth_dom in domain:
-                        is_auth = True
-                        break
-                
-                # Check TLDs
-                if not is_auth:
-                    for tld in self.AUTHORITY_TLDS:
-                        if domain.endswith(tld):
-                            is_auth = True
-                            break
-                            
-                if is_auth:
-                    authority_links_found.append(domain)
-            except:
+                dom = urlparse(link).netloc.lower().replace("www.", "")
+                if dom:
+                    cited_domains.add(dom)
+            except Exception:
                 continue
-                
-        auth_count = len(set(authority_links_found)) # Unique domains
-        
-        if auth_count >= 2:
-            auth_score = 100.0
-            auth_status = "High Authority"
-        elif auth_count == 1:
-            auth_score = 50.0
-            auth_status = "Medium Authority"
+
+        unique_external_domains = sorted(list(cited_domains))
+        num_domains = len(unique_external_domains)
+
+        if num_domains >= 3:
+            diversity_score = 100.0
+            diversity_status = "High Diversity"
+        elif num_domains == 2:
+            diversity_score = 70.0
+            diversity_status = "Moderate Diversity"
+        elif num_domains == 1:
+            diversity_score = 40.0
+            diversity_status = "Low Diversity"
         else:
-            auth_score = 0.0
-            auth_status = "Low Authority"
-            
-        auth_recs = []
-        if auth_count < 2:
-            auth_recs.append("Link to high-authority domains (.edu, .gov, major citations) to boost trust.")
-            
+            diversity_score = 0.0
+            diversity_status = "No Diversity"
+
+        div_recs = []
+        if num_domains < 3:
+            div_recs.append("Cite at least 3 distinct external sources to improve source diversity.")
+
+        domains_sample = f" ({', '.join(unique_external_domains[:3])})" if unique_external_domains else ""
+        explanation_div = f"{'✅' if diversity_score >= 70 else '⚠️' if diversity_score > 0 else '❌'} {diversity_status}: Found {num_domains} distinct external domain(s){domains_sample}."
+
         breakdown.append(ScoreBreakdown(
-            name="Authority Sources Detected",
-            raw_score=auth_score,
+            name="Source Diversity",
+            raw_score=diversity_score,
             weight=0.50,
-            weighted_score=auth_score * 0.50,
-            explanation=f"{'✅' if auth_score > 0 else '❌'} {auth_status}: Found {auth_count} sources ({', '.join(list(set(authority_links_found))[:3])}).",
-            recommendations=auth_recs
+            weighted_score=diversity_score * 0.50,
+            explanation=explanation_div,
+            recommendations=div_recs
         ))
         
         # Calculate Total
@@ -209,6 +199,6 @@ class LinksDetector(BaseDetector):
                 "citation_links": citation_links[:10],
                 "utility_links": utility_links[:10],
                 "internal_links_count": len(internal_links),
-                "authority_domains_found": list(set(authority_links_found)),
+                "distinct_domains_found": unique_external_domains,
             }
         )

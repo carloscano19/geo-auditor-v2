@@ -22,7 +22,16 @@ class FreshnessDetector(BaseDetector):
     """
     
     dimension_name = "freshness"
-    weight = 0.05
+    weight = 0.04
+
+    def __init__(self, config_override: dict = None):
+        try:
+            from config.settings import get_settings
+            weights = config_override or get_settings().scoring_weights
+            fr_config = weights.get("dimensions", {}).get(self.dimension_name, {})
+            self.weight = fr_config.get("weight", self.weight)
+        except Exception:
+            pass
     
     @property
     def current_year(self) -> int:

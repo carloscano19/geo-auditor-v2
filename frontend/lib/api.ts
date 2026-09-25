@@ -10,6 +10,7 @@ export interface AuditRequest {
     url?: string;
     content_text?: string;
     platform_target?: 'chatgpt' | 'gemini' | 'perplexity' | 'copilot' | 'universal';
+    target_query?: string;
 }
 
 export interface ScoreBreakdown {
@@ -45,6 +46,7 @@ export interface AuditResponse {
     dimensions: DimensionScore[];
     scoring_version: string;
     language?: string;
+    content_type?: string;
     analysis_time_ms: number;
     analyzed_at: string;
     recommendations: string[];

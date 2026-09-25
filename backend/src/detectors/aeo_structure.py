@@ -49,7 +49,7 @@ class AEOStructureDetector(BaseDetector):
     """
     
     dimension_name: str = "aeo_structure"
-    weight: float = 0.20
+    weight: float = 0.12
     
     # Sub-dimension weights (Redistributed across remaining metrics: Rule of 60, Heading Structure, Text Walls, Logical Connectors)
     RULE_60_WEIGHT = 0.3333           # Was 0.20

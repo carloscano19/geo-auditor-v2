@@ -23,6 +23,8 @@ export default function AuditResults({ results }: AuditResultsProps) {
             freshness: "Freshness & Currency",
             format_citability: "Formatting & Scannability",
             links_verifiability: "Links & Verifiability",
+            passage_quality: "Passage Quality",
+            query_match: "Query Match & Relevance",
         };
 
         const getReadableName = (key: string) => {
@@ -111,6 +113,7 @@ export default function AuditResults({ results }: AuditResultsProps) {
                             </span>
                             <span>📊 Version: {results.scoring_version}</span>
                             <span>🌐 Language: {(results.language || "en").toUpperCase()}</span>
+                            <span>📄 Type: {results.content_type === "news" ? "News / Press" : results.content_type === "review" ? "Review" : results.content_type === "product" ? "Product" : "Guide / Blog"}</span>
                             <span>
                                 📅{" "}
                                 {new Date(results.analyzed_at).toLocaleString("en-US", {
@@ -132,6 +135,49 @@ export default function AuditResults({ results }: AuditResultsProps) {
                     {results.detector_results.map((result, index) => (
                         <ScoreBreakdown key={index} result={result} />
                     ))}
+                </div>
+            </div>
+
+            {/* Off-page Signals Info Card */}
+            <div className="glass-card p-6 border-slate-700/60 bg-slate-900/40">
+                <div className="flex items-center gap-2 mb-2">
+                    <span className="text-lg">ℹ️</span>
+                    <h4 className="text-base font-semibold text-text-primary">
+                        Not measured by this tool
+                    </h4>
+                </div>
+                <p className="text-xs text-text-muted mb-4">
+                    The Citation Score measures on-page and architectural readiness. Leading AI engines (ChatGPT, Perplexity, Gemini) also consider external off-page signals:
+                </p>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
+                        <span className="text-base">📊</span>
+                        <div>
+                            <p className="font-medium text-text-secondary text-xs">Organic ranking position</p>
+                            <p className="text-[11px] text-text-muted">Domain authority & traditional search ranking</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
+                        <span className="text-base">🏷️</span>
+                        <div>
+                            <p className="font-medium text-text-secondary text-xs">Brand mentions on third-party sites</p>
+                            <p className="text-[11px] text-text-muted">Unlinked co-citations and web consensus</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
+                        <span className="text-base">📱</span>
+                        <div>
+                            <p className="font-medium text-text-secondary text-xs">Presence on YouTube / Reddit / social</p>
+                            <p className="text-[11px] text-text-muted">Community discussion and multimedia footprints</p>
+                        </div>
+                    </div>
+                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
+                        <span className="text-base">🏛️</span>
+                        <div>
+                            <p className="font-medium text-text-secondary text-xs">Publisher reputation</p>
+                            <p className="text-[11px] text-text-muted">Historical accuracy & verified entity graph status</p>
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>

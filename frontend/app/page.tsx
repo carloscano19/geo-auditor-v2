@@ -37,7 +37,7 @@ export default function Home() {
       });
   }, []);
 
-  const handleAudit = async (url: string | null, text: string | null, platform: string) => {
+  const handleAudit = async (url: string | null, text: string | null, platform: string, targetQuery?: string) => {
     setIsLoading(true);
     setError(null);
 
@@ -46,6 +46,7 @@ export default function Home() {
         url: url || undefined,
         content_text: text || undefined,
         platform_target: platform as "universal" | "chatgpt" | "gemini" | "perplexity" | "copilot",
+        target_query: targetQuery || undefined,
       });
       setResults(response);
     } catch (err) {
@@ -113,7 +114,7 @@ export default function Home() {
           <div className="text-xs text-text-muted space-y-2">
             <p className="flex items-center gap-2">
               <span className="w-2 h-2 bg-score-excellent rounded-full" />
-              9 Citability Dimensions
+              {results ? `${results.dimensions?.length || 0} Dimensions Evaluated` : "10-11 Citability Dimensions"}
             </p>
             <p className="text-text-muted/60 mt-4">
               {version} (English)

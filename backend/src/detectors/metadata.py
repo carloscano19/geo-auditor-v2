@@ -37,7 +37,7 @@ class MetadataDetector(BaseDetector):
     """
     
     dimension_name: str = "metadata_schema"
-    weight: float = 0.05
+    weight: float = 0.04
     
     # Sub-dimension weights
     SCHEMA_PRESENCE_WEIGHT = 0.40

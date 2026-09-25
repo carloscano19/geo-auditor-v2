@@ -47,7 +47,7 @@ class EntityDetector(BaseDetector):
     """
     
     dimension_name: str = "entity_identification"
-    weight: float = 0.08
+    weight: float = 0.06
     
     # Sub-dimension weights
     POWER_LEAD_WEIGHT = 0.40
@@ -421,37 +421,26 @@ class EntityDetector(BaseDetector):
                 recommendations=["Add a clear H1 header."],
             )
         
-        # Check for specificity markers
-        has_number = bool(re.search(r'\d+', title))
-        has_year = bool(re.search(r'20[2-9]\d', title))
-        
         # Extract title entities (Title Case aware)
         brand_like = entities if entities is not None else self._extract_title_entities(title, text=text)
         
-        # Calculate score (redistributed 40/25/20/15 = 100, removing value terms)
         score_factors = []
         if brand_like:
-            score_factors.append((f"entities: {', '.join(brand_like[:3])}", 40))
-        if has_number:
-            score_factors.append(("specific number", 25))
-        if has_year:
-            score_factors.append(("current year", 20))
-        if len(title.split()) >= 4:
-            score_factors.append(("good length", 15))
+            score_factors.append((f"entities: {', '.join(brand_like[:3])}", 70))
         
-        raw_score = min(100.0, sum(f[1] for f in score_factors))
+        words_count = len(title.split())
+        if words_count >= 4 and len(title) >= 30:
+            score_factors.append(("adequate length", 30))
+        elif words_count >= 4 or len(title) >= 20:
+            score_factors.append(("acceptable length", 20))
+            recommendations.append("Expand title slightly to 50-70 characters for optimal clarity.")
+        else:
+            recommendations.append("Expand title to at least 4-5 descriptive words (50-70 characters).")
         
-        if raw_score < 100:
-            missing = []
-            if not brand_like:
-                missing.append("recognizable brands/entities")
-            if not has_number:
-                missing.append("specific numbers")
-            
-            if missing:
-                recommendations.append(
-                    f"Enrich title by adding: {', '.join(missing)}."
-                )
+        raw_score = min(100.0, float(sum(f[1] for f in score_factors)))
+        
+        if not brand_like:
+            recommendations.append("Include recognizable entities or brand names in the title.")
         
         factors_text = ", ".join(f[0] for f in score_factors)
         explanation = (

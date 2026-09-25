@@ -24,13 +24,22 @@ class AuthorityDetector(BaseDetector):
     """
     
     dimension_name = "eeat_authority"
-    weight = 0.15  # 15% of total score
+    weight = 0.12  # 12% of total score
     
     # Regex patterns for authorship (Default English, loaded centrally)
     AUTHOR_PATTERNS = get_lang_patterns("en")["authorship"]
     
     # Regex for Experience Signals (Default English, loaded centrally)
     EXPERIENCE_PATTERNS = get_lang_patterns("en")["experience"]
+
+    def __init__(self, config_override: dict = None):
+        try:
+            from config.settings import get_settings
+            weights = config_override or get_settings().scoring_weights
+            eeat_config = weights.get("dimensions", {}).get(self.dimension_name, {})
+            self.weight = eeat_config.get("weight", self.weight)
+        except Exception:
+            pass
 
     def _extract_author_from_json_ld(self, html: str) -> Optional[str]:
         """Extract author from JSON-LD schema (Article, BlogPosting, NewsArticle)."""
@@ -194,6 +203,23 @@ class AuthorityDetector(BaseDetector):
                 has_author = True
                 author_match = f"Author found in content: {text_author}"
 
+        # Detect content type to handle Experience Signals exclusion for news/product
+        content_type = getattr(page_data, "content_type", None)
+        if not content_type:
+            from src.utils.content_type import detect_content_type
+            content_type = detect_content_type(page_data)
+        skip_experience = content_type in ["news", "product"]
+
+        # Sub-dimension weights (redistributed if Experience Signals is skipped)
+        if skip_experience:
+            auth_weight = 0.40 / 0.65
+            exp_weight = 0.0
+            trust_weight = 0.25 / 0.65
+        else:
+            auth_weight = 0.40
+            exp_weight = 0.35
+            trust_weight = 0.25
+
         auth_score = 100.0 if has_author else 0.0
         auth_explanation = author_match if has_author else "No clear authorship attribution found."
         auth_recs = []
@@ -203,47 +229,48 @@ class AuthorityDetector(BaseDetector):
         breakdown.append(ScoreBreakdown(
             name="Authorship Verification",
             raw_score=auth_score,
-            weight=0.40,
-            weighted_score=auth_score * 0.40,
+            weight=round(auth_weight, 4),
+            weighted_score=auth_score * auth_weight,
             explanation=f"{'✅' if has_author else '❌'} {auth_explanation}",
             recommendations=auth_recs
         ))
         
-        # 2. Experience Signals (35%)
+        # 2. Experience Signals (35%) - ONLY for non-news, non-product content
         # ----------------------------------------------------------------
-        exp_matches = []
-        for pattern in experience_patterns:
-            matches = re.findall(pattern, page_data.text_content)
-            exp_matches.extend(matches)
+        if not skip_experience:
+            exp_matches = []
+            for pattern in experience_patterns:
+                matches = re.findall(pattern, page_data.text_content)
+                exp_matches.extend(matches)
+                
+            signal_count = len(exp_matches)
             
-        signal_count = len(exp_matches)
+            # Scoring logic: >3 strong, 1-2 moderate, 0 weak
+            if signal_count >= 3:
+                exp_score = 100.0
+                exp_status = "Strong"
+            elif signal_count >= 1:
+                exp_score = 60.0
+                exp_status = "Moderate"
+            else:
+                exp_score = 0.0
+                exp_status = "Weak"
+                
+            exp_explanation = f"Found {signal_count} first-person experience signals."
+            exp_recs = []
+            if signal_count < 3:
+                exp_recs.append("Use more first-person language ('I tested', 'We found') to demonstrate real experience.")
+                
+            breakdown.append(ScoreBreakdown(
+                name="Experience Signals",
+                raw_score=exp_score,
+                weight=round(exp_weight, 4),
+                weighted_score=exp_score * exp_weight,
+                explanation=f"{'✅' if signal_count > 0 else '❌'} {exp_status} Experience: {exp_explanation}",
+                recommendations=exp_recs
+            ))
         
-        # Scoring logic: >3 strong, 1-2 moderate, 0 weak
-        if signal_count >= 3:
-            exp_score = 100.0
-            exp_status = "Strong"
-        elif signal_count >= 1:
-            exp_score = 60.0
-            exp_status = "Moderate"
-        else:
-            exp_score = 0.0
-            exp_status = "Weak"
-            
-        exp_explanation = f"Found {signal_count} first-person experience signals."
-        exp_recs = []
-        if signal_count < 3:
-            exp_recs.append("Use more first-person language ('I tested', 'We found') to demonstrate real experience.")
-            
-        breakdown.append(ScoreBreakdown(
-            name="Experience Signals",
-            raw_score=exp_score,
-            weight=0.35,
-            weighted_score=exp_score * 0.35,
-            explanation=f"{'✅' if signal_count > 0 else '❌'} {exp_status} Experience: {exp_explanation}",
-            recommendations=exp_recs
-        ))
-        
-        # 3. Trust Pages (25%) - STRICT CRITERIA
+        # 3. Trust Pages (25% or 38.46% for news/product) - STRICT CRITERIA
         # ----------------------------------------------------------------
         trust_pages_found = []
         # Categories (supports English and Spanish trust paths)
@@ -286,15 +313,14 @@ class AuthorityDetector(BaseDetector):
         breakdown.append(ScoreBreakdown(
             name="Trust Pages",
             raw_score=trust_score,
-            weight=0.25,
-            weighted_score=trust_score * 0.25,
+            weight=round(trust_weight, 4),
+            weighted_score=trust_score * trust_weight,
             explanation=f"{'✅' if trust_score >= 70 else '⚠️' if trust_score > 0 else '❌'} {trust_explanation}",
             recommendations=trust_recs
         ))
 
         # Calculate Total Score
         total_contribution = sum(item.weighted_score for item in breakdown)
-        # Normalize: Since weights sum to 1.0 (0.4+0.35+0.25), the sum is the score.
         score = total_contribution
         
         # Add all recommendations to main list
@@ -307,5 +333,9 @@ class AuthorityDetector(BaseDetector):
             weight=self.weight,
             contribution=self.calculate_contribution(score),
             breakdown=breakdown,
-            errors=errors
+            errors=errors,
+            debug_info={
+                "content_type": content_type,
+                "experience_signals_evaluated": not skip_experience,
+            }
         )

@@ -242,15 +242,18 @@ async def audit_url(request: AuditRequest):
             detail="Internal error while running the audit."
         )
     
-    # Step 1.5: Language Detection
+    # Step 1.5: Language & Content Type Detection
     detected_lang = detect_language(page_data.text_content)
     page_data.language = detected_lang
+    from src.utils.content_type import detect_content_type
+    content_type = detect_content_type(page_data)
+    page_data.content_type = content_type
     
     # Step 2: Run detectors
     detector_results = []
     all_recommendations = []
     
-    # --- Layer 1: Technical Infrastructure (12%) ---
+    # --- Layer 1: Technical Infrastructure (10%) ---
     # Only run for URL-based audits
     if not request.content_text:
         try:
@@ -338,7 +341,7 @@ async def audit_url(request: AuditRequest):
     except Exception as e:
         print(f"Freshness detector error: {e}")
 
-    # --- Layer 9: Links & Verifiability (10%) ---
+    # --- Layer 9: Links & Verifiability (6%) ---
     try:
         from src.detectors.links import LinksDetector
         links_detector = LinksDetector()
@@ -349,7 +352,28 @@ async def audit_url(request: AuditRequest):
     except Exception as e:
         print(f"Links detector error: {e}")
 
-    # Note: MultiPlatformDetector (Layer 10) is reserved for future phases.
+    # --- Layer: Passage Quality (12%) ---
+    try:
+        from src.detectors.passage_quality import PassageQualityDetector
+        passage_detector = PassageQualityDetector()
+        passage_result = await passage_detector.analyze(page_data)
+        detector_results.append(passage_result)
+        for breakdown in passage_result.breakdown:
+            all_recommendations.extend(breakdown.recommendations)
+    except Exception as e:
+        print(f"Passage Quality detector error: {e}")
+
+    # --- Layer: Query Match (10%, optional) ---
+    if request.target_query and request.target_query.strip():
+        try:
+            from src.detectors.query_match import QueryMatchDetector
+            query_detector = QueryMatchDetector(target_query=request.target_query.strip())
+            query_result = await query_detector.analyze(page_data)
+            detector_results.append(query_result)
+            for breakdown in query_result.breakdown:
+                all_recommendations.extend(breakdown.recommendations)
+        except Exception as e:
+            print(f"Query match detector error: {e}")
     
     # Step 3: Calculate total score and normalized contribution per dimension
     # Normalized contribution: (score * weight) / sum(active_weights)
@@ -413,6 +437,7 @@ async def audit_url(request: AuditRequest):
         dimensions=dimension_scores,
         scoring_version=scoring_version,
         language=detected_lang,
+        content_type=content_type,
         analysis_time_ms=analysis_time_ms,
         analyzed_at=datetime.utcnow(),
         recommendations=top_recommendations,

@@ -139,6 +139,27 @@ PATTERNS_BY_LANG: Dict[str, Dict[str, Any]] = {
             r'(?:updated|published|posted)\s*(?:on)?\s*:?\s*(\d{4}-\d{2}-\d{2})'
         ],
         "month_map": ENGLISH_MONTH_MAP,
+        "methodology_signals": [
+            r'\bmethodology\b',
+            r'\bsample\s+of\b',
+            r'\bwe\s+analyzed\b',
+            r'\bour\s+data\b',
+            r'\bthis\s+study\b',
+            r'\bwe\s+surveyed\b',
+            r'\bour\s+(?:research|survey|benchmark|dataset)\b',
+        ],
+        "first_party_claims": [
+            r'\b(?:we|i)\s+(?:found|analyzed|observed|discovered|measured|tested|calculated)\b',
+            r'\b(?:our|my)\s+(?:data|study|research|findings|analysis|results|survey|benchmark)\s+(?:shows?|indicate[sd]?|demonstrates?|found|proves?|suggests?)\b',
+            r'\bin\s+(?:our|my)\s+(?:tests?|experiments?|analysis|testing|research|study)\b',
+            r'\bwe\s+collected\b',
+        ],
+        "referential_starters": [
+            r'^\s*(?:as\s+mentioned\s+(?:above|earlier|previously)|as\s+(?:we\s+have\s+)?seen|as\s+discussed|as\s+stated\s+(?:above|earlier))\b',
+            r'^\s*(?:this|these|those|such|the\s+above)\b',
+            r'^\s*(?:it|they)\s+(?:is|are|was|were|has|have|can|will|also)\b',
+            r'^\s*(?:as\s+noted|as\s+described|in\s+addition\s+to\s+the\s+above)\b',
+        ],
     },
     "es": {
         "claims": [
@@ -195,6 +216,29 @@ PATTERNS_BY_LANG: Dict[str, Dict[str, Any]] = {
             r'(?:actualizado|publicado|posteado)\s*(?:el)?\s*:?\s*(\d{4}-\d{2}-\d{2})'
         ],
         "month_map": SPANISH_MONTH_MAP,
+        "methodology_signals": [
+            r'\bmetodolog[ií]a\b',
+            r'\bmuestra\s+de\b',
+            r'\bhe\s+analizado\b',
+            r'\bhemos\s+analizado\b',
+            r'\banalizamos\b',
+            r'\beste\s+estudio\b',
+            r'\bnuestros\s+datos\b',
+            r'\bnuestra\s+(?:investigaci[oó]n|encuesta)\b',
+        ],
+        "first_party_claims": [
+            r'\b(?:encontramos|descubrimos|observamos|medimos|probamos|hallamos|calculamos)\b',
+            r'\b(?:hemos|he)\s+(?:encontrado|analizado|observado|medido|probado|descubierto)\b',
+            r'\b(?:nuestros|mis)\s+(?:datos|hallazgos|resultados|an[aá]lisis)\s+(?:muestran?|indican?|demuestran?|revelan?)\b',
+            r'\b(?:nuestro|mi)\s+(?:estudio|informe|reporte|experimento)\s+(?:muestra|indica|demuestra|revela)\b',
+            r'\ben\s+(?:nuestras|mis)\s+pruebas\b',
+        ],
+        "referential_starters": [
+            r'^\s*(?:como\s+(?:hemos|se\s+ha)\s+visto|como\s+se\s+mencion[oó]|como\s+dec[ií]amos|como\s+se\s+dijo|como\s+vimos)\b',
+            r'^\s*(?:esto|estos|estas|lo\s+anterior|dicho\s+esto)\b',
+            r'^\s*(?:dichos?|dichas?)\b',
+            r'^\s*(?:como\s+se\s+ha\s+explicado|tal\s+como\s+vimos)\b',
+        ],
     }
 }
 

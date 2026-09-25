@@ -1,8 +1,8 @@
 {
-  "scoring_version": "v2.2",
+  "scoring_version": "v2.3",
   "dimensions": {
     "technical_infrastructure": {
-      "weight": 0.12,
+      "weight": 0.10,
       "subdimensions": {
         "https": 0.20,
         "ssr_detection": 0.20,
@@ -12,19 +12,28 @@
       }
     },
     "metadata_schema": {
-      "weight": 0.05,
+      "weight": 0.04,
       "subdimensions": {}
     },
     "aeo_structure": {
-      "weight": 0.20,
+      "weight": 0.12,
       "subdimensions": {}
     },
+    "passage_quality": {
+      "weight": 0.12,
+      "subdimensions": {
+        "lexical_richness": 0.25,
+        "complete_sentences": 0.25,
+        "content_depth": 0.25,
+        "autonomous_passages": 0.25
+      }
+    },
     "evidence_density": {
-      "weight": 0.20,
+      "weight": 0.18,
       "subdimensions": {}
     },
     "eeat_authority": {
-      "weight": 0.15,
+      "weight": 0.12,
       "subdimensions": {
         "authorship_verification": 0.40,
         "experience_signals": 0.35,
@@ -32,27 +41,35 @@
       }
     },
     "entity_identification": {
-      "weight": 0.08,
+      "weight": 0.06,
       "subdimensions": {}
     },
     "freshness": {
-      "weight": 0.05,
+      "weight": 0.04,
       "subdimensions": {
         "date_currency": 1.00
       }
     },
     "format_citability": {
-      "weight": 0.07,
+      "weight": 0.06,
       "subdimensions": {
         "scannability": 0.5714,
         "multimedia": 0.4286
       }
     },
     "links_verifiability": {
-      "weight": 0.08,
+      "weight": 0.06,
       "subdimensions": {
         "external_link_quality": 0.50,
-        "authority_sources": 0.50
+        "source_diversity": 0.50
+      }
+    },
+    "query_match": {
+      "weight": 0.10,
+      "subdimensions": {
+        "full_content_similarity": 0.40,
+        "best_passage_similarity": 0.40,
+        "first_paragraph_presence": 0.20
       }
     }
   }

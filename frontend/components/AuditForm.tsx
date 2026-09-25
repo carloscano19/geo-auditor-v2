@@ -3,7 +3,7 @@
 import { useState, FormEvent } from "react";
 
 interface AuditFormProps {
-    onSubmit: (url: string | null, text: string | null, platform: string) => void;
+    onSubmit: (url: string | null, text: string | null, platform: string, targetQuery?: string) => void;
     isLoading: boolean;
 }
 
@@ -12,18 +12,20 @@ export default function AuditForm({ onSubmit, isLoading }: AuditFormProps) {
     const [url, setUrl] = useState("");
     const [title, setTitle] = useState("");
     const [body, setBody] = useState("");
+    const [targetQuery, setTargetQuery] = useState("");
     const [platform, setPlatform] = useState("universal");
 
     const handleSubmit = (e: FormEvent) => {
         e.preventDefault();
+        const trimmedQuery = targetQuery.trim() || undefined;
         if (mode === "url" && url.trim()) {
-            onSubmit(url.trim(), null, platform);
+            onSubmit(url.trim(), null, platform, trimmedQuery);
         } else if (mode === "text" && body.trim()) {
             // Concatenate title + body as HTML for backend
             const combinedHtml = title.trim()
                 ? `<h1>${title.trim()}</h1>\n${body.trim()}`
                 : body.trim();
-            onSubmit(null, combinedHtml, platform);
+            onSubmit(null, combinedHtml, platform, trimmedQuery);
         }
     };
 
@@ -133,6 +135,30 @@ export default function AuditForm({ onSubmit, isLoading }: AuditFormProps) {
                     </div>
                 </div>
             )}
+
+            {/* Target Query (Optional) */}
+            <div className="space-y-2">
+                <label
+                    htmlFor="targetQuery"
+                    className="block text-sm font-medium text-text-secondary"
+                >
+                    Target query <span className="text-xs text-text-muted font-normal">(optional)</span>
+                </label>
+                <div className="relative">
+                    <div className="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+                        <span className="text-lg">🎯</span>
+                    </div>
+                    <input
+                        type="text"
+                        id="targetQuery"
+                        value={targetQuery}
+                        onChange={(e) => setTargetQuery(e.target.value)}
+                        placeholder="e.g. how chiliz buybacks create long term value"
+                        className="input-field pl-12"
+                        disabled={isLoading}
+                    />
+                </div>
+            </div>
 
             {/* Platform Selection */}
             <div className="space-y-2">

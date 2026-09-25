@@ -38,7 +38,7 @@ class InfrastructureDetector(BaseDetector):
     """
     
     dimension_name: str = "technical_infrastructure"
-    weight: float = 0.12
+    weight: float = 0.10
     
     # Sub-dimension weights (5 subdimensions)
     HTTPS_WEIGHT = 0.20

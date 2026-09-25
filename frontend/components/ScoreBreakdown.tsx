@@ -46,6 +46,8 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
         freshness: "Freshness & Currency",
         format_citability: "Formatting & Scannability",
         links_verifiability: "Links & Verifiability",
+        passage_quality: "Passage Quality",
+        query_match: "Query Match & Relevance",
     };
 
     // Format dimension name for display
@@ -97,7 +99,15 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                         "Power Lead (Entity in Lead)": "Main Entity mentioned in first 150 chars?",
                         "Rule of 60 (Answer First)": "First paragraph answers user intent directly?",
                         "Entity Density": "Frequency of key topics/brands in text.",
-                        "Text Walls": "Paragraphs longer than 5 lines (Mobile readability)."
+                        "Text Walls": "Paragraphs longer than 5 lines (Mobile readability).",
+                        "Source Diversity": "Number of distinct external citation domains (excluding social networks).",
+                        "Lexical Richness (MTLD)": "Measure of Textual Lexical Diversity across content.",
+                        "Complete Sentences": "% of substantive paragraphs ending with terminal punctuation.",
+                        "Content Depth": "Number of in-depth substantive paragraphs (≥ 25 words).",
+                        "Autonomous Passages": "% of paragraphs that do not depend on previous context.",
+                        "Full Content Match": "BM25 keyword relevance across the entire article.",
+                        "Best Passage Match": "Relevance of the most informative matching paragraph.",
+                        "Opening Paragraph Match": "Presence of core target query terms in opening paragraph."
                     };
 
                     return (

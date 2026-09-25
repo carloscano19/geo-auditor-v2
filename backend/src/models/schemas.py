@@ -25,6 +25,10 @@ class AuditRequest(BaseModel):
         default="universal",
         description="Target platform: chatgpt, gemini, perplexity, copilot, or universal"
     )
+    target_query: Optional[str] = Field(
+        default=None,
+        description="Optional target search query to evaluate relevance"
+    )
 
 
 class PageData(BaseModel):
@@ -61,6 +65,7 @@ class PageData(BaseModel):
     word_count: int = 0
     ttfb_ms: Optional[float] = None
     language: str = "en"
+    content_type: str = "guide_blog"
     robots_txt_content: Optional[str] = None
 
 
@@ -150,6 +155,7 @@ class AuditResponse(BaseModel):
     dimensions: list[DimensionScore]
     scoring_version: str
     language: str = "en"
+    content_type: str = "guide_blog"
     analysis_time_ms: float
     analyzed_at: datetime = Field(default_factory=datetime.utcnow)
     recommendations: list[str] = Field(default_factory=list)

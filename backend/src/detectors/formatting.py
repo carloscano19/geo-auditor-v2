@@ -21,7 +21,16 @@ class FormattingDetector(BaseDetector):
     """
     
     dimension_name = "format_citability"
-    weight = 0.07
+    weight = 0.06
+
+    def __init__(self, config_override: dict = None):
+        try:
+            from config.settings import get_settings
+            weights = config_override or get_settings().scoring_weights
+            fc_config = weights.get("dimensions", {}).get(self.dimension_name, {})
+            self.weight = fc_config.get("weight", self.weight)
+        except Exception:
+            pass
     
     # Text Wall Thresholds - GOLD STANDARD: Raised to 7 lines (~700 chars)
     MAX_CHARS_PER_BLOCK = 700  # Approx 7 lines / 100-120 words
