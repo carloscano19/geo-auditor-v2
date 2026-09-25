@@ -114,7 +114,7 @@ export default function Home() {
           <div className="text-xs text-text-muted space-y-2">
             <p className="flex items-center gap-2">
               <span className="w-2 h-2 bg-score-excellent rounded-full" />
-              {results ? `${results.dimensions?.length || 0} Dimensions Evaluated` : "10-11 Citability Dimensions"}
+              {results ? `${results.dimensions?.length || 0} Dimensions Evaluated` : "Up to 11 citability dimensions"}
             </p>
             <p className="text-text-muted/60 mt-4">
               {version} (English)

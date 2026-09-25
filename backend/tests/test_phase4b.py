@@ -255,3 +255,35 @@ async def test_source_diversity_submetric():
     res_1 = await detector.analyze(page_1)
     div_bd_1 = next(b for b in res_1.breakdown if b.name == "Source Diversity")
     assert div_bd_1.raw_score == 40.0
+
+
+# 8. Title indicators check: review vs guide_blog (análisis should not trigger review)
+def test_content_type_title_classification():
+    # 1. Title with "Review of the iPhone 17" -> review
+    html_review = """
+    <html>
+        <body>
+            <article>
+                <h1>Review of the iPhone 17</h1>
+                <p>In-depth look at the performance, camera, and battery improvements.</p>
+            </article>
+        </body>
+    </html>
+    """
+    page_review = make_page(html=html_review, url="https://example.com/gadgets/iphone-17")
+    assert detect_content_type(page_review) == "review"
+
+    # 2. Title with "Análisis de citas en AI Overviews" -> guide_blog (not review)
+    html_analysis = """
+    <html>
+        <body>
+            <article>
+                <h1>Análisis de citas en AI Overviews</h1>
+                <p>Estudio detallado sobre los factores de citabilidad e inclusión en motores de IA.</p>
+            </article>
+        </body>
+    </html>
+    """
+    page_analysis = make_page(html=html_analysis, url="https://example.com/blog/analisis-citas")
+    assert detect_content_type(page_analysis) == "guide_blog"
+

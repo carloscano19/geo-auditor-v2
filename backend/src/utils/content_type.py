@@ -40,7 +40,7 @@ def detect_content_type(page_data: PageData) -> str:
     if any(np in path for np in news_paths) or path.endswith(('/news', '/newsroom', '/press', '/noticias', '/prensa')):
         return 'news'
 
-    review_paths = ['/review/', '/reviews/', '/resena/', '/resenas/', '/analisis/']
+    review_paths = ['/review/', '/reviews/', '/resena/', '/resenas/']
     if any(rp in path for rp in review_paths) or path.endswith(('/review', '/reviews', '/resena', '/resenas')):
         return 'review'
 
@@ -98,7 +98,7 @@ def detect_content_type(page_data: PageData) -> str:
             h1 = soup.find('h1')
             title_text = h1.get_text(strip=True).lower() if h1 else ''
             if title_text:
-                if re.search(r'(review|reseña|análisis)', title_text):
+                if re.search(r'\b(review|reviews|reseña|reseñas)\b', title_text):
                     return 'review'
 
         except Exception:

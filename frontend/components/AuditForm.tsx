@@ -153,7 +153,7 @@ export default function AuditForm({ onSubmit, isLoading }: AuditFormProps) {
                         id="targetQuery"
                         value={targetQuery}
                         onChange={(e) => setTargetQuery(e.target.value)}
-                        placeholder="e.g. how chiliz buybacks create long term value"
+                        placeholder="e.g. best running shoes for flat feet"
                         className="input-field pl-12"
                         disabled={isLoading}
                     />

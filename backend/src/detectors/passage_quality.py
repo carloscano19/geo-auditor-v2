@@ -81,10 +81,10 @@ class PassageQualityDetector(BaseDetector):
         cleaned_html = clean_html_for_analysis(scoped_html) if scoped_html else ""
         soup = BeautifulSoup(cleaned_html, 'lxml') if cleaned_html else None
 
-        # Extract substantive paragraphs (p tags or blocks)
+        # Extract substantive paragraphs (p and blockquote only, excluding li and td)
         raw_paragraphs = []
         if soup:
-            for p in soup.find_all(['p', 'li', 'td', 'blockquote']):
+            for p in soup.find_all(['p', 'blockquote']):
                 text_p = p.get_text(separator=' ', strip=True)
                 if text_p:
                     raw_paragraphs.append(text_p)
