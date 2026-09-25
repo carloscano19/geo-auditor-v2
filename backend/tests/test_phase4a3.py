@@ -144,6 +144,47 @@ def test_fantokens_title_entities():
     assert "Fan Token" not in entities_no
 
 
+@pytest.mark.asyncio
+async def test_fantokens_heading_words_excluded_from_entities():
+    """
+    Con el HTML de fantokens, las comprobaciones de entidad deben usar solo párrafos/listas/tablas (p, li, td).
+    Los encabezados h1-h6 no deben validar sus palabras.
+    Las entidades NO deben incluir Plans, Introduce, Buybacks, Reinforce, Value ni Ecosystem.
+    """
+    detector = EntityDetector()
+    title = "Chiliz Introduces $CHZ Buybacks to Reinforce Long-Term Value Across Fan Token Ecosystem"
+    html = f"""
+    <html>
+        <body>
+            <article>
+                <h1>{title}</h1>
+                <h2>Plans To Introduce Buybacks And Reinforce Value In The Ecosystem</h2>
+                <p>Leading sports and entertainment blockchain Chiliz has revealed plans for token buybacks.</p>
+                <p>The strategic move aims to reinforce the value of $CHZ across the ecosystem.</p>
+                <p>Every Fan Token is fully integrated with Chiliz. The Fan Token ecosystem empowers sports fans.</p>
+                <p>In addition, Chiliz confirms that the buybacks will boost utility across partner clubs.</p>
+            </article>
+        </body>
+    </html>
+    """
+    page = make_page(
+        html=html,
+        text="Chiliz Introduces $CHZ Buybacks to Reinforce Long-Term Value Across Fan Token Ecosystem Plans To Introduce...",
+        url="https://www.fantokens.com/newsroom/chiliz-introduces-chz-buybacks-to-reinforce-long-term-value-across-fan-token-ecosystem"
+    )
+    result = await detector.analyze(page)
+    entities = result.debug_info.get("detected_entities", [])
+
+    # Heading words must NOT be identified as entities
+    forbidden = ["Plans", "Introduce", "Buybacks", "Reinforce", "Value", "Ecosystem"]
+    for word in forbidden:
+        assert word not in entities, f"Forbidden heading word '{word}' was incorrectly identified as an entity in {entities}"
+
+    assert "Chiliz" in entities
+    assert any("$CHZ" in e or "CHZ" in e for e in entities)
+    assert "Fan Token" in entities
+
+
 def test_google_ai_overview_mini_estudio_split():
     """
     'Qué hace que Google te cite en un AI Overview [Mini-Estudio]' debe dar Google y AI Overview,

@@ -29,6 +29,10 @@ jobs:
         env:
           NEXT_PUBLIC_API_URL: https://geo-auditor-v2.onrender.com
 
+      - name: Copy .htaccess to out
+        run: cp public/.htaccess out/.htaccess || true
+        working-directory: ./frontend
+
       - name: Upload via FTP
         uses: SamKirkland/FTP-Deploy-Action@v4.3.5
         with:

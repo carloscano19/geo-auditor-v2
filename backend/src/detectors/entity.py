@@ -97,12 +97,20 @@ class EntityDetector(BaseDetector):
         text = scoped_text if scoped_text else page_data.text_content
         html = scoped_html if scoped_html else page_data.html_rendered
         
+        # Extract body text strictly from paragraphs, lists, and tables (p, li, td, th), excluding all h1-h6
+        body_paragraphs_text = self._extract_body_paragraphs(scoped_html or html)
+        if not body_paragraphs_text:
+            body_paragraphs_text = text
+            if title and body_paragraphs_text:
+                body_paragraphs_text = re.sub(re.escape(title), ' ', body_paragraphs_text, flags=re.IGNORECASE)
+                
         # Resolve language patterns
         lang = resolve_language(page_data)
         patterns = get_lang_patterns(lang)
         
-        # Single source of truth for entities across Power Lead, Title Entities, and Entity Density
-        entities = self._extract_title_entities(title, text=text)
+        # Single source of truth for entities across Power Lead, Title Entities, and Entity Density.
+        # Uses body_paragraphs_text (p, li, td, th) without headings so headers never validate their own words.
+        entities = self._extract_title_entities(title, text=body_paragraphs_text)
         
         # 1. Power Lead Check
         try:
@@ -167,6 +175,22 @@ class EntityDetector(BaseDetector):
         
         return ""
     
+    def _extract_body_paragraphs(self, html: str) -> str:
+        """
+        Extract only text from paragraphs, list items, and table cells (p, li, td, th)
+        from main content, strictly excluding all h1-h6 headings so headers never
+        validate their own words as entities.
+        """
+        if not html:
+            return ""
+        from bs4 import BeautifulSoup
+        soup = BeautifulSoup(html, 'lxml')
+        for h in soup.find_all(['h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            h.decompose()
+        body_blocks = soup.find_all(['p', 'li', 'td', 'th'])
+        text = ' '.join(b.get_text(separator=' ', strip=True) for b in body_blocks)
+        return re.sub(r'\s+', ' ', text).strip()
+
     def _analyze_power_lead(self, text: str, title: str, entities: list[str] = None, patterns: dict = None) -> ScoreBreakdown:
         """
         Analyze Power Lead presence.
@@ -300,6 +324,11 @@ class EntityDetector(BaseDetector):
             pattern = rf'(?<![.!?])\s+{re.escape(w)}\b'
             return bool(re.search(pattern, body_text))
 
+        # Safeguard: remove title from text to ensure the title never validates its own words
+        clean_body_text = text
+        if title and clean_body_text:
+            clean_body_text = re.sub(re.escape(title), ' ', clean_body_text, flags=re.IGNORECASE)
+
         # Cut groups on punctuation, brackets, parentheses, colons, dashes, slashes, etc.
         segments = re.split(r'[,;:!?"\'\(\)\[\]\{\}\-–—|/\\]+|\.(?:\s|$)', title)
         extracted: list[str] = []
@@ -343,8 +372,8 @@ class EntityDetector(BaseDetector):
                         if len(sub) >= 2:
                             phrase = ' '.join(sub)
                             # Multi-word entity valid ONLY if appears >= 2 times in body
-                            if text:
-                                cnt = len(re.findall(rf'\b{re.escape(phrase.lower())}\b', text.lower()))
+                            if clean_body_text:
+                                cnt = len(re.findall(rf'\b{re.escape(phrase.lower())}\b', clean_body_text.lower()))
                                 if cnt >= 2:
                                     extracted.append(phrase)
                                     for idx in range(start_idx, end_idx):
@@ -363,9 +392,9 @@ class EntityDetector(BaseDetector):
                     if is_ticker_or_symbol(w) or is_valid_acronym(w):
                         extracted.append(w)
                     elif len(w) > 4:
-                        if text and appears_capitalized_mid_sentence(w, text):
+                        if clean_body_text and appears_capitalized_mid_sentence(w, clean_body_text):
                             extracted.append(w)
-                        elif not text and not is_tc:
+                        elif not clean_body_text and not is_tc:
                             extracted.append(w)
                 
                 i = j
