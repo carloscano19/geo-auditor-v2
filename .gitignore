@@ -6,12 +6,19 @@
 .env.test.local
 .env.production.local
 
+# Local docs & tests
+docs-local/
+*.docx
+cache-test-*.html
+test-file.txt
+
 # Python (Backend)
 backend/venv/
 venv/
-backend/pycache/
-pycache/
+backend/__pycache__/
+__pycache__/
 *.pyc
+.pytest_cache/
 
 # Node/NextJS (Frontend)
 frontend/node_modules/
