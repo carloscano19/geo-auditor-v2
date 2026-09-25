@@ -46,19 +46,20 @@ scraper: PlaywrightScraper = None
 scrape_semaphore = asyncio.Semaphore(1)
 
 
-async def _measure_single_ttfb(client: httpx.AsyncClient, url: str, headers: dict) -> Optional[float]:
-    """Single TTFB measurement."""
+async def _measure_single_ttfb(url: str, headers: dict) -> Optional[float]:
+    """Single TTFB measurement with dedicated client including full connection."""
     try:
         start_time = time.perf_counter()
-        async with client.stream("GET", url, headers=headers) as response:
-            return (time.perf_counter() - start_time) * 1000
+        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
+            async with client.stream("GET", url, headers=headers) as response:
+                return (time.perf_counter() - start_time) * 1000
     except Exception:
         return None
 
 
 async def measure_ttfb(url: str) -> Tuple[Optional[float], Optional[list[float]]]:
     """
-    Measure Time To First Byte (TTFB) 3 times sequentially and return (median_ttfb, samples).
+    Measure Time To First Byte (TTFB) 3 times sequentially with fresh connections and return (median_ttfb, samples).
     Uses client.stream to stop timing as soon as response headers arrive without reading the body.
     """
     if not url or not url.startswith(("http://", "https://")):
@@ -70,11 +71,10 @@ async def measure_ttfb(url: str) -> Tuple[Optional[float], Optional[list[float]]
     headers = {"User-Agent": user_agent}
     samples: list[float] = []
     try:
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            for _ in range(3):
-                sample = await _measure_single_ttfb(client, url, headers)
-                if sample is not None:
-                    samples.append(sample)
+        for _ in range(3):
+            sample = await _measure_single_ttfb(url, headers)
+            if sample is not None:
+                samples.append(sample)
         if not samples:
             return None, None
         import statistics
