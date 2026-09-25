@@ -17,14 +17,10 @@ class AuditRequest(BaseModel):
     Attributes:
         url: The URL to audit (optional if content_text is provided)
         content_text: Raw text content to audit directly (bypasses scraping)
-        platform_target: Optional target platform for optimization hints
+        target_query: Optional target search query to evaluate relevance
     """
     url: Optional[str] = Field(None, description="URL to audit")
     content_text: Optional[str] = Field(None, description="Raw text content to analyze directly")
-    platform_target: Optional[str] = Field(
-        default="universal",
-        description="Target platform: chatgpt, gemini, perplexity, copilot, or universal"
-    )
     target_query: Optional[str] = Field(
         default=None,
         description="Optional target search query to evaluate relevance"

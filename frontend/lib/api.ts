@@ -9,7 +9,6 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export interface AuditRequest {
     url?: string;
     content_text?: string;
-    platform_target?: 'chatgpt' | 'gemini' | 'perplexity' | 'copilot' | 'universal';
     target_query?: string;
 }
 

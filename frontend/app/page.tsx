@@ -37,7 +37,7 @@ export default function Home() {
       });
   }, []);
 
-  const handleAudit = async (url: string | null, text: string | null, platform: string, targetQuery?: string) => {
+  const handleAudit = async (url: string | null, text: string | null, targetQuery?: string) => {
     setIsLoading(true);
     setError(null);
 
@@ -45,7 +45,6 @@ export default function Home() {
       const response = await apiClient.audit({
         url: url || undefined,
         content_text: text || undefined,
-        platform_target: platform as "universal" | "chatgpt" | "gemini" | "perplexity" | "copilot",
         target_query: targetQuery || undefined,
       });
       setResults(response);

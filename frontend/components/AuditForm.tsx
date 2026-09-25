@@ -3,7 +3,7 @@
 import { useState, FormEvent } from "react";
 
 interface AuditFormProps {
-    onSubmit: (url: string | null, text: string | null, platform: string, targetQuery?: string) => void;
+    onSubmit: (url: string | null, text: string | null, targetQuery?: string) => void;
     isLoading: boolean;
 }
 
@@ -13,29 +13,20 @@ export default function AuditForm({ onSubmit, isLoading }: AuditFormProps) {
     const [title, setTitle] = useState("");
     const [body, setBody] = useState("");
     const [targetQuery, setTargetQuery] = useState("");
-    const [platform, setPlatform] = useState("universal");
 
     const handleSubmit = (e: FormEvent) => {
         e.preventDefault();
         const trimmedQuery = targetQuery.trim() || undefined;
         if (mode === "url" && url.trim()) {
-            onSubmit(url.trim(), null, platform, trimmedQuery);
+            onSubmit(url.trim(), null, trimmedQuery);
         } else if (mode === "text" && body.trim()) {
             // Concatenate title + body as HTML for backend
             const combinedHtml = title.trim()
                 ? `<h1>${title.trim()}</h1>\n${body.trim()}`
                 : body.trim();
-            onSubmit(null, combinedHtml, platform, trimmedQuery);
+            onSubmit(null, combinedHtml, trimmedQuery);
         }
     };
-
-    const platforms = [
-        { value: "universal", label: "Universal", icon: "🌐" },
-        { value: "chatgpt", label: "ChatGPT", icon: "💬" },
-        { value: "gemini", label: "Gemini", icon: "✨" },
-        { value: "perplexity", label: "Perplexity", icon: "🔍" },
-        { value: "copilot", label: "Copilot", icon: "🤖" },
-    ];
 
     return (
         <form onSubmit={handleSubmit} className="space-y-6">
@@ -160,28 +151,6 @@ export default function AuditForm({ onSubmit, isLoading }: AuditFormProps) {
                 </div>
             </div>
 
-            {/* Platform Selection */}
-            <div className="space-y-2">
-                <label className="block text-sm font-medium text-text-secondary">
-                    Target Platform
-                </label>
-                <div className="grid grid-cols-5 gap-2">
-                    {platforms.map((p) => (
-                        <button
-                            key={p.value}
-                            type="button"
-                            onClick={() => setPlatform(p.value)}
-                            className={`flex flex-col items-center p-3 rounded-lg border transition-all duration-200 ${platform === p.value
-                                ? "border-primary bg-primary/10 text-primary"
-                                : "border-surface-border bg-surface hover:border-primary/50 text-text-secondary"
-                                }`}
-                        >
-                            <span className="text-xl mb-1">{p.icon}</span>
-                            <span className="text-xs font-medium">{p.label}</span>
-                        </button>
-                    ))}
-                </div>
-            </div>
 
             {/* Submit Button */}
             <button
