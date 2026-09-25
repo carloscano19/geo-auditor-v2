@@ -1,15 +1,27 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import AuditForm from "@/components/AuditForm";
 import AuditResults from "@/components/AuditResults";
-import { apiClient, type AuditResponse } from "@/lib/api";
+import BatchAuditResults from "@/components/BatchAuditResults";
+import { apiClient, type AuditResponse, type BatchJobResponse } from "@/lib/api";
 
 export default function Home() {
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<AuditResponse | null>(null);
+  const [batchData, setBatchData] = useState<BatchJobResponse | null>(null);
+  const [batchProgress, setBatchProgress] = useState<{ completed: number; total: number } | null>(null);
+  const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const [version, setVersion] = useState("v2.2");
+  const [version, setVersion] = useState("v2.3");
+  const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  useEffect(() => {
+    // Cleanup polling on unmount
+    return () => {
+      if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
 
   useEffect(() => {
     // 1. Wipe any stored API keys on load
@@ -33,13 +45,17 @@ export default function Home() {
         if (data?.version) setVersion(data.version);
       })
       .catch(() => {
-        // Fallback default is v2.2
+        // Fallback default
       });
   }, []);
 
   const handleAudit = async (url: string | null, text: string | null, targetQuery?: string) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setIsLoading(true);
     setError(null);
+    setBatchData(null);
+    setBatchProgress(null);
+    setActiveJobId(null);
 
     try {
       const response = await apiClient.audit({
@@ -53,6 +69,49 @@ export default function Home() {
       setResults(null);
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const handleBatchAudit = async (urls: string[], targetQuery?: string) => {
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    setIsLoading(true);
+    setError(null);
+    setResults(null);
+    setBatchData(null);
+    setBatchProgress({ completed: 0, total: urls.length });
+
+    try {
+      const { job_id } = await apiClient.startBatch({
+        urls,
+        target_query: targetQuery || undefined,
+      });
+
+      setActiveJobId(job_id);
+
+      // Poll every 5 seconds
+      const poll = async () => {
+        try {
+          const status = await apiClient.getBatchStatus(job_id);
+          setBatchData(status);
+          setBatchProgress({ completed: status.completed, total: status.total });
+
+          if (status.status === "done") {
+            if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+            setIsLoading(false);
+          }
+        } catch (pollErr) {
+          if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+          setIsLoading(false);
+          setError(pollErr instanceof Error ? pollErr.message : "Failed to poll batch status");
+        }
+      };
+
+      // Initial check immediately
+      await poll();
+      pollIntervalRef.current = setInterval(poll, 5000);
+    } catch (err) {
+      setIsLoading(false);
+      setError(err instanceof Error ? err.message : "Failed to initiate batch audit");
     }
   };
 
@@ -83,7 +142,12 @@ export default function Home() {
             </p>
           </div>
 
-          <AuditForm onSubmit={handleAudit} isLoading={isLoading} />
+          <AuditForm
+            onSubmit={handleAudit}
+            onBatchSubmit={handleBatchAudit}
+            isLoading={isLoading}
+            batchProgress={batchProgress}
+          />
 
           {/* Error Display */}
           {error && (
@@ -113,7 +177,11 @@ export default function Home() {
           <div className="text-xs text-text-muted space-y-2">
             <p className="flex items-center gap-2">
               <span className="w-2 h-2 bg-score-excellent rounded-full" />
-              {results ? `${results.dimensions?.length || 0} Dimensions Evaluated` : "Up to 11 citability dimensions"}
+              {results
+                ? `${results.dimensions?.length || 0} Dimensions Evaluated`
+                : batchData
+                ? `Batch: ${batchData.completed}/${batchData.total} URLs Evaluated`
+                : "Up to 11 citability dimensions"}
             </p>
             <p className="text-text-muted/60 mt-4">
               {version} (English)
@@ -135,7 +203,7 @@ export default function Home() {
 
       {/* Right Panel - Results */}
       <main className="bg-background p-8 overflow-y-auto">
-        {!results && !isLoading && (
+        {!results && !batchData && !isLoading && (
           <div className="h-full flex items-center justify-center">
             <div className="text-center max-w-md">
               <div className="w-24 h-24 mx-auto mb-6 rounded-full bg-surface flex items-center justify-center">
@@ -181,7 +249,7 @@ export default function Home() {
           </div>
         )}
 
-        {isLoading && (
+        {isLoading && !batchData && (
           <div className="h-full flex items-center justify-center">
             <div className="text-center">
               <div className="w-16 h-16 mx-auto mb-6 relative">
@@ -199,6 +267,13 @@ export default function Home() {
         )}
 
         {results && !isLoading && <AuditResults results={results} />}
+
+        {batchData && (
+          <BatchAuditResults
+            batchData={batchData}
+            csvUrl={activeJobId ? apiClient.getBatchCsvUrl(activeJobId) : "#"}
+          />
+        )}
       </main>
     </div>
   );

@@ -161,3 +161,50 @@ class AuditResponse(BaseModel):
     
     # Raw detector results for detailed view
     detector_results: list[DetectorResult] = Field(default_factory=list)
+
+
+class BatchAuditRequest(BaseModel):
+    """
+    Request model for initiating a batch audit of multiple URLs.
+    """
+    urls: list[str] = Field(..., description="List of URLs to audit (max 20)")
+    target_query: Optional[str] = Field(
+        default=None,
+        description="Optional common target search query for all URLs in the batch"
+    )
+
+
+class BatchItemResult(BaseModel):
+    """
+    Result for an individual URL within a batch job.
+    """
+    url: str
+    status: str = "pending"  # pending, running, done, error
+    result: Optional[AuditResponse] = None
+    error: Optional[str] = None
+
+
+class TopicIssue(BaseModel):
+    """
+    Aggregated submetric issue identified across multiple pages in a batch.
+    """
+    dimension: str
+    submetric: str
+    affected_count: int
+    affected_urls: list[str] = Field(default_factory=list)
+    top_recommendation: Optional[str] = None
+    impact: float
+
+
+class BatchJobResponse(BaseModel):
+    """
+    Full status and progress of a batch audit job.
+    """
+    job_id: str
+    status: str = "pending"  # pending, running, done
+    total: int
+    completed: int
+    results: list[BatchItemResult] = Field(default_factory=list)
+    issues_by_topic: list[TopicIssue] = Field(default_factory=list)
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+

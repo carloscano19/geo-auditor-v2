@@ -5,39 +5,49 @@ Main entry point for the GEO-AUDITOR AI backend.
 Provides REST API endpoints for content citability auditing.
 
 API Endpoints:
-- POST /api/audit: Analyze a URL for LLM citability
+- POST /api/audit: Analyze a URL or text for LLM citability
+- POST /api/batch: Start a batch audit job of up to 20 URLs
+- GET /api/batch/{job_id}: Get status, progress, and topic issues of a batch job
+- GET /api/batch/{job_id}/csv: Download CSV summary of a batch job
 - GET /api/health: Health check endpoint
 - GET /api/scoring-weights: Get current scoring configuration
-
-CORS is configured to allow the Next.js frontend (localhost:3000).
 """
 
-import time
+import io
+import csv
+import uuid
 import asyncio
 import logging
 import traceback
 from datetime import datetime
-from typing import Optional, Tuple
+from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-import httpx
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
-from urllib.parse import urlparse
 from config.settings import get_settings
 from src.models.schemas import (
     AuditRequest,
     AuditResponse,
-    DimensionScore,
-    PageData,
+    BatchAuditRequest,
+    BatchJobResponse,
+    BatchItemResult,
+    TopicIssue,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError
-from src.detectors.infrastructure import InfrastructureDetector
-from src.detectors.evidence_density import EvidenceDensityDetector
-from src.utils.lang_patterns import detect_language
+import src.services.audit_service as audit_service_module
+from src.services.audit_service import run_single_audit
+from src.utils.batch_aggregator import aggregate_issues_by_topic
 
 logger = logging.getLogger("geo_auditor")
+
+async def fetch_robots_txt(url: str):
+    return await audit_service_module.fetch_robots_txt(url)
+
+async def measure_ttfb(url: str):
+    return await audit_service_module.measure_ttfb(url)
 
 # Global scraper instance (reused across requests for performance)
 scraper: PlaywrightScraper = None
@@ -45,87 +55,20 @@ scraper: PlaywrightScraper = None
 # Concurrency limiter: ensure only 1 Playwright scraping session runs at a time
 scrape_semaphore = asyncio.Semaphore(1)
 
-
-async def _measure_single_ttfb(url: str, headers: dict) -> Optional[float]:
-    """Single TTFB measurement with dedicated client including full connection."""
-    try:
-        start_time = time.perf_counter()
-        async with httpx.AsyncClient(timeout=10.0, follow_redirects=True) as client:
-            async with client.stream("GET", url, headers=headers) as response:
-                return (time.perf_counter() - start_time) * 1000
-    except Exception:
-        return None
-
-
-async def measure_ttfb(url: str) -> Tuple[Optional[float], Optional[list[float]]]:
-    """
-    Measure Time To First Byte (TTFB) 3 times sequentially with fresh connections and return (median_ttfb, samples).
-    Uses client.stream to stop timing as soon as response headers arrive without reading the body.
-    """
-    if not url or not url.startswith(("http://", "https://")):
-        return None, None
-    user_agent = (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    )
-    headers = {"User-Agent": user_agent}
-    samples: list[float] = []
-    try:
-        for _ in range(3):
-            sample = await _measure_single_ttfb(url, headers)
-            if sample is not None:
-                samples.append(sample)
-        if not samples:
-            return None, None
-        import statistics
-        median_val = statistics.median(samples)
-        return median_val, samples
-    except Exception as e:
-        logger.warning(f"TTFB measurement failed for {url}: {e}")
-        return None, None
-
-
-async def fetch_robots_txt(url: str) -> Optional[str]:
-    """
-    Fetch /robots.txt with httpx (timeout 5s).
-    Returns robots.txt content string, or None if not found or on error.
-    """
-    if not url or not url.startswith(("http://", "https://")):
-        return None
-    try:
-        parsed = urlparse(url)
-        robots_url = f"{parsed.scheme}://{parsed.netloc}/robots.txt"
-        user_agent = (
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        headers = {"User-Agent": user_agent}
-        async with httpx.AsyncClient(timeout=5.0, follow_redirects=True) as client:
-            resp = await client.get(robots_url, headers=headers)
-            if resp.status_code == 200:
-                return resp.text
-            return None
-    except Exception as e:
-        logger.warning(f"Failed to fetch robots.txt for {url}: {e}")
-        return None
+# In-memory batch job store
+batch_jobs: Dict[str, Dict[str, Any]] = {}
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """
-    Application lifespan manager.
-    
-    Initializes and cleans up resources like the Playwright browser.
-    """
+    """Application lifespan manager."""
     global scraper
     scraper = PlaywrightScraper()
     yield
-    # Cleanup
     if scraper:
         await scraper.close()
 
 
-# Initialize FastAPI app
 settings = get_settings()
 
 app = FastAPI(
@@ -135,7 +78,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-# Configure CORS for frontend
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.cors_origins,
@@ -147,12 +89,7 @@ app.add_middleware(
 
 @app.get("/api/health")
 async def health_check():
-    """
-    Health check endpoint.
-    
-    Returns:
-        dict: Status and version information
-    """
+    """Health check endpoint."""
     return {
         "status": "healthy",
         "version": settings.app_version,
@@ -162,12 +99,7 @@ async def health_check():
 
 @app.get("/api/version")
 async def get_version():
-    """
-    Single source of version endpoint.
-    
-    Returns:
-        dict: Application and scoring version
-    """
+    """Single source of version endpoint."""
     return {
         "version": settings.app_version,
     }
@@ -175,298 +107,204 @@ async def get_version():
 
 @app.get("/api/scoring-weights")
 async def get_scoring_weights():
-    """
-    Get current scoring configuration.
-    
-    Returns the weights for all active dimensions and their sub-dimensions.
-    Note: Multiplatform optimization (Dimension 10) is reserved for a future phase.
-    
-    Returns:
-        dict: Scoring weights configuration
-    """
+    """Get current scoring configuration."""
     return settings.scoring_weights
 
 
 @app.post("/api/audit", response_model=AuditResponse)
 async def audit_url(request: AuditRequest):
     """
-    Analyze a URL for LLM citability.
-    
-    Performs a full audit of the given URL or pasted text, evaluating it against
-    the active citability dimensions defined in the SRS.
-    
-    Args:
-        request: AuditRequest containing URL or content_text to analyze
-        
-    Returns:
-        AuditResponse with scores, breakdown, and recommendations
-        
-    Raises:
-        HTTPException: If URL cannot be scraped or an internal error occurs
+    Analyze a URL or text for LLM citability.
     """
     global scraper
-    start_time = time.time()
-    # url is optional now, mostly for logging/referencing if provided
-    url = str(request.url) if request.url else "text-mode"
-    
-    # Step 1: Acquisition (Scrape or use provided text)
+    if not request.url and not request.content_text:
+        raise HTTPException(status_code=400, detail="Must provide either URL or content_text")
+
     try:
-        if request.content_text:
-            # Text-only mode: Mock PageData
-            text_len = len(request.content_text.split())
-            page_data = PageData(
-                url=request.url or "https://manual-input.local",
-                final_url=request.url or "https://manual-input.local",
-                html_raw=f"<html><body><h1>Analysis</h1><p>{request.content_text}</p></body></html>",
-                html_rendered=f"<html><body><h1>Analysis</h1><div class='content'>{request.content_text}</div></body></html>",
-                text_content=request.content_text,
-                status_code=200,
-                load_time_ms=0,
-                word_count=text_len,
-                is_ssr=True,  # Assume readable
-                is_https=True, # Assume secure
-                ttfb_ms=None,  # Speed not evaluated in text mode
-                robots_txt_content=None
-            )
-        elif request.url:
-            # URL mode: Playwright scraping limited by semaphore (concurrency=1),
-            # TTFB measured via independent HTTP streaming request,
-            # and /robots.txt fetched with httpx using final_url after redirects
-            async with scrape_semaphore:
-                ttfb_task = measure_ttfb(request.url)
-                scrape_task = scraper.scrape(request.url)
-                ttfb_res, page_data = await asyncio.gather(ttfb_task, scrape_task)
-                if isinstance(ttfb_res, tuple) and len(ttfb_res) == 2:
-                    ttfb_median, ttfb_samples = ttfb_res
-                elif isinstance(ttfb_res, (int, float)):
-                    ttfb_median, ttfb_samples = float(ttfb_res), [float(ttfb_res)]
-                else:
-                    ttfb_median, ttfb_samples = None, None
-                page_data.ttfb_ms = ttfb_median
-                page_data.ttfb_samples = ttfb_samples
-                # Use final_url (post-redirect) for robots.txt
-                target_url_for_robots = page_data.final_url or request.url
-                page_data.robots_txt_content = await fetch_robots_txt(target_url_for_robots)
-        else:
-            raise HTTPException(status_code=400, detail="Must provide either URL or content_text")
-            
+        return await run_single_audit(
+            request,
+            scraper,
+            scrape_semaphore,
+            fetch_robots_fn=fetch_robots_txt,
+            measure_ttfb_fn=measure_ttfb
+        )
     except ScraperError as e:
         logger.warning(f"Scraper error for {request.url}: {e.reason}")
-        raise HTTPException(
-            status_code=400,
-            detail=f"Failed to scrape URL: {e.reason}"
-        )
+        raise HTTPException(status_code=400, detail=f"Failed to scrape URL: {e.reason}")
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except HTTPException:
         raise
-    except Exception as e:
-        logger.error(f"Internal error during acquisition: {traceback.format_exc()}")
-        raise HTTPException(
-            status_code=500,
-            detail="Internal error while running the audit."
-        )
-    
-    # Step 1.5: Language & Content Type Detection
-    detected_lang = detect_language(page_data.text_content)
-    page_data.language = detected_lang
-    from src.utils.content_type import detect_content_type
-    content_type = detect_content_type(page_data)
-    page_data.content_type = content_type
-    
-    # Step 2: Run detectors
-    detector_results = []
-    all_recommendations = []
-    
-    # --- Layer 1: Technical Infrastructure (10%) ---
-    # Only run for URL-based audits
-    if not request.content_text:
+    except Exception:
+        logger.error(f"Internal error during audit: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Internal error while running the audit.")
+
+
+async def process_batch_job(job_id: str, urls: list[str], target_query: Optional[str]):
+    """
+    Background worker that executes audits sequentially for a batch job.
+    Reuses run_single_audit and respects scrape_semaphore.
+    """
+    global scraper
+    job = batch_jobs.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "running"
+
+    for idx, raw_url in enumerate(urls):
+        url = raw_url.strip()
+        job["results"][idx]["status"] = "running"
         try:
-            infra_detector = InfrastructureDetector()
-            infra_result = await infra_detector.analyze(page_data)
-            detector_results.append(infra_result)
-            for breakdown in infra_result.breakdown:
-                all_recommendations.extend(breakdown.recommendations)
+            req = AuditRequest(url=url, target_query=target_query)
+            audit_res = await run_single_audit(req, scraper, scrape_semaphore)
+            job["results"][idx]["status"] = "done"
+            job["results"][idx]["result"] = audit_res.model_dump()
+            job["results"][idx]["error"] = None
+        except ScraperError as e:
+            logger.warning(f"Batch audit failed for {url}: {e.reason}")
+            job["results"][idx]["status"] = "error"
+            job["results"][idx]["error"] = f"Failed to scrape URL: {e.reason}"
         except Exception as e:
-            print(f"Infrastructure detector error: {e}")
+            logger.warning(f"Batch audit unexpected error for {url}: {e}")
+            job["results"][idx]["status"] = "error"
+            job["results"][idx]["error"] = str(e)
+        finally:
+            job["completed"] += 1
+            # Recompute aggregated issues after each URL completes
+            job["issues_by_topic"] = aggregate_issues_by_topic(job["results"])
 
-    # --- Layer 2: Metadata (10%) ---
-    try:
-        from src.detectors.metadata import MetadataDetector
-        metadata_detector = MetadataDetector()
-        metadata_result = await metadata_detector.analyze(page_data)
-        detector_results.append(metadata_result)
-        for breakdown in metadata_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Metadata detector error: {e}")
+    job["status"] = "done"
 
-    # --- Layer 3: AEO Structure (18%) ---
-    try:
-        from src.detectors.aeo_structure import AEOStructureDetector
-        aeo_detector = AEOStructureDetector()
-        aeo_result = await aeo_detector.analyze(page_data)
-        detector_results.append(aeo_result)
-        for breakdown in aeo_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"AEO Structure detector error: {e}")
 
-    # --- Layer 6: Entity Identification (8%) ---
-    try:
-        from src.detectors.entity import EntityDetector
-        entity_detector = EntityDetector()
-        entity_result = await entity_detector.analyze(page_data)
-        detector_results.append(entity_result)
-        for breakdown in entity_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Entity detector error: {e}")
+@app.post("/api/batch")
+async def create_batch_audit(request: BatchAuditRequest, background_tasks: BackgroundTasks):
+    """
+    Initiate a batch audit for up to 20 URLs.
+    """
+    clean_urls = [u.strip() for u in request.urls if u and u.strip()]
+    if not clean_urls:
+        raise HTTPException(status_code=400, detail="URL list cannot be empty")
+    if len(clean_urls) > 20:
+        raise HTTPException(status_code=400, detail="A batch cannot exceed 20 URLs")
 
-    # --- Layer 4: Evidence Mapping (15%) ---
-    try:
-        evidence_detector = EvidenceDensityDetector()
-        evidence_result = await evidence_detector.analyze(page_data)
-        detector_results.append(evidence_result)
-        for breakdown in evidence_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Evidence detector error: {e}")
-
-    # --- Layer 5: E-E-A-T Authority (15%) ---
-    try:
-        from src.detectors.authority import AuthorityDetector
-        authority_detector = AuthorityDetector()
-        authority_result = await authority_detector.analyze(page_data)
-        detector_results.append(authority_result)
-        for breakdown in authority_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Authority detector error: {e}")
-
-    # --- Layer 8: Formatting & UX (10%) ---
-    try:
-        from src.detectors.formatting import FormattingDetector
-        formatting_detector = FormattingDetector()
-        formatting_result = await formatting_detector.analyze(page_data)
-        detector_results.append(formatting_result)
-        for breakdown in formatting_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Formatting detector error: {e}")
-
-    # --- Layer 7: Freshness (10%) ---
-    try:
-        from src.detectors.freshness import FreshnessDetector
-        freshness_detector = FreshnessDetector()
-        freshness_result = await freshness_detector.analyze(page_data)
-        detector_results.append(freshness_result)
-        for breakdown in freshness_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Freshness detector error: {e}")
-
-    # --- Layer 9: Links & Verifiability (6%) ---
-    try:
-        from src.detectors.links import LinksDetector
-        links_detector = LinksDetector()
-        links_result = await links_detector.analyze(page_data)
-        detector_results.append(links_result)
-        for breakdown in links_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Links detector error: {e}")
-
-    # --- Layer: Passage Quality (12%) ---
-    try:
-        from src.detectors.passage_quality import PassageQualityDetector
-        passage_detector = PassageQualityDetector()
-        passage_result = await passage_detector.analyze(page_data)
-        detector_results.append(passage_result)
-        for breakdown in passage_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        print(f"Passage Quality detector error: {e}")
-
-    # --- Layer: Query Match (10%, optional) ---
-    if request.target_query and request.target_query.strip():
-        try:
-            from src.detectors.query_match import QueryMatchDetector
-            query_detector = QueryMatchDetector(target_query=request.target_query.strip())
-            query_result = await query_detector.analyze(page_data)
-            detector_results.append(query_result)
-            for breakdown in query_result.breakdown:
-                all_recommendations.extend(breakdown.recommendations)
-        except Exception as e:
-            print(f"Query match detector error: {e}")
-    
-    # Step 3: Calculate total score and normalized contribution per dimension
-    # Normalized contribution: (score * weight) / sum(active_weights)
-    # This ensures that sum(r.contribution) matches total_score exactly in both URL and text mode.
-    active_weights_sum = sum(r.weight for r in detector_results)
-    if active_weights_sum > 0:
-        for r in detector_results:
-            r.contribution = (r.score * r.weight) / active_weights_sum
-        total_score = sum(r.contribution for r in detector_results)
-    else:
-        total_score = 0.0
-
-    # Critical bot block check:
-    # If any AI search bot is blocked or page has noindex/nosnippet/max-snippet:0,
-    # cap audit total score to max 30 and prepend CRITICAL recommendation.
-    has_critical_bot_block = False
-    critical_block_reasons = []
-    for r in detector_results:
-        if r.dimension == "technical_infrastructure" and r.debug_info:
-            if r.debug_info.get("has_critical_bot_block"):
-                has_critical_bot_block = True
-                critical_block_reasons = r.debug_info.get("critical_block_reasons", [])
-                break
-
-    score_capped = False
-    cap_reason = None
-
-    if has_critical_bot_block:
-        score_capped = True
-        cap_reason = "; ".join(critical_block_reasons) if critical_block_reasons else "AI search bots or snippet directives blocked"
-        total_score = min(30.0, total_score)
-        if critical_block_reasons:
-            critical_rec = f"CRITICAL: {'; '.join(critical_block_reasons)}"
-            if critical_rec not in all_recommendations:
-                all_recommendations.insert(0, critical_rec)
-    
-    # Step 4: Build dimension scores for response
-    dimension_scores = [
-        DimensionScore(
-            name=r.dimension,
-            score=r.score,
-            weight=r.weight,
-            contribution=r.contribution,
-            status=r.status,
-        )
-        for r in detector_results
+    job_id = str(uuid.uuid4())
+    initial_results = [
+        {"url": u, "status": "pending", "result": None, "error": None}
+        for u in clean_urls
     ]
-    
-    # Calculate analysis time
-    analysis_time_ms = (time.time() - start_time) * 1000
-    
-    # Single source of version from settings
-    scoring_version = settings.app_version
-    
-    # Prioritize recommendations (show top 5)
-    top_recommendations = all_recommendations[:5]
-    
-    return AuditResponse(
-        url=url,
-        total_score=total_score,
-        dimensions=dimension_scores,
-        scoring_version=scoring_version,
-        language=detected_lang,
-        content_type=content_type,
-        analysis_time_ms=analysis_time_ms,
-        analyzed_at=datetime.utcnow(),
-        recommendations=top_recommendations,
-        score_capped=score_capped,
-        cap_reason=cap_reason,
-        detector_results=detector_results,
+
+    batch_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "total": len(clean_urls),
+        "completed": 0,
+        "results": initial_results,
+        "issues_by_topic": [],
+        "created_at": datetime.utcnow().isoformat(),
+        "target_query": request.target_query,
+    }
+
+    background_tasks.add_task(process_batch_job, job_id, clean_urls, request.target_query)
+
+    return {"job_id": job_id}
+
+
+@app.get("/api/batch/{job_id}", response_model=BatchJobResponse)
+async def get_batch_status(job_id: str):
+    """
+    Get the status and results of a batch audit job.
+    """
+    job = batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Batch job not found or expired. In-memory jobs are reset on server restart."
+        )
+    return job
+
+
+@app.get("/api/batch/{job_id}/csv")
+async def export_batch_csv(job_id: str):
+    """
+    Export batch audit results to CSV format.
+    """
+    job = batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Batch job not found or expired. In-memory jobs are reset on server restart."
+        )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    # Collect all dimension names for header
+    dimension_names = [
+        "technical_infrastructure",
+        "metadata_schema",
+        "aeo_structure",
+        "passage_quality",
+        "evidence_density",
+        "eeat_authority",
+        "entity_identification",
+        "freshness",
+        "format_citability",
+        "links_verifiability",
+    ]
+    if job.get("target_query"):
+        dimension_names.append("query_match")
+
+    headers = [
+        "URL",
+        "Total Score",
+        "Content Type",
+        "Language",
+        *[d.replace("_", " ").title() for d in dimension_names],
+        "Status",
+        "Error",
+    ]
+    writer.writerow(headers)
+
+    for item in job.get("results", []):
+        url = item.get("url", "")
+        status = item.get("status", "")
+        error = item.get("error", "") or ""
+        res = item.get("result")
+
+        if res:
+            total_score = f"{res.get('total_score', 0):.1f}"
+            content_type = res.get("content_type", "")
+            language = res.get("language", "")
+
+            dim_dict = {d.get("name"): d.get("score") for d in res.get("dimensions", [])}
+            dim_scores = [
+                f"{dim_dict.get(d, 0):.1f}" if d in dim_dict else "N/A"
+                for d in dimension_names
+            ]
+        else:
+            total_score = "N/A"
+            content_type = "N/A"
+            language = "N/A"
+            dim_scores = ["N/A" for _ in dimension_names]
+
+        row = [
+            url,
+            total_score,
+            content_type,
+            language,
+            *dim_scores,
+            status,
+            error,
+        ]
+        writer.writerow(row)
+
+    output.seek(0)
+    filename = f"geo_audit_batch_{job_id[:8]}.csv"
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
     )
 
 

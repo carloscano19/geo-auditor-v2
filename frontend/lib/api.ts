@@ -60,6 +60,37 @@ export interface HealthStatus {
     timestamp: string;
 }
 
+export interface BatchAuditRequest {
+    urls: string[];
+    target_query?: string;
+}
+
+export interface BatchItemResult {
+    url: string;
+    status: 'pending' | 'running' | 'done' | 'error';
+    result?: AuditResponse;
+    error?: string;
+}
+
+export interface TopicIssue {
+    dimension: string;
+    submetric: string;
+    affected_count: number;
+    affected_urls: string[];
+    top_recommendation?: string;
+    impact: number;
+}
+
+export interface BatchJobResponse {
+    job_id: string;
+    status: 'pending' | 'running' | 'done';
+    total: number;
+    completed: number;
+    results: BatchItemResult[];
+    issues_by_topic: TopicIssue[];
+    created_at: string;
+}
+
 class ApiClient {
     private baseUrl: string;
 
@@ -96,6 +127,45 @@ class ApiClient {
         }
 
         return response.json();
+    }
+
+    /**
+     * Start a batch audit
+     */
+    async startBatch(request: BatchAuditRequest): Promise<{ job_id: string }> {
+        const response = await fetch(`${this.baseUrl}/api/batch`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(request),
+        });
+
+        if (!response.ok) {
+            const error = await response.json();
+            throw new Error(error.detail || 'Batch audit initiation failed');
+        }
+
+        return response.json();
+    }
+
+    /**
+     * Get batch job status
+     */
+    async getBatchStatus(jobId: string): Promise<BatchJobResponse> {
+        const response = await fetch(`${this.baseUrl}/api/batch/${jobId}`);
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || 'Failed to get batch status');
+        }
+        return response.json();
+    }
+
+    /**
+     * Get batch CSV download URL
+     */
+    getBatchCsvUrl(jobId: string): string {
+        return `${this.baseUrl}/api/batch/${jobId}/csv`;
     }
 
     /**
