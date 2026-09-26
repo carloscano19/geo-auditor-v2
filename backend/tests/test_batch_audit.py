@@ -17,6 +17,13 @@ from src.utils.batch_aggregator import aggregate_issues_by_topic
 from src.scrapers.base_scraper import ScraperError
 
 
+@pytest.fixture(autouse=True)
+def clean_batch_jobs_state():
+    batch_jobs.clear()
+    yield
+    batch_jobs.clear()
+
+
 def create_mock_detector_result(dimension: str, weight: float, breakdowns: list):
     return {
         "dimension": dimension,
@@ -241,3 +248,192 @@ async def test_batch_error_does_not_stop_batch():
             assert "https://example.com/failing" in csv_content
             assert "Timeout" in csv_content
             assert "https://example.com/success2" in csv_content
+
+
+@pytest.mark.asyncio
+async def test_cleanup_expired_jobs_after_2_hours():
+    """
+    Test that jobs completed more than 2 hours ago are deleted upon querying
+    and creating batch jobs.
+    """
+    from datetime import datetime, timezone, timedelta
+    batch_jobs.clear()
+
+    now = datetime.now(timezone.utc)
+    old_job_id = "job-old-expired"
+    recent_job_id = "job-recent"
+
+    # Completed 3 hours ago
+    batch_jobs[old_job_id] = {
+        "job_id": old_job_id,
+        "status": "done",
+        "total": 1,
+        "completed": 1,
+        "results": [{"url": "https://example.com/old", "status": "done", "result": None, "error": None}],
+        "issues_by_topic": [],
+        "created_at": (now - timedelta(hours=3, minutes=10)).isoformat(),
+        "completed_at": (now - timedelta(hours=3)).isoformat(),
+    }
+
+    # Completed 30 minutes ago
+    batch_jobs[recent_job_id] = {
+        "job_id": recent_job_id,
+        "status": "done",
+        "total": 1,
+        "completed": 1,
+        "results": [{"url": "https://example.com/recent", "status": "done", "result": None, "error": None}],
+        "issues_by_topic": [],
+        "created_at": (now - timedelta(minutes=40)).isoformat(),
+        "completed_at": (now - timedelta(minutes=30)).isoformat(),
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        # Querying the expired job should trigger cleanup and return 404
+        res_old = await client.get(f"/api/batch/{old_job_id}")
+        assert res_old.status_code == 404
+        assert "not found or expired" in res_old.json()["detail"].lower()
+        assert old_job_id not in batch_jobs
+
+        # Querying recent job should succeed
+        res_recent = await client.get(f"/api/batch/{recent_job_id}")
+        assert res_recent.status_code == 200
+        assert res_recent.json()["job_id"] == recent_job_id
+
+        # Also verify that creating a new batch triggers cleanup of expired jobs
+        expired_job_2 = "job-old-2"
+        batch_jobs[expired_job_2] = {
+            "job_id": expired_job_2,
+            "status": "done",
+            "total": 1,
+            "completed": 1,
+            "results": [],
+            "issues_by_topic": [],
+            "created_at": (now - timedelta(hours=4)).isoformat(),
+            "completed_at": (now - timedelta(hours=3, minutes=30)).isoformat(),
+        }
+        assert expired_job_2 in batch_jobs
+        with patch("main.process_batch_job", new=AsyncMock()):
+            post_res = await client.post("/api/batch", json={"urls": ["https://example.com/test-cleanup"]})
+            assert post_res.status_code == 200
+            assert expired_job_2 not in batch_jobs
+
+
+@pytest.mark.asyncio
+async def test_cleanup_max_10_jobs():
+    """
+    Test that batch_jobs stores at most 10 jobs; if exceeded, the oldest completed jobs are deleted.
+    """
+    from datetime import datetime, timezone, timedelta
+    batch_jobs.clear()
+
+    now = datetime.now(timezone.utc)
+
+    # Populate 10 completed jobs
+    for i in range(10):
+        jid = f"job-{i}"
+        batch_jobs[jid] = {
+            "job_id": jid,
+            "status": "done",
+            "total": 1,
+            "completed": 1,
+            "results": [{"url": f"https://example.com/{i}", "status": "done", "result": None, "error": None}],
+            "issues_by_topic": [],
+            "created_at": (now - timedelta(minutes=60 - i * 2)).isoformat(),
+            "completed_at": (now - timedelta(minutes=55 - i * 2)).isoformat(),
+        }
+
+    assert len(batch_jobs) == 10
+    assert "job-0" in batch_jobs  # oldest job
+
+    # Create an 11th job via POST /api/batch
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        with patch("main.process_batch_job", new=AsyncMock()):
+            res = await client.post("/api/batch", json={"urls": ["https://example.com/new"]})
+            assert res.status_code == 200
+            new_job_id = res.json()["job_id"]
+
+            # Max 10 constraint maintained
+            assert len(batch_jobs) <= 10
+            # Oldest job-0 should have been pruned
+            assert "job-0" not in batch_jobs
+            # New job is present
+            assert new_job_id in batch_jobs
+
+
+@pytest.mark.asyncio
+async def test_batch_rate_limit_max_2_active():
+    """
+    Test that if there are already 2 batches in pending or running state,
+    POST /api/batch returns 429 with the exact message:
+    "Too many batch audits running. Please try again in a few minutes."
+    """
+    from datetime import datetime, timezone
+    batch_jobs.clear()
+    now = datetime.now(timezone.utc)
+
+    # Add 2 running/pending jobs
+    batch_jobs["active-1"] = {
+        "job_id": "active-1",
+        "status": "running",
+        "total": 5,
+        "completed": 2,
+        "results": [],
+        "issues_by_topic": [],
+        "created_at": now.isoformat(),
+    }
+    batch_jobs["active-2"] = {
+        "job_id": "active-2",
+        "status": "pending",
+        "total": 3,
+        "completed": 0,
+        "results": [],
+        "issues_by_topic": [],
+        "created_at": now.isoformat(),
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.post("/api/batch", json={"urls": ["https://example.com/blocked"]})
+        assert res.status_code == 429
+        assert res.json()["detail"] == "Too many batch audits running. Please try again in a few minutes."
+
+        # Complete one job
+        batch_jobs["active-1"]["status"] = "done"
+
+        # Now creating should succeed
+        with patch("main.process_batch_job", new=AsyncMock()):
+            res_allowed = await client.post("/api/batch", json={"urls": ["https://example.com/allowed"]})
+            assert res_allowed.status_code == 200
+            assert "job_id" in res_allowed.json()
+
+
+@pytest.mark.asyncio
+async def test_batch_unexpected_exception_masked():
+    """
+    Test that unexpected errors (generic exceptions) in process_batch_job
+    mask details and return 'Internal error while auditing this URL.' to the client.
+    """
+    urls = ["https://example.com/crashed"]
+
+    async def mock_run_crashed(request, scraper, semaphore, **kwargs):
+        raise RuntimeError("Secret DB password or internal crash details")
+
+    with patch("main.run_single_audit", side_effect=mock_run_crashed):
+        async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+            post_res = await client.post("/api/batch", json={"urls": urls})
+            assert post_res.status_code == 200
+            job_id = post_res.json()["job_id"]
+
+            import asyncio
+            for _ in range(10):
+                status_res = await client.get(f"/api/batch/{job_id}")
+                assert status_res.status_code == 200
+                data = status_res.json()
+                if data["status"] == "done":
+                    break
+                await asyncio.sleep(0.05)
+
+            assert data["status"] == "done"
+            assert data["results"][0]["status"] == "error"
+            # Must return exact generic message, not internal exception string
+            assert data["results"][0]["error"] == "Internal error while auditing this URL."
+            assert "Secret DB" not in data["results"][0]["error"]

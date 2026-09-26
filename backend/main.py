@@ -19,7 +19,7 @@ import uuid
 import asyncio
 import logging
 import traceback
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, HTTPException, BackgroundTasks
@@ -57,6 +57,54 @@ scrape_semaphore = asyncio.Semaphore(1)
 
 # In-memory batch job store
 batch_jobs: Dict[str, Dict[str, Any]] = {}
+
+
+def cleanup_batch_jobs(max_jobs: int = 10, max_age_hours: int = 2) -> None:
+    """
+    In-memory batch jobs cleanup:
+    1. Removes completed jobs ('done') older than max_age_hours (default 2 hours).
+    2. Keeps at most max_jobs (default 10). If exceeded, removes the oldest completed jobs.
+    """
+    now = datetime.now(timezone.utc)
+
+    def parse_dt(dt_val: Any) -> Optional[datetime]:
+        if not dt_val:
+            return None
+        if isinstance(dt_val, datetime):
+            return dt_val if dt_val.tzinfo else dt_val.replace(tzinfo=timezone.utc)
+        try:
+            dt = datetime.fromisoformat(str(dt_val))
+            return dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc)
+        except Exception:
+            return None
+
+    # 1. Remove completed jobs older than max_age_hours
+    expired_ids = []
+    for jid, job in list(batch_jobs.items()):
+        if job.get("status") == "done":
+            completed_dt = parse_dt(job.get("completed_at")) or parse_dt(job.get("created_at"))
+            if completed_dt and (now - completed_dt) > timedelta(hours=max_age_hours):
+                expired_ids.append(jid)
+
+    for jid in expired_ids:
+        batch_jobs.pop(jid, None)
+
+    # 2. Keep at most max_jobs: if exceeded, prune oldest completed jobs
+    if len(batch_jobs) > max_jobs:
+        completed_jobs = [
+            (jid, job)
+            for jid, job in batch_jobs.items()
+            if job.get("status") == "done"
+        ]
+        completed_jobs.sort(
+            key=lambda item: parse_dt(item[1].get("completed_at"))
+            or parse_dt(item[1].get("created_at"))
+            or datetime.min.replace(tzinfo=timezone.utc)
+        )
+        while len(batch_jobs) > max_jobs and completed_jobs:
+            oldest_id, _ = completed_jobs.pop(0)
+            batch_jobs.pop(oldest_id, None)
+
 
 
 @asynccontextmanager
@@ -166,15 +214,16 @@ async def process_batch_job(job_id: str, urls: list[str], target_query: Optional
             job["results"][idx]["status"] = "error"
             job["results"][idx]["error"] = f"Failed to scrape URL: {e.reason}"
         except Exception as e:
-            logger.warning(f"Batch audit unexpected error for {url}: {e}")
+            logger.error(f"Unexpected error during batch audit of {url}: {traceback.format_exc()}")
             job["results"][idx]["status"] = "error"
-            job["results"][idx]["error"] = str(e)
+            job["results"][idx]["error"] = "Internal error while auditing this URL."
         finally:
             job["completed"] += 1
             # Recompute aggregated issues after each URL completes
             job["issues_by_topic"] = aggregate_issues_by_topic(job["results"])
 
     job["status"] = "done"
+    job["completed_at"] = datetime.now(timezone.utc).isoformat()
 
 
 @app.post("/api/batch")
@@ -182,6 +231,17 @@ async def create_batch_audit(request: BatchAuditRequest, background_tasks: Backg
     """
     Initiate a batch audit for up to 20 URLs.
     """
+    # 1. Clean up expired (>2 hours) and excess (>10) completed jobs
+    cleanup_batch_jobs()
+
+    # 2. Limit active batch audits: max 2 pending or running
+    active_jobs = sum(1 for j in batch_jobs.values() if j.get("status") in ("pending", "running"))
+    if active_jobs >= 2:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many batch audits running. Please try again in a few minutes."
+        )
+
     clean_urls = [u.strip() for u in request.urls if u and u.strip()]
     if not clean_urls:
         raise HTTPException(status_code=400, detail="URL list cannot be empty")
@@ -201,9 +261,13 @@ async def create_batch_audit(request: BatchAuditRequest, background_tasks: Backg
         "completed": 0,
         "results": initial_results,
         "issues_by_topic": [],
-        "created_at": datetime.utcnow().isoformat(),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
         "target_query": request.target_query,
     }
+
+    # Ensure max 10 jobs constraint is preserved after adding new job
+    cleanup_batch_jobs()
 
     background_tasks.add_task(process_batch_job, job_id, clean_urls, request.target_query)
 
@@ -215,6 +279,7 @@ async def get_batch_status(job_id: str):
     """
     Get the status and results of a batch audit job.
     """
+    cleanup_batch_jobs()
     job = batch_jobs.get(job_id)
     if not job:
         raise HTTPException(
@@ -229,6 +294,7 @@ async def export_batch_csv(job_id: str):
     """
     Export batch audit results to CSV format.
     """
+    cleanup_batch_jobs()
     job = batch_jobs.get(job_id)
     if not job:
         raise HTTPException(

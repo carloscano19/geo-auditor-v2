@@ -5,7 +5,7 @@ Data models for the audit system following immutable data principles.
 Each pipeline stage produces new objects, never mutating existing ones.
 """
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any
 from pydantic import BaseModel, Field, HttpUrl
 
@@ -206,5 +206,6 @@ class BatchJobResponse(BaseModel):
     completed: int
     results: list[BatchItemResult] = Field(default_factory=list)
     issues_by_topic: list[TopicIssue] = Field(default_factory=list)
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    completed_at: Optional[datetime] = None
 

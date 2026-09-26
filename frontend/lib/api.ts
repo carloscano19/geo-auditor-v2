@@ -89,6 +89,7 @@ export interface BatchJobResponse {
     results: BatchItemResult[];
     issues_by_topic: TopicIssue[];
     created_at: string;
+    completed_at?: string | null;
 }
 
 class ApiClient {
@@ -142,7 +143,7 @@ class ApiClient {
         });
 
         if (!response.ok) {
-            const error = await response.json();
+            const error = await response.json().catch(() => ({}));
             throw new Error(error.detail || 'Batch audit initiation failed');
         }
 

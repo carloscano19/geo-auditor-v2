@@ -111,6 +111,7 @@ export default function Home() {
       pollIntervalRef.current = setInterval(poll, 5000);
     } catch (err) {
       setIsLoading(false);
+      setBatchProgress(null);
       setError(err instanceof Error ? err.message : "Failed to initiate batch audit");
     }
   };
