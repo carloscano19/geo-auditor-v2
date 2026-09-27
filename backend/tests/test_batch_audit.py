@@ -130,8 +130,8 @@ def test_aggregate_issues_by_topic_3_pages():
     ]
 
     page_issues, site_wide_issues = aggregate_issues_by_topic(results)
-    assert len(page_issues) == 2
-    assert len(site_wide_issues) == 1
+    assert len(page_issues) == 3
+    assert len(site_wide_issues) == 0
 
     # Check Schema Presence in page_issues: affected pages = p1, p2 (count = 2), impact = 0.04 * 2 = 0.08
     schema_issue = next(i for i in page_issues if i["submetric"] == "Schema Presence")
@@ -148,16 +148,18 @@ def test_aggregate_issues_by_topic_3_pages():
     assert links_issue["affected_count"] == 2
     assert links_issue["impact"] == 0.12
 
-    # Check AI Bot Access in site_wide_issues: affected pages = p2 (count = 1), impact = 0.10 * 1 = 0.10
-    bot_issue = next(i for i in site_wide_issues if i["submetric"] == "AI Bot Access")
+    # Check AI Bot Access in page_issues: affected pages = p2 (count = 1), impact = 0.10 * 1 = 0.10
+    bot_issue = next(i for i in page_issues if i["submetric"] == "AI Bot Access")
     assert bot_issue["affected_count"] == 1
     assert bot_issue["impact"] == 0.10
 
     # Check ordering by impact descending in page_issues:
     # 1. External Links Found (impact 0.12)
-    # 2. Schema Presence (impact 0.08)
+    # 2. AI Bot Access (impact 0.10)
+    # 3. Schema Presence (impact 0.08)
     assert page_issues[0]["submetric"] == "External Links Found"
-    assert page_issues[1]["submetric"] == "Schema Presence"
+    assert page_issues[1]["submetric"] == "AI Bot Access"
+    assert page_issues[2]["submetric"] == "Schema Presence"
 
 
 @pytest.mark.asyncio
@@ -495,9 +497,9 @@ def test_schema_dependency_collapse():
 
 def test_site_wide_issues_separated_and_counted_once():
     """
-    Submetrics in SITE_WIDE_SUBMETRICS ('Trust Pages', 'AI Bot Access')
-    are placed in site_wide_issues and excluded from page_issues.
-    Their affected_count reflects the total number of pages showing the issue.
+    Submetrics in SITE_WIDE_SUBMETRICS ('Trust Pages') are placed in site_wide_issues
+    and excluded from page_issues. Page-level submetrics (including 'AI Bot Access')
+    go to page_issues.
     """
     results = [
         {
@@ -523,18 +525,20 @@ def test_site_wide_issues_separated_and_counted_once():
 
     page_issues, site_wide_issues = aggregate_issues_by_topic(results)
 
-    # page_issues should only have External Links Found
-    assert len(page_issues) == 1
-    assert page_issues[0]["submetric"] == "External Links Found"
-    assert page_issues[0]["affected_count"] == 3
+    # page_issues should have AI Bot Access and External Links Found
+    assert len(page_issues) == 2
+    page_submetrics = {p["submetric"] for p in page_issues}
+    assert page_submetrics == {"AI Bot Access", "External Links Found"}
+    bot_issue = next(p for p in page_issues if p["submetric"] == "AI Bot Access")
+    assert bot_issue["affected_count"] == 3
+    links_issue = next(p for p in page_issues if p["submetric"] == "External Links Found")
+    assert links_issue["affected_count"] == 3
 
-    # site_wide_issues should have Trust Pages and AI Bot Access
-    assert len(site_wide_issues) == 2
-    submetrics = {s["submetric"] for s in site_wide_issues}
-    assert submetrics == {"Trust Pages", "AI Bot Access"}
-    for s in site_wide_issues:
-        assert s["affected_count"] == 3
-        assert len(s["affected_urls"]) == 3
+    # site_wide_issues should only have Trust Pages
+    assert len(site_wide_issues) == 1
+    assert site_wide_issues[0]["submetric"] == "Trust Pages"
+    assert site_wide_issues[0]["affected_count"] == 3
+    assert len(site_wide_issues[0]["affected_urls"]) == 3
 
 
 def test_schema_recommendations_by_content_type():
@@ -557,6 +561,35 @@ def test_schema_recommendations_by_content_type():
     # product -> Product
     res_product = detector._analyze_critical_types([], content_type="product")
     assert any("Product" in r for r in res_product.recommendations)
+
+
+def test_schema_presence_recommendations_by_content_type():
+    """
+    When no schema is present, Schema Presence recommendations must be tailored
+    to content_type without changing the raw score (0.0).
+    """
+    from src.detectors.metadata import MetadataDetector
+    detector = MetadataDetector()
+
+    # news -> "Add JSON-LD NewsArticle Schema with author, publisher and datePublished."
+    res_news = detector._analyze_presence([], has_critical_types=False, content_type="news")
+    assert res_news.raw_score == 0.0
+    assert "Add JSON-LD NewsArticle Schema with author, publisher and datePublished." in res_news.recommendations
+
+    # guide_blog -> "Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs)."
+    res_blog = detector._analyze_presence([], has_critical_types=False, content_type="guide_blog")
+    assert res_blog.raw_score == 0.0
+    assert "Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs)." in res_blog.recommendations
+
+    # review -> "Add JSON-LD Review Schema with itemReviewed, rating and author."
+    res_review = detector._analyze_presence([], has_critical_types=False, content_type="review")
+    assert res_review.raw_score == 0.0
+    assert "Add JSON-LD Review Schema with itemReviewed, rating and author." in res_review.recommendations
+
+    # product -> "Add JSON-LD Product Schema with price, availability and brand."
+    res_product = detector._analyze_presence([], has_critical_types=False, content_type="product")
+    assert res_product.raw_score == 0.0
+    assert "Add JSON-LD Product Schema with price, availability and brand." in res_product.recommendations
 
 
 @pytest.mark.asyncio
@@ -629,12 +662,12 @@ async def test_csv_bom_and_headers_and_issues_csv():
         ],
         "site_wide_issues": [
             {
-                "dimension": "technical_infrastructure",
-                "submetric": "AI Bot Access",
+                "dimension": "eeat_authority",
+                "submetric": "Trust Pages",
                 "affected_count": 2,
                 "affected_urls": ["https://example.com/p1", "https://example.com/p2"],
-                "top_recommendation": "Unblock AI bots in robots.txt",
-                "impact": 0.20
+                "top_recommendation": "Add About and Contact pages",
+                "impact": 0.24
             }
         ],
         "created_at": now.isoformat(),
@@ -651,6 +684,7 @@ async def test_csv_bom_and_headers_and_issues_csv():
         # Check legible dimension name and fields
         assert "Content Type" in header_line
         assert "Language" in header_line
+        assert "Technical Infrastructure" in header_line
         assert "Metadata & Schema" in header_line
         assert "Guide/Blog" in text
         assert "News" in text
@@ -669,9 +703,9 @@ async def test_csv_bom_and_headers_and_issues_csv():
 
         # Verify Site-wide comes first
         assert "Site-wide" in lines[1]
-        assert "AI Bot Access" in lines[1]
-        assert "Content Architecture" in lines[1]
-        assert "0.20" in lines[1]
+        assert "Trust Pages" in lines[1]
+        assert "E-E-A-T Authority" in lines[1]
+        assert "0.24" in lines[1]
         assert "https://example.com/p1 | https://example.com/p2" in lines[1]
 
         # Verify Page issue comes next

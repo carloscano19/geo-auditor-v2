@@ -12,17 +12,17 @@ from typing import List, Dict, Any, Optional, Set, Tuple
 
 # Centralized dimension display names
 DIMENSION_DISPLAY_NAMES: Dict[str, str] = {
-    "technical_infrastructure": "Content Architecture",
-    "aeo_structure": "AEO Readability",
+    "technical_infrastructure": "Technical Infrastructure",
     "metadata_schema": "Metadata & Schema",
-    "passage_quality": "Passage Quality",
+    "aeo_structure": "AEO Structure",
     "evidence_density": "Evidence Density",
-    "eeat_authority": "EEAT & Authority",
+    "eeat_authority": "E-E-A-T Authority",
     "entity_identification": "Entity Identification",
-    "freshness": "Content Freshness",
-    "format_citability": "Citability & Formatting",
+    "freshness": "Freshness & Currency",
+    "format_citability": "Formatting & Scannability",
     "links_verifiability": "Links & Verifiability",
-    "query_match": "Query Match",
+    "passage_quality": "Passage Quality",
+    "query_match": "Query Match & Relevance",
 }
 
 # Submetric dependencies: parent submetric -> list of child submetrics that should
@@ -38,7 +38,6 @@ SUBMETRIC_DEPENDENCIES: Dict[str, List[str]] = {
 # Submetrics that pertain to site-wide configuration rather than individual pages
 SITE_WIDE_SUBMETRICS: Set[str] = {
     "Trust Pages",
-    "AI Bot Access",
 }
 
 

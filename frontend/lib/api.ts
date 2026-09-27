@@ -94,17 +94,17 @@ export interface BatchJobResponse {
 }
 
 export const DIMENSION_DISPLAY_NAMES: Record<string, string> = {
-    technical_infrastructure: "Content Architecture",
-    aeo_structure: "AEO Readability",
+    technical_infrastructure: "Technical Infrastructure",
     metadata_schema: "Metadata & Schema",
-    passage_quality: "Passage Quality",
+    aeo_structure: "AEO Structure",
     evidence_density: "Evidence Density",
-    eeat_authority: "EEAT & Authority",
+    eeat_authority: "E-E-A-T Authority",
     entity_identification: "Entity Identification",
-    freshness: "Content Freshness",
-    format_citability: "Citability & Formatting",
+    freshness: "Freshness & Currency",
+    format_citability: "Formatting & Scannability",
     links_verifiability: "Links & Verifiability",
-    query_match: "Query Match",
+    passage_quality: "Passage Quality",
+    query_match: "Query Match & Relevance",
 };
 
 export const CONTENT_TYPE_DISPLAY_NAMES: Record<string, string> = {

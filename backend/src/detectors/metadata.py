@@ -98,7 +98,11 @@ class MetadataDetector(BaseDetector):
 
         # 2. Schema Presence Check (Now with JSON-LD priority)
         try:
-            presence_result = self._analyze_presence(all_schemas, types_result.raw_score > 0)
+            presence_result = self._analyze_presence(
+                all_schemas,
+                types_result.raw_score > 0,
+                content_type=content_type
+            )
             breakdown.append(presence_result)
         except Exception as e:
             errors.append(f"Presence check failed: {str(e)}")
@@ -127,7 +131,12 @@ class MetadataDetector(BaseDetector):
             errors=errors,
         )
     
-    def _analyze_presence(self, schemas: List[Dict[str, Any]], has_critical_types: bool) -> ScoreBreakdown:
+    def _analyze_presence(
+        self,
+        schemas: List[Dict[str, Any]],
+        has_critical_types: bool,
+        content_type: str = "guide_blog"
+    ) -> ScoreBreakdown:
         """Check if any valid schema is present (Priority: JSON-LD)."""
         syntaxes = list(set(s.get('_syntax', 'unknown') for s in schemas))
         has_jsonld = 'json-ld' in syntaxes
@@ -148,7 +157,14 @@ class MetadataDetector(BaseDetector):
         else:
             raw_score = 0.0
             explanation = "No valid JSON-LD detected. Generic RDFa/Microdata items were ignored."
-            recommendations.append("Implement JSON-LD Schema (Article, NewsArticle, etc.) to help LLMs understand your content.")
+            if content_type == "news":
+                recommendations.append("Add JSON-LD NewsArticle Schema with author, publisher and datePublished.")
+            elif content_type == "review":
+                recommendations.append("Add JSON-LD Review Schema with itemReviewed, rating and author.")
+            elif content_type == "product":
+                recommendations.append("Add JSON-LD Product Schema with price, availability and brand.")
+            else:  # guide_blog or default
+                recommendations.append("Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs).")
 
         return ScoreBreakdown(
             name="Schema Presence",

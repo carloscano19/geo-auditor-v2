@@ -1,7 +1,7 @@
 "use client";
 
 import React from "react";
-import type { AuditResponse } from "@/lib/api";
+import { type AuditResponse, getDimensionDisplayName } from "@/lib/api";
 import ScoreDisplay from "./ScoreDisplay";
 import ScoreBreakdown from "./ScoreBreakdown";
 
@@ -12,31 +12,12 @@ interface AuditResultsProps {
 
 export default function AuditResults({ results }: AuditResultsProps) {
     const handleCopySummary = () => {
-        // Dimension Name Mapping
-        const dimensionMap: Record<string, string> = {
-            technical_infrastructure: "Technical Infrastructure",
-            metadata_schema: "Metadata & Schema",
-            aeo_structure: "AEO Structure",
-            evidence_density: "Evidence Density",
-            eeat_authority: "E-E-A-T Authority",
-            entity_identification: "Entity Identification",
-            freshness: "Freshness & Currency",
-            format_citability: "Formatting & Scannability",
-            links_verifiability: "Links & Verifiability",
-            passage_quality: "Passage Quality",
-            query_match: "Query Match & Relevance",
-        };
-
-        const getReadableName = (key: string) => {
-            return dimensionMap[key] || key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
-        };
-
         // Find top issues (score < 50)
         const criticalIssues = results.detector_results
             .filter(d => d.score < 50)
             .sort((a, b) => a.score - b.score)
             .slice(0, 3)
-            .map(d => getReadableName(d.dimension));
+            .map(d => getDimensionDisplayName(d.dimension));
 
         // Find quick wins from recommendations - Deduplicated
         const allRecs = results.detector_results

@@ -1,6 +1,6 @@
 "use client";
 
-import type { DetectorResult } from "@/lib/api";
+import { type DetectorResult, getDimensionDisplayName } from "@/lib/api";
 
 interface ScoreBreakdownProps {
     result: DetectorResult;
@@ -36,29 +36,9 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
         return "bg-score-critical/10";
     };
 
-    const dimensionNameMap: Record<string, string> = {
-        technical_infrastructure: "Technical Infrastructure",
-        metadata_schema: "Metadata & Schema",
-        aeo_structure: "AEO Structure",
-        evidence_density: "Evidence Density",
-        eeat_authority: "E-E-A-T Authority",
-        entity_identification: "Entity Identification",
-        freshness: "Freshness & Currency",
-        format_citability: "Formatting & Scannability",
-        links_verifiability: "Links & Verifiability",
-        passage_quality: "Passage Quality",
-        query_match: "Query Match & Relevance",
-    };
-
     // Format dimension name for display
     const formatDimensionName = (name: string) => {
-        return (
-            dimensionNameMap[name] ||
-            name
-                .split("_")
-                .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-                .join(" ")
-        );
+        return getDimensionDisplayName(name);
     };
 
     return (
