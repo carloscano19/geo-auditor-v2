@@ -88,8 +88,38 @@ export interface BatchJobResponse {
     completed: number;
     results: BatchItemResult[];
     issues_by_topic: TopicIssue[];
+    site_wide_issues?: TopicIssue[];
     created_at: string;
     completed_at?: string | null;
+}
+
+export const DIMENSION_DISPLAY_NAMES: Record<string, string> = {
+    technical_infrastructure: "Content Architecture",
+    aeo_structure: "AEO Readability",
+    metadata_schema: "Metadata & Schema",
+    passage_quality: "Passage Quality",
+    evidence_density: "Evidence Density",
+    eeat_authority: "EEAT & Authority",
+    entity_identification: "Entity Identification",
+    freshness: "Content Freshness",
+    format_citability: "Citability & Formatting",
+    links_verifiability: "Links & Verifiability",
+    query_match: "Query Match",
+};
+
+export const CONTENT_TYPE_DISPLAY_NAMES: Record<string, string> = {
+    news: "News",
+    guide_blog: "Guide/Blog",
+    review: "Review",
+    product: "Product",
+};
+
+export function getDimensionDisplayName(dim: string): string {
+    return DIMENSION_DISPLAY_NAMES[dim] || dim.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
+}
+
+export function getContentTypeDisplayName(ct: string): string {
+    return CONTENT_TYPE_DISPLAY_NAMES[ct] || ct.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
 class ApiClient {
@@ -167,6 +197,13 @@ class ApiClient {
      */
     getBatchCsvUrl(jobId: string): string {
         return `${this.baseUrl}/api/batch/${jobId}/csv`;
+    }
+
+    /**
+     * Get batch issues CSV download URL
+     */
+    getBatchIssuesCsvUrl(jobId: string): string {
+        return `${this.baseUrl}/api/batch/${jobId}/issues.csv`;
     }
 
     /**

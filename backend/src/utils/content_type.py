@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 from typing import Optional
 from bs4 import BeautifulSoup
 from src.models.schemas import PageData
+from src.utils.lang_patterns import is_explanatory_h1
 
 
 def detect_content_type(page_data: PageData) -> str:
@@ -21,39 +22,25 @@ def detect_content_type(page_data: PageData) -> str:
     Detect the content classification of a page.
     Priority:
     1. Schema.org structured data (JSON-LD and Microdata)
-    2. URL path indicators
-    3. Title indicators
+    2. URL path indicators (with explanatory H1 override for news paths)
+    3. Title / H1 indicators
     4. Default: 'guide_blog'
     """
-    url_target = page_data.final_url or page_data.url or ''
-    path = ''
-    try:
-        if url_target.startswith('http'):
-            path = urlparse(url_target).path.lower()
-        else:
-            path = url_target.lower()
-    except Exception:
-        path = url_target.lower()
-
-    # 1. URL Path check
-    news_paths = ['/news/', '/newsroom/', '/press/', '/noticias/', '/prensa/']
-    if any(np in path for np in news_paths) or path.endswith(('/news', '/newsroom', '/press', '/noticias', '/prensa')):
-        return 'news'
-
-    review_paths = ['/review/', '/reviews/', '/resena/', '/resenas/']
-    if any(rp in path for rp in review_paths) or path.endswith(('/review', '/reviews', '/resena', '/resenas')):
-        return 'review'
-
-    product_paths = ['/product/', '/products/', '/producto/', '/productos/', '/shop/', '/tienda/', '/item/']
-    if any(pp in path for pp in product_paths):
-        return 'product'
-
-    # 2. Schema.org check
     html = page_data.html_rendered or page_data.html_raw or ''
+    soup = None
+    h1_text = ''
     if html:
         try:
             soup = BeautifulSoup(html, 'lxml')
-            
+            h1 = soup.find('h1')
+            if h1:
+                h1_text = h1.get_text(strip=True)
+        except Exception:
+            soup = None
+
+    # 1. Schema.org check (Priority 1)
+    if soup:
+        try:
             # JSON-LD scripts
             for script in soup.find_all('script', type='application/ld+json'):
                 if not script.string:
@@ -93,15 +80,38 @@ def detect_content_type(page_data: PageData) -> str:
                     return 'review'
                 if 'product' in itemtype:
                     return 'product'
-
-            # 3. Title indicators check
-            h1 = soup.find('h1')
-            title_text = h1.get_text(strip=True).lower() if h1 else ''
-            if title_text:
-                if re.search(r'\b(review|reviews|reseña|reseñas)\b', title_text):
-                    return 'review'
-
         except Exception:
             pass
+
+    # 2. URL Path check (Priority 2)
+    url_target = page_data.final_url or page_data.url or ''
+    path = ''
+    try:
+        if url_target.startswith('http'):
+            path = urlparse(url_target).path.lower()
+        else:
+            path = url_target.lower()
+    except Exception:
+        path = url_target.lower()
+
+    news_paths = ['/news/', '/newsroom/', '/press/', '/noticias/', '/prensa/']
+    if any(np in path for np in news_paths) or path.endswith(('/news', '/newsroom', '/press', '/noticias', '/prensa')):
+        # Explanatory H1 pattern override: if H1 is educational/guide, return guide_blog
+        if h1_text and is_explanatory_h1(h1_text):
+            return 'guide_blog'
+        return 'news'
+
+    review_paths = ['/review/', '/reviews/', '/resena/', '/resenas/']
+    if any(rp in path for rp in review_paths) or path.endswith(('/review', '/reviews', '/resena', '/resenas')):
+        return 'review'
+
+    product_paths = ['/product/', '/products/', '/producto/', '/productos/', '/shop/', '/tienda/', '/item/']
+    if any(pp in path for pp in product_paths):
+        return 'product'
+
+    # 3. Title indicators check (Priority 3)
+    if h1_text:
+        if re.search(r'\b(review|reviews|reseña|reseñas)\b', h1_text, re.IGNORECASE):
+            return 'review'
 
     return 'guide_blog'

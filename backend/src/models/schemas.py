@@ -206,6 +206,7 @@ class BatchJobResponse(BaseModel):
     completed: int
     results: list[BatchItemResult] = Field(default_factory=list)
     issues_by_topic: list[TopicIssue] = Field(default_factory=list)
+    site_wide_issues: list[TopicIssue] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
 

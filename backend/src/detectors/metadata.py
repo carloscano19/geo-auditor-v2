@@ -88,8 +88,9 @@ class MetadataDetector(BaseDetector):
                 all_schemas.extend(items)
         
         # 1. Critical Types Check First (needed for presence logic)
+        content_type = getattr(page_data, "content_type", "guide_blog") or "guide_blog"
         try:
-            types_result = self._analyze_critical_types(all_schemas)
+            types_result = self._analyze_critical_types(all_schemas, content_type=content_type)
             # We'll append it later to keep the order in breakdown
         except Exception as e:
             errors.append(f"Critical types check failed: {str(e)}")
@@ -106,13 +107,13 @@ class MetadataDetector(BaseDetector):
         # Add Critical Types result
         breakdown.append(types_result)
             
-        # 3. Entity Depth Check
+        # 3. Entity Depth Check (Author/Publisher Schema)
         try:
             depth_result = self._analyze_entity_depth(all_schemas)
             breakdown.append(depth_result)
         except Exception as e:
             errors.append(f"Entity depth check failed: {str(e)}")
-            breakdown.append(self._create_error_breakdown("Entity Depth", self.ENTITY_DEPTH_WEIGHT))
+            breakdown.append(self._create_error_breakdown("Author/Publisher Schema", self.ENTITY_DEPTH_WEIGHT))
             
         # Calculate total dimension score
         total_score = sum(item.weighted_score for item in breakdown)
@@ -158,8 +159,10 @@ class MetadataDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_critical_types(self, schemas: List[Dict[str, Any]]) -> ScoreBreakdown:
-        """Check for critical content types (Article, FAQ, etc.)."""
+    def _analyze_critical_types(
+        self, schemas: List[Dict[str, Any]], content_type: str = "guide_blog"
+    ) -> ScoreBreakdown:
+        """Check for critical content types (Article, FAQ, etc.) with content_type-specific recommendations."""
         found_types = set()
         
         for item in schemas:
@@ -181,9 +184,16 @@ class MetadataDetector(BaseDetector):
         else:
             raw_score = 0.0
             explanation = "No critical Schema types (Article, FAQPage) detected."
-            recommendations = [
-                f"Add one of the following Schema types: {', '.join(list(self.CRITICAL_TYPES)[:3])}."
-            ]
+            if content_type == "news":
+                recommendations = ["Add NewsArticle Schema to identify this content as timely news."]
+            elif content_type == "review":
+                recommendations = ["Add Review Schema with itemReviewed and rating details."]
+            elif content_type == "product":
+                recommendations = ["Add Product Schema with price, availability, and brand details."]
+            else:  # guide_blog or default
+                recommendations = [
+                    "Add Article or BlogPosting Schema (and FAQPage if including frequently asked questions)."
+                ]
             
         return ScoreBreakdown(
             name="Critical Schema Types",
@@ -233,7 +243,7 @@ class MetadataDetector(BaseDetector):
             ]
             
         return ScoreBreakdown(
-            name="Entity Depth (E-E-A-T)",
+            name="Author/Publisher Schema",
             raw_score=raw_score,
             weight=self.ENTITY_DEPTH_WEIGHT,
             weighted_score=raw_score * self.ENTITY_DEPTH_WEIGHT,

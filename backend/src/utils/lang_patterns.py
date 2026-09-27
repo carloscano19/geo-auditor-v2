@@ -268,6 +268,57 @@ INTERROGATIVE_PREFIXES = (
     'de qué', 'de que', 'a qué', 'a que'
 )
 
+# Explanatory H1 patterns for distinguishing educational/guide content from pure news
+EXPLANATORY_H1_STARTERS_EN = (
+    r'\bwhat\s+(?:is|are)\b',
+    r'\bhow\s+to\b',
+    r'\bhow\s+(?:does|do)\b',
+    r'\bwhy\b',
+    r'\bguide\b',
+    r'\bdifferences\s+between\b',
+)
+
+EXPLANATORY_H1_STARTERS_ES = (
+    r'\bqu[eé]\s+(?:es|son)\b',
+    r'\bc[oó]mo\b',
+    r'\bpor\s+qu[eé]\b',
+    r'\bgu[ií]a\b',
+    r'\bdiferencias\s+entre\b',
+)
+
+EXPLANATORY_H1_STRUCTURES = (
+    r'\bvs\.?\b',
+    r'\bdifferences\s+between\b',
+    r'\bdiferencias\s+entre\b',
+)
+
+
+def is_explanatory_h1(text: str) -> bool:
+    """
+    Determine if an H1 header represents explanatory/guide content rather than pure news.
+    Checks for English and Spanish patterns at the beginning of the H1 or clear structural markers:
+    EN: "what is/are", "how to", "how does/do", "why", "guide", "differences between", " vs "
+    ES: "qué es/son", "cómo", "por qué", "guía", "diferencias entre"
+    """
+    if not text:
+        return False
+    t = text.strip().lower()
+    # Strip opening punctuation, inverted question marks, quotes
+    cleaned = re.sub(r'^[^\w¿"\'`]+', '', t)
+    cleaned = re.sub(r'^[¿"\'`]+', '', cleaned).strip()
+
+    # 1. Structural markers anywhere in the H1
+    for pattern in EXPLANATORY_H1_STRUCTURES:
+        if re.search(pattern, cleaned, re.IGNORECASE):
+            return True
+
+    # 2. Starters at the beginning of the H1
+    for pattern in EXPLANATORY_H1_STARTERS_EN + EXPLANATORY_H1_STARTERS_ES:
+        if re.match(r'^\s*' + pattern, cleaned, re.IGNORECASE):
+            return True
+
+    return False
+
 
 def detect_language(text: str) -> str:
     """

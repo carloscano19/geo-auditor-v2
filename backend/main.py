@@ -22,7 +22,7 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -39,7 +39,17 @@ from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError
 import src.services.audit_service as audit_service_module
 from src.services.audit_service import run_single_audit
-from src.utils.batch_aggregator import aggregate_issues_by_topic
+from src.utils.batch_aggregator import (
+    aggregate_issues_by_topic,
+    DIMENSION_DISPLAY_NAMES,
+)
+
+CONTENT_TYPE_DISPLAY_NAMES: Dict[str, str] = {
+    "news": "News",
+    "guide_blog": "Guide/Blog",
+    "review": "Review",
+    "product": "Product",
+}
 
 logger = logging.getLogger("geo_auditor")
 
@@ -220,7 +230,9 @@ async def process_batch_job(job_id: str, urls: list[str], target_query: Optional
         finally:
             job["completed"] += 1
             # Recompute aggregated issues after each URL completes
-            job["issues_by_topic"] = aggregate_issues_by_topic(job["results"])
+            page_issues, site_wide = aggregate_issues_by_topic(job["results"])
+            job["issues_by_topic"] = page_issues
+            job["site_wide_issues"] = site_wide
 
     job["status"] = "done"
     job["completed_at"] = datetime.now(timezone.utc).isoformat()
@@ -261,6 +273,7 @@ async def create_batch_audit(request: BatchAuditRequest, background_tasks: Backg
         "completed": 0,
         "results": initial_results,
         "issues_by_topic": [],
+        "site_wide_issues": [],
         "created_at": datetime.now(timezone.utc).isoformat(),
         "completed_at": None,
         "target_query": request.target_query,
@@ -292,7 +305,7 @@ async def get_batch_status(job_id: str):
 @app.get("/api/batch/{job_id}/csv")
 async def export_batch_csv(job_id: str):
     """
-    Export batch audit results to CSV format.
+    Export batch audit results to CSV format with UTF-8 BOM.
     """
     cleanup_batch_jobs()
     job = batch_jobs.get(job_id)
@@ -326,7 +339,7 @@ async def export_batch_csv(job_id: str):
         "Total Score",
         "Content Type",
         "Language",
-        *[d.replace("_", " ").title() for d in dimension_names],
+        *[DIMENSION_DISPLAY_NAMES.get(d, d.replace("_", " ").title()) for d in dimension_names],
         "Status",
         "Error",
     ]
@@ -340,8 +353,9 @@ async def export_batch_csv(job_id: str):
 
         if res:
             total_score = f"{res.get('total_score', 0):.1f}"
-            content_type = res.get("content_type", "")
-            language = res.get("language", "")
+            raw_content_type = res.get("content_type", "")
+            content_type = CONTENT_TYPE_DISPLAY_NAMES.get(raw_content_type, raw_content_type.title())
+            language = (res.get("language") or "").upper()
 
             dim_dict = {d.get("name"): d.get("score") for d in res.get("dimensions", [])}
             dim_scores = [
@@ -365,12 +379,89 @@ async def export_batch_csv(job_id: str):
         ]
         writer.writerow(row)
 
-    output.seek(0)
+    csv_bytes = output.getvalue().encode("utf-8-sig")
     filename = f"geo_audit_batch_{job_id[:8]}.csv"
-    return StreamingResponse(
-        iter([output.getvalue()]),
-        media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+    )
+
+
+@app.get("/api/batch/{job_id}/issues.csv")
+async def export_batch_issues_csv(job_id: str):
+    """
+    Export batch audit aggregated issues to CSV format with UTF-8 BOM.
+    Columns: Priority, Scope, Topic, Dimension, Pages affected, Impact, Recommendation, Affected URLs
+    """
+    cleanup_batch_jobs()
+    job = batch_jobs.get(job_id)
+    if not job:
+        raise HTTPException(
+            status_code=404,
+            detail="Batch job not found or expired. In-memory jobs are reset on server restart."
+        )
+
+    output = io.StringIO()
+    writer = csv.writer(output)
+
+    headers = [
+        "Priority",
+        "Scope",
+        "Topic",
+        "Dimension",
+        "Pages affected",
+        "Impact",
+        "Recommendation",
+        "Affected URLs",
+    ]
+    writer.writerow(headers)
+
+    priority = 1
+    # 1. Site-wide issues first
+    for issue in job.get("site_wide_issues", []):
+        dim_key = issue.get("dimension", "")
+        dim_label = DIMENSION_DISPLAY_NAMES.get(dim_key, dim_key)
+        urls_joined = " | ".join(issue.get("affected_urls", []))
+        impact_val = f"{issue.get('impact', 0.0):.2f}"
+
+        writer.writerow([
+            priority,
+            "Site-wide",
+            issue.get("submetric", ""),
+            dim_label,
+            issue.get("affected_count", 0),
+            impact_val,
+            issue.get("top_recommendation", "") or "",
+            urls_joined,
+        ])
+        priority += 1
+
+    # 2. Page-level issues next
+    for issue in job.get("issues_by_topic", []):
+        dim_key = issue.get("dimension", "")
+        dim_label = DIMENSION_DISPLAY_NAMES.get(dim_key, dim_key)
+        urls_joined = " | ".join(issue.get("affected_urls", []))
+        impact_val = f"{issue.get('impact', 0.0):.2f}"
+
+        writer.writerow([
+            priority,
+            "Page",
+            issue.get("submetric", ""),
+            dim_label,
+            issue.get("affected_count", 0),
+            impact_val,
+            issue.get("top_recommendation", "") or "",
+            urls_joined,
+        ])
+        priority += 1
+
+    csv_bytes = output.getvalue().encode("utf-8-sig")
+    filename = f"geo_audit_issues_{job_id[:8]}.csv"
+    return Response(
+        content=csv_bytes,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
     )
 
 

@@ -273,6 +273,7 @@ export default function Home() {
           <BatchAuditResults
             batchData={batchData}
             csvUrl={activeJobId ? apiClient.getBatchCsvUrl(activeJobId) : "#"}
+            issuesCsvUrl={activeJobId ? apiClient.getBatchIssuesCsvUrl(activeJobId) : undefined}
           />
         )}
       </main>
