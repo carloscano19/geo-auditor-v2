@@ -1262,3 +1262,21 @@ async def test_site_wide_issues_grouped_by_domain_and_csv():
         assert "Site-wide (b.com)" in scopes
 
 
+def test_press_release_dateline_author_name_rejection():
+    """
+    Capitalized location datelines (DATELINE_CAP_REGEX) must reject blog author lines
+    where a surname is mistaken for a location (e.g. María López, Carlos Cano),
+    and only accept capitalized datelines at the beginning of text or after a sentence boundary.
+    """
+    from src.utils.lang_patterns import is_press_release_dateline
+
+    # Blog author lines followed by em-dash must return False
+    assert is_press_release_dateline("María López, 5 de junio de 2026 — Hoy te explico qué es un fan token") is False
+    assert is_press_release_dateline("Carlos Cano, 3 de mayo de 2026 — En esta guía") is False
+
+    # Valid capitalized datelines at start or after sentence boundary must return True
+    assert is_press_release_dateline("Madrid, 2 de septiembre de 2026 — Socios.com anuncia…") is True
+    assert is_press_release_dateline("Nueva alianza. Madrid, 2 de septiembre de 2026 — Socios.com anuncia…") is True
+
+
+

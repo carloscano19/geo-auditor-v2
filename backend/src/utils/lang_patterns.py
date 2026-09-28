@@ -509,6 +509,9 @@ PRECEDING_REJECT_REGEX = re.compile(
 
 BLOCKED_LOCATIONS = {"UPDATED", "ACTUALIZADO", "ACTUALIZADA", "UPDATE", "BY", "POR", "POSTED", "PUBLICADO"}
 
+SENTENCE_BOUNDARY_REGEX = re.compile(r"[\.\!\?\:\n]\s*$")
+PRECEDING_CAP_WORD_REGEX = re.compile(r"[A-ZÁÉÍÓÚÑ][a-záéíóúñA-ZÁÉÍÓÚÑ]*\s*$")
+
 # 5. Wire equivalent signal
 WIRE_EQUIVALENT_REGEX = re.compile(
     r"\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/",
@@ -543,8 +546,18 @@ def is_press_release_dateline(text: str) -> bool:
             if loc.upper() in BLOCKED_LOCATIONS:
                 continue
 
-            # Check preceding text for author/update prefixes
             preceding = snippet[:m.start()]
+
+            # Specific constraints for capitalized location datelines (DATELINE_CAP_REGEX only):
+            if regex is DATELINE_CAP_REGEX:
+                # Must be at start of snippet or immediately after a sentence boundary (. ! ? : or newline)
+                if preceding.strip() and not SENTENCE_BOUNDARY_REGEX.search(preceding):
+                    continue
+                # Reject if immediately preceded by a capitalized word (e.g. author first name)
+                if PRECEDING_CAP_WORD_REGEX.search(preceding):
+                    continue
+
+            # Check preceding text for author/update prefixes
             if PRECEDING_REJECT_REGEX.search(preceding):
                 continue
 
