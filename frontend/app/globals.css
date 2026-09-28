@@ -173,17 +173,43 @@ body {
     overflow: visible !important;
   }
 
-  /* Text color reset */
+  /* Text color reset — exclude SVG elements so stroke colors survive */
   body,
   p,
   h1,
   h2,
   h3,
   h4,
-  span,
-  div {
+  span:not(svg span),
+  div:not(svg div) {
     color: #000 !important;
     background: #fff !important;
+  }
+
+  /* Preserve SVG score ring colors exactly as rendered on screen */
+  svg {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  svg circle {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+  }
+
+  /* Score ring — keep stroke colors visible */
+  .score-circle {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
+    /* Disable the CSS animation so the ring renders fully drawn in print */
+    transition: none !important;
+    animation: none !important;
+  }
+
+  /* Dimension Breakdown section starts on the first page — no forced page break */
+  .space-y-8 > div:nth-child(2) {
+    break-before: auto;
+    page-break-before: auto;
   }
 
   /* Ensure breakdown cards are visible but clean */
