@@ -14,8 +14,8 @@ def extract_main_content(html: str) -> tuple[str, str]:
     4. Block with the most text if none of the above exist (div, section, or body).
     
     Sanity check (applied after semantic selection):
-    - Compute the densest div/section by summing <p> text (paragraph-text).
-    - If the chosen semantic container has less than 40 % of that paragraph-text,
+    - Compute the densest div/section by content text (p, li, h2-h6, blockquote, td, figcaption).
+    - If the chosen semantic container has less than 40 % of that content text,
       the semantic tag is decorative/redundant (e.g. a blog-card <article> in a
       related-posts widget) and the dense block is used instead.
     
@@ -29,7 +29,7 @@ def extract_main_content(html: str) -> tuple[str, str]:
       sidebar, widget, related, relacionad, author-box, author-bio, post-navigation,
       nav-links, comments, share, newsletter, breadcrumb.
     - Protection: never removes an element that contains the H1 or more than 50 % of
-      the container's own paragraph-text.
+      the container's own content text.
       
     Returns:
         tuple[str, str]: (scoped_html, scoped_clean_text)
@@ -48,53 +48,58 @@ def extract_main_content(html: str) -> tuple[str, str]:
         for el in soup.find_all(tag):
             el.decompose()
 
-    def _paragraph_text_len(el) -> int:
-        """Sum of character length of all <p> text nodes inside el."""
-        return sum(len(p.get_text(separator=' ', strip=True)) for p in el.find_all('p'))
+    CONTENT_TAGS = {'p', 'li', 'h2', 'h3', 'h4', 'h5', 'h6', 'blockquote', 'td', 'figcaption'}
+
+    def _content_text_len(el) -> int:
+        """Sum of character length of all content text nodes inside el (p, li, h2-h6,
+        blockquote, td, figcaption), without double-counting nested elements
+        (e.g. p inside li or blockquote). Skips elements inside nav, aside, or footer.
+        """
+        total = 0
+        for node in el.find_all(CONTENT_TAGS):
+            parent = node.parent
+            in_noise = False
+            is_nested = False
+            while parent and parent != el:
+                if parent.name in {'nav', 'aside', 'footer'}:
+                    in_noise = True
+                    break
+                if parent.name in CONTENT_TAGS:
+                    is_nested = True
+                parent = parent.parent
+            if not in_noise and not is_nested:
+                total += len(node.get_text(separator=' ', strip=True))
+        return total
 
     def _densest_block(soup_obj) -> tuple:
-        """Return (element, paragraph_text_len) for the div/section whose content is
-        most "paragraph-pure" among those with substantial paragraph text.
-
-        Strategy:
-        1. Compute the maximum paragraph-text length across all div/section candidates.
-        2. Keep only candidates with at least 60 % of that maximum (substantial content).
-        3. Among those, rank by paragraph-text / total-text ratio (higher = more
-           article-like, less polluted by navigation / footer / banner text).
-        4. Tie-break by minimum total text (innermost / most specific block).
-
-        Examples:
-        - div#page (wraps entire page): ratio ~0.86, because it also contains nav text.
-        - div.entry-content (article body): ratio ~0.99 — almost entirely <p> text.
-        - Result: div.entry-content wins.
+        """Return (element, content_text_len) for the div/section with the least
+        total text among those holding at least 85 % of the maximum content text.
         """
         candidates = soup_obj.find_all(['div', 'section'])
-        if not candidates:
-            return None, 0
-
-        scored = []
+        valid = []
         for cand in candidates:
-            p_len = _paragraph_text_len(cand)
-            t_len = len(cand.get_text(separator=' ', strip=True))
-            scored.append((cand, p_len, t_len))
+            curr = cand.parent
+            skip = False
+            while curr and curr != soup_obj:
+                if curr.name in {'nav', 'aside', 'footer'}:
+                    skip = True
+                    break
+                curr = curr.parent
+            if not skip:
+                valid.append(cand)
 
-        max_pt = max(p for _, p, _ in scored) if scored else 0
-        if max_pt == 0:
+        if not valid:
             return None, 0
 
-        # Keep only candidates with ≥ 60 % of the max paragraph-text
-        threshold = 0.60 * max_pt
-        dense = [(cand, p_len, t_len) for cand, p_len, t_len in scored if p_len >= threshold]
+        scored = [(cand, _content_text_len(cand), len(cand.get_text(separator=' ', strip=True))) for cand in valid]
+        max_ct = max(c for _, c, _ in scored) if scored else 0
+        if max_ct == 0:
+            return None, 0
 
-        # Pick the block with the best p-text/total-text ratio (most paragraph-pure),
-        # tie-broken by minimum total text (most interior).
-        best = max(
-            dense,
-            key=lambda x: (x[1] / x[2] if x[2] else 0, -x[2])
-        )
+        threshold = 0.85 * max_ct
+        dense = [x for x in scored if x[1] >= threshold]
+        best = min(dense, key=lambda x: x[2])
         return best[0], best[1]
-
-
 
     # 2. Select main content container by priority
     # If multiple <article>, [role=main], or <main> tags exist, pick the one with the most text
@@ -116,21 +121,20 @@ def extract_main_content(html: str) -> tuple[str, str]:
                 target = max(mains, key=lambda m: len(m.get_text(separator=' ', strip=True)))
                 is_article_or_main = True
             else:
-                dense_el, dense_pt = _densest_block(soup)
-                if dense_el is not None and dense_pt > 100:
+                dense_el, dense_ct = _densest_block(soup)
+                if dense_el is not None and dense_ct > 100:
                     target = dense_el
                 else:
                     target = soup.body or soup
 
-
     # 2b. Sanity check: if the chosen semantic container holds less than 40 % of
-    # the paragraph-text of the densest div/section, it is likely a decorative tag
+    # the content-text of the densest div/section, it is likely a decorative tag
     # (e.g. a blog-card <article> inside a related-posts widget) rather than the
     # real article body. Swap to the denser block.
     if is_article_or_main:
-        chosen_pt = _paragraph_text_len(target)
-        dense_el, dense_pt = _densest_block(soup)
-        if dense_pt > 0 and (chosen_pt / dense_pt) < 0.40 and dense_el is not None:
+        chosen_ct = _content_text_len(target)
+        dense_el, dense_ct = _densest_block(soup)
+        if dense_ct > 0 and (chosen_ct / dense_ct) < 0.40 and dense_el is not None:
             target = dense_el
             is_article_or_main = False  # treat as fallback (remove outer header/footer)
 
@@ -138,8 +142,8 @@ def extract_main_content(html: str) -> tuple[str, str]:
     scoped_soup = BeautifulSoup(str(target), 'lxml')
     root = scoped_soup.body if scoped_soup.body else scoped_soup
 
-    # Paragraph-text length of root (used for exclusion protection)
-    root_paragraph_text_len = _paragraph_text_len(root)
+    # Content-text length of root (used for exclusion protection)
+    root_content_text_len = _content_text_len(root)
     # Total text length in root for legacy protection checks
     root_text_len = len(root.get_text(separator=' ', strip=True))
 
@@ -155,7 +159,7 @@ def extract_main_content(html: str) -> tuple[str, str]:
 
     # 5. Always exclude elements whose class or id contains prohibited noise keywords
     # Protection: Do NOT delete an element if it contains the H1 or >50% of the
-    # container's paragraph-text (prevents removing the article body itself).
+    # container's content-text (prevents removing the article body itself).
     prohibited_keywords = [
         'sidebar', 'widget', 'related', 'relacionad', 'author-box', 'author-bio',
         'post-navigation', 'nav-links', 'comments', 'share', 'newsletter', 'breadcrumb',
@@ -172,11 +176,11 @@ def extract_main_content(html: str) -> tuple[str, str]:
         
         if any(kw in combined_attrs for kw in prohibited_keywords):
             has_h1 = bool(el.find('h1')) or el.name == 'h1'
-            el_paragraph_text = _paragraph_text_len(el)
-            # Protect if element holds >50 % of the container's paragraph text
+            el_content_text = _content_text_len(el)
+            # Protect if element holds >50 % of the container's content text
             is_substantial = (
-                root_paragraph_text_len > 0
-                and (el_paragraph_text / root_paragraph_text_len) > 0.50
+                root_content_text_len > 0
+                and (el_content_text / root_content_text_len) > 0.50
             ) or (
                 root_text_len > 0
                 and (len(el.get_text(separator=' ', strip=True)) / root_text_len) > 0.40

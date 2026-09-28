@@ -171,3 +171,127 @@ def test_densest_block_picks_innermost_content_div():
         "Banner <p> should not appear — the innermost dense block (div.content) "
         "does not include the banner."
     )
+
+
+def test_elementor_multi_section_article():
+    """
+    Test an Elementor-style article layout:
+    div.wrapper containing 3 div.section, each with an H2, 2 long paragraphs,
+    and a 4-item list, plus an external promo banner and nav.
+    The chosen container must be div.wrapper (containing all 3 sections),
+    not a single div.section.
+    """
+    html = """
+    <html>
+      <body>
+        <div class="banner">
+          <p>Important global announcement banner outside main content.</p>
+        </div>
+        <nav>
+          <ul>
+            <li><a href="/">Home</a></li>
+            <li><a href="/blog">Blog</a></li>
+            <li><a href="/contact">Contact</a></li>
+          </ul>
+        </nav>
+        <div class="wrapper">
+          <div class="section">
+            <h2>Section One: Generative Architecture</h2>
+            <p>First substantive paragraph in section one explaining technical infrastructure and crawler access protocols for AI search engines in detail.</p>
+            <p>Second substantive paragraph in section one providing further operational recommendations and architectural blueprints.</p>
+            <ul>
+              <li>Technical factor alpha</li>
+              <li>Technical factor beta</li>
+              <li>Technical factor gamma</li>
+              <li>Technical factor delta</li>
+            </ul>
+          </div>
+          <div class="section">
+            <h2>Section Two: Citability Mechanics</h2>
+            <p>First substantive paragraph in section two detailing claims extraction density and evidence linkage patterns across knowledge graphs.</p>
+            <p>Second substantive paragraph in section two demonstrating verifiable factual statements and consensus checking algorithms.</p>
+            <ul>
+              <li>Citability signal one</li>
+              <li>Citability signal two</li>
+              <li>Citability signal three</li>
+              <li>Citability signal four</li>
+            </ul>
+          </div>
+          <div class="section">
+            <h2>Section Three: Optimization Strategy</h2>
+            <p>First substantive paragraph in section three presenting structured implementation steps for digital marketing and content teams.</p>
+            <p>Second substantive paragraph in section three summarizing longitudinal performance tracking and generative engine auditing.</p>
+            <ul>
+              <li>Strategy item first</li>
+              <li>Strategy item second</li>
+              <li>Strategy item third</li>
+              <li>Strategy item fourth</li>
+            </ul>
+          </div>
+        </div>
+      </body>
+    </html>
+    """
+    _, text = extract_main_content(html)
+
+    # All 3 sections must be included (wrapper chosen, not a single section)
+    assert "Section One: Generative Architecture" in text
+    assert "Section Two: Citability Mechanics" in text
+    assert "Section Three: Optimization Strategy" in text
+    assert "Technical factor alpha" in text
+    assert "Citability signal one" in text
+    assert "Strategy item first" in text
+
+    # External banner and nav must NOT be present
+    assert "Important global announcement banner outside" not in text
+
+
+def test_article_with_many_lists():
+    """
+    Test an article with multiple long lists:
+    div.post containing 2 paragraphs and 3 long lists.
+    Since lists (li) count as content text, div.post must be chosen in its entirety.
+    """
+    html = """
+    <html>
+      <body>
+        <div class="banner">
+          <p>Quick site notification alert.</p>
+        </div>
+        <div class="post">
+          <h1>Comprehensive Checklist for AI Optimization</h1>
+          <p>Introductory paragraph describing the scope of this checklist and how practitioners can apply it across large web platforms.</p>
+          <ul>
+            <li>Prerequisite audit of robots.txt for AI search bots</li>
+            <li>Verification of server-side rendering and hydration consistency</li>
+            <li>Assessment of Time to First Byte and Core Web Vitals</li>
+            <li>Validation of JSON-LD Schema against Schema.org standards</li>
+            <li>Inspection of canonical headers and protocol redirection</li>
+          </ul>
+          <p>Intermediary transition paragraph discussing content formatting and information extraction heuristics.</p>
+          <ol>
+            <li>Structure passages with clear declarative topic sentences</li>
+            <li>Embed specific numerical claims backed by authoritative sources</li>
+            <li>Maintain high entity density throughout descriptive sections</li>
+            <li>Format comparative data into accessible HTML tables</li>
+          </ol>
+          <ul>
+            <li>Follow-up analysis of brand mention consensus</li>
+            <li>Evaluation of secondary citation channels</li>
+            <li>Monitoring of search share across leading generative engines</li>
+          </ul>
+        </div>
+      </body>
+    </html>
+    """
+    _, text = extract_main_content(html)
+
+    # All parts of div.post must be present
+    assert "Comprehensive Checklist for AI Optimization" in text
+    assert "Prerequisite audit of robots.txt" in text
+    assert "Structure passages with clear declarative" in text
+    assert "Follow-up analysis of brand mention" in text
+
+    # External banner must not be present
+    assert "Quick site notification alert" not in text
+
