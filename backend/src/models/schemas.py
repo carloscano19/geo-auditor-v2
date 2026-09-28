@@ -184,6 +184,11 @@ class BatchItemResult(BaseModel):
     error: Optional[str] = None
 
 
+class RecommendationBreakdownItem(BaseModel):
+    recommendation: str
+    page_count: int
+
+
 class TopicIssue(BaseModel):
     """
     Aggregated submetric issue identified across multiple pages in a batch.
@@ -193,6 +198,7 @@ class TopicIssue(BaseModel):
     affected_count: int
     affected_urls: list[str] = Field(default_factory=list)
     top_recommendation: Optional[str] = None
+    recommendation_breakdown: list[RecommendationBreakdownItem] = Field(default_factory=list)
     impact: float
 
 

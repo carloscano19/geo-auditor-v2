@@ -72,12 +72,18 @@ export interface BatchItemResult {
     error?: string;
 }
 
+export interface RecommendationBreakdownItem {
+    recommendation: string;
+    page_count: number;
+}
+
 export interface TopicIssue {
     dimension: string;
     submetric: string;
     affected_count: number;
     affected_urls: string[];
     top_recommendation?: string;
+    recommendation_breakdown?: RecommendationBreakdownItem[];
     impact: number;
 }
 

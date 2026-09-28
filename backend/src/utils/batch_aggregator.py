@@ -116,11 +116,14 @@ def aggregate_issues_by_topic(
                     "submetric": submetric_name,
                     "dimension_weight": dim_weight,
                     "affected_urls": [],
-                    "recommendations": []
+                    "rec_page_counter": Counter()
                 }
             if url not in target_map[key]["affected_urls"]:
                 target_map[key]["affected_urls"].append(url)
-            target_map[key]["recommendations"].extend(recs)
+            
+            # Count each distinct recommendation once per page
+            for rec in set(recs):
+                target_map[key]["rec_page_counter"][rec] += 1
 
     def build_sorted_issues(raw_map: Dict[Tuple[str, str], Dict[str, Any]]) -> List[Dict[str, Any]]:
         output: List[Dict[str, Any]] = []
@@ -129,10 +132,16 @@ def aggregate_issues_by_topic(
             dim_weight = data["dimension_weight"]
             impact = round(dim_weight * affected_count, 4)
 
-            top_recommendation: Optional[str] = None
-            if data["recommendations"]:
-                top_rec, _ = Counter(data["recommendations"]).most_common(1)[0]
-                top_recommendation = top_rec
+            rec_counter: Counter = data["rec_page_counter"]
+            recommendation_breakdown = [
+                {"recommendation": rec, "page_count": cnt}
+                for rec, cnt in rec_counter.most_common()
+            ]
+            top_recommendation = (
+                recommendation_breakdown[0]["recommendation"]
+                if recommendation_breakdown
+                else None
+            )
 
             output.append({
                 "dimension": dim,
@@ -140,6 +149,7 @@ def aggregate_issues_by_topic(
                 "affected_count": affected_count,
                 "affected_urls": data["affected_urls"],
                 "top_recommendation": top_recommendation,
+                "recommendation_breakdown": recommendation_breakdown,
                 "impact": impact
             })
         output.sort(key=lambda x: (x["impact"], x["affected_count"]), reverse=True)

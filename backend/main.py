@@ -417,6 +417,18 @@ async def export_batch_issues_csv(job_id: str):
     ]
     writer.writerow(headers)
 
+    def format_issue_recommendations(issue_data: dict) -> str:
+        breakdown = issue_data.get("recommendation_breakdown", [])
+        if not breakdown:
+            return issue_data.get("top_recommendation", "") or ""
+        if len(breakdown) == 1:
+            return breakdown[0].get("recommendation", "")
+        return " | ".join(
+            f"{item['recommendation']} ({item['page_count']} page{'s' if item['page_count'] != 1 else ''})"
+            for item in breakdown
+            if item.get("recommendation")
+        )
+
     priority = 1
     # 1. Site-wide issues first
     for issue in job.get("site_wide_issues", []):
@@ -432,7 +444,7 @@ async def export_batch_issues_csv(job_id: str):
             dim_label,
             issue.get("affected_count", 0),
             impact_val,
-            issue.get("top_recommendation", "") or "",
+            format_issue_recommendations(issue),
             urls_joined,
         ])
         priority += 1
@@ -451,7 +463,7 @@ async def export_batch_issues_csv(job_id: str):
             dim_label,
             issue.get("affected_count", 0),
             impact_val,
-            issue.get("top_recommendation", "") or "",
+            format_issue_recommendations(issue),
             urls_joined,
         ])
         priority += 1

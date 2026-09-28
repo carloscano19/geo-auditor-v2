@@ -95,11 +95,25 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                     </div>
                 </div>
 
-                {/* Top recommendation */}
+                {/* Top recommendation and breakdown */}
                 {issue.top_recommendation && (
-                    <div className="text-sm text-text-secondary bg-background/50 p-2.5 rounded border border-surface-border/40 flex items-start gap-2">
-                        <span className="text-score-warning text-xs mt-0.5">💡</span>
-                        <span>{issue.top_recommendation}</span>
+                    <div className="text-sm text-text-secondary bg-background/50 p-2.5 rounded border border-surface-border/40 space-y-1.5">
+                        <div className="flex items-start gap-2">
+                            <span className="text-score-warning text-xs mt-0.5">💡</span>
+                            <span>{issue.top_recommendation}</span>
+                        </div>
+                        {issue.recommendation_breakdown && issue.recommendation_breakdown.length > 1 && (
+                            <div className="pl-5 space-y-1 text-xs text-text-muted">
+                                {issue.recommendation_breakdown.slice(1).map((item, rIdx) => (
+                                    <div key={rIdx} className="italic">
+                                        Also: {item.recommendation}{" "}
+                                        <span className="not-italic text-text-muted/80">
+                                            ({item.page_count} page{item.page_count === 1 ? "" : "s"})
+                                        </span>
+                                    </div>
+                                ))}
+                            </div>
+                        )}
                     </div>
                 )}
 
@@ -172,7 +186,7 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                                 <span>🌐</span> Site-wide Issues
                             </h3>
                             <p className="text-xs text-text-muted mt-0.5">
-                                Submetrics affecting the entire domain configuration (e.g. Trust Pages, robots.txt AI Bot Access).
+                                Issues tied to the whole domain rather than a single page (e.g. missing About Us or Team pages).
                             </p>
                         </div>
                         <span className="text-xs px-2.5 py-1 bg-score-warning/15 text-score-warning rounded-full font-mono font-medium">

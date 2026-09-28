@@ -797,3 +797,159 @@ def test_content_type_classification_news_vs_guide_and_spanish():
         schema_type="NewsArticle"
     )
     assert detect_content_type(p6) == "news"
+
+
+def test_recommendation_breakdown_two_page_types():
+    """
+    Test recommendation_breakdown with two page types failing Schema Presence:
+    3 news pages (NewsArticle recommendation) + 1 guide page (Article/BlogPosting recommendation).
+    Verifies that:
+    - affected_count = 4
+    - top_recommendation is the news one (3 pages)
+    - recommendation_breakdown has both distinct recommendations with page counts 3 and 1.
+    """
+    news_rec = "Add JSON-LD NewsArticle Schema with author, publisher and datePublished."
+    guide_rec = "Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs)."
+
+    results = [
+        {
+            "url": f"https://example.com/news-{i}",
+            "status": "done",
+            "result": {
+                "url": f"https://example.com/news-{i}",
+                "detector_results": [
+                    create_mock_detector_result("metadata_schema", 0.04, [
+                        {"name": "Schema Presence", "raw_score": 0.0, "recommendations": [news_rec]}
+                    ])
+                ]
+            }
+        }
+        for i in range(1, 4)
+    ]
+    results.append({
+        "url": "https://example.com/guide-1",
+        "status": "done",
+        "result": {
+            "url": "https://example.com/guide-1",
+            "detector_results": [
+                create_mock_detector_result("metadata_schema", 0.04, [
+                    {"name": "Schema Presence", "raw_score": 0.0, "recommendations": [guide_rec]}
+                ])
+            ]
+        }
+    })
+
+    page_issues, site_wide = aggregate_issues_by_topic(results)
+    schema_issue = next(i for i in page_issues if i["submetric"] == "Schema Presence")
+
+    assert schema_issue["affected_count"] == 4
+    assert schema_issue["top_recommendation"] == news_rec
+
+    breakdown = schema_issue["recommendation_breakdown"]
+    assert len(breakdown) == 2
+    assert breakdown[0]["recommendation"] == news_rec
+    assert breakdown[0]["page_count"] == 3
+    assert breakdown[1]["recommendation"] == guide_rec
+    assert breakdown[1]["page_count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_issues_csv_multiple_recommendations():
+    """
+    Test that GET /api/batch/{job_id}/issues.csv includes all recommendations
+    separated by ' | ' with their page counts in parentheses when there are multiple.
+    """
+    from datetime import datetime, timezone
+    now = datetime.now(timezone.utc)
+    job_id = "test-job-multi-rec-csv"
+    batch_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "done",
+        "total": 4,
+        "completed": 4,
+        "results": [],
+        "site_wide_issues": [],
+        "issues_by_topic": [
+            {
+                "dimension": "metadata_schema",
+                "submetric": "Schema Presence",
+                "affected_count": 4,
+                "affected_urls": ["https://example.com/p1", "https://example.com/p2", "https://example.com/p3", "https://example.com/p4"],
+                "top_recommendation": "Add JSON-LD NewsArticle Schema with author, publisher and datePublished.",
+                "recommendation_breakdown": [
+                    {
+                        "recommendation": "Add JSON-LD NewsArticle Schema with author, publisher and datePublished.",
+                        "page_count": 3
+                    },
+                    {
+                        "recommendation": "Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs).",
+                        "page_count": 1
+                    }
+                ],
+                "impact": 0.16
+            }
+        ],
+        "created_at": now.isoformat(),
+        "completed_at": now.isoformat()
+    }
+
+    async with AsyncClient(transport=ASGITransport(app=app), base_url="http://test") as client:
+        res = await client.get(f"/api/batch/{job_id}/issues.csv")
+        assert res.status_code == 200
+        text = res.content.decode("utf-8-sig")
+        expected_rec = (
+            "Add JSON-LD NewsArticle Schema with author, publisher and datePublished. (3 pages) | "
+            "Add JSON-LD Article or BlogPosting Schema with author and publisher (and FAQPage if the page has FAQs). (1 page)"
+        )
+        assert expected_rec in text
+
+
+def test_tokenize_variations():
+    """
+    Test tokenize() with the 4 exact prompt requirements:
+    1. 'buy $CHZ now' -> removes '$'
+    2. 'CHZ's buyback' -> removes possessive ''s'
+    3. 'chz-token price' -> returns 'chz-token', 'chz', 'token', 'price'
+    4. 'qué es un fan token' -> keeps accents and words with len > 1
+    """
+    from src.detectors.query_match import tokenize
+
+    assert tokenize("buy $CHZ now") == ["buy", "chz", "now"]
+    assert tokenize("CHZ's buyback") == ["chz", "buyback"]
+    assert tokenize("chz-token price") == ["chz-token", "chz", "token", "price"]
+    assert tokenize("qué es un fan token") == ["qué", "es", "un", "fan", "token"]
+
+
+@pytest.mark.asyncio
+async def test_query_match_chz_matches_chz_based():
+    """
+    Test that a query 'chz' finds a match in a text that only contains '$CHZ-based'.
+    """
+    from datetime import datetime, timezone
+    from src.models.schemas import PageData
+    from src.detectors.query_match import QueryMatchDetector
+
+    page = PageData(
+        url="https://example.com/crypto",
+        final_url="https://example.com/crypto",
+        html_raw="<html><body><p>$CHZ-based ecosystem mechanisms are active.</p></body></html>",
+        html_rendered="<html><body><p>$CHZ-based ecosystem mechanisms are active.</p></body></html>",
+        text_content="$CHZ-based ecosystem mechanisms are active.",
+        status_code=200,
+        load_time_ms=100.0,
+        word_count=5,
+        is_ssr=True,
+        is_https=True,
+        ttfb_ms=100.0,
+        scraped_at=datetime.now(timezone.utc)
+    )
+
+    detector = QueryMatchDetector(target_query="chz")
+    result = await detector.analyze(page)
+
+    assert result.score > 0.0
+    # Both full content match and lead paragraph should identify the 'chz' subpart
+    breakdown_map = {b.name: b.raw_score for b in result.breakdown}
+    assert breakdown_map.get("Full Content Match", 0.0) >= 70.0
+    assert breakdown_map.get("Opening Paragraph Match", 0.0) == 100.0
+

@@ -19,6 +19,44 @@ from src.utils.lang_patterns import resolve_language, get_lang_patterns
 from src.utils.text_processing import extract_main_content, clean_html_for_analysis
 
 
+def tokenize(text: str) -> List[str]:
+    """
+    Tokenize text for query and content matching:
+    - Removes '$' symbol
+    - Removes possessive endings ('s / ’s)
+    - Normalizes to lowercase, preserving accents (á, é, í, ó, ú, ü) and ñ
+    - For hyphenated words, returns the full word and each subpart
+    - Excludes single-letter tokens (length > 1 required)
+    """
+    if not text:
+        return []
+
+    # 1. Remove '$'
+    cleaned = text.replace("$", "")
+
+    # 2. Remove possessives ('s / ’s at word boundaries)
+    cleaned = re.sub(r"['’]s\b", "", cleaned, flags=re.IGNORECASE)
+
+    # 3. Match words with letters (including accents and ñ), numbers, and internal hyphens
+    pattern = r'[a-zA-ZÁÉÍÓÚÜÑáéíóúüñ0-9]+(?:-[a-zA-ZÁÉÍÓÚÜÑáéíóúüñ0-9]+)*'
+    raw_tokens = re.findall(pattern, cleaned)
+
+    tokens: List[str] = []
+    for raw in raw_tokens:
+        tok = raw.lower()
+        if "-" in tok:
+            if len(tok) > 1:
+                tokens.append(tok)
+            for part in tok.split("-"):
+                if len(part) > 1:
+                    tokens.append(part)
+        else:
+            if len(tok) > 1:
+                tokens.append(tok)
+
+    return tokens
+
+
 class BM25:
     """Lightweight, in-memory BM25 implementation for paragraph ranking."""
 
@@ -88,7 +126,7 @@ class QueryMatchDetector(BaseDetector):
         stop_words = patterns.get("stop_words", set())
 
         # Tokenize query
-        raw_query_words = re.findall(r'\b[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\$\-]+\b', self.target_query.lower())
+        raw_query_words = tokenize(self.target_query)
         query_terms = [w for w in raw_query_words if w not in stop_words and len(w) > 1]
         if not query_terms:
             query_terms = raw_query_words if raw_query_words else [self.target_query.lower()]
@@ -96,7 +134,7 @@ class QueryMatchDetector(BaseDetector):
         # Extract main content
         scoped_html, scoped_text = extract_main_content(page_data.html_rendered or page_data.html_raw)
         full_text = scoped_text or page_data.text_content or ""
-        content_tokens = [w.lower() for w in re.findall(r'\b[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\$\-]+\b', full_text)]
+        content_tokens = tokenize(full_text)
 
         # Extract paragraphs for passage ranking
         cleaned_html = clean_html_for_analysis(scoped_html) if scoped_html else ""
@@ -158,7 +196,7 @@ class QueryMatchDetector(BaseDetector):
 
         if paragraphs:
             tokenized_paragraphs = [
-                [w.lower() for w in re.findall(r'\b[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\$\-]+\b', p)]
+                tokenize(p)
                 for p in paragraphs
             ]
             bm25 = BM25(tokenized_paragraphs)
@@ -203,7 +241,7 @@ class QueryMatchDetector(BaseDetector):
         # Submetric 3: Opening Paragraph Presence (20%)
         # ---------------------------------------------------------
         lead_paragraph = paragraphs[0] if paragraphs else full_text[:300]
-        lead_tokens = [w.lower() for w in re.findall(r'\b[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9\$\-]+\b', lead_paragraph)]
+        lead_tokens = tokenize(lead_paragraph)
         lead_matches = [t for t in query_terms if t in lead_tokens]
         lead_coverage = len(lead_matches) / len(query_terms) if query_terms else 0.0
 
