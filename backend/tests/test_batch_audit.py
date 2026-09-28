@@ -953,3 +953,62 @@ async def test_query_match_chz_matches_chz_based():
     assert breakdown_map.get("Full Content Match", 0.0) >= 70.0
     assert breakdown_map.get("Opening Paragraph Match", 0.0) == 100.0
 
+
+def test_recommendation_breakdown_normal_submetric_collapsed():
+    """
+    Test that a normal submetric (e.g. 'Logical Connectors') with multiple
+    distinct recommendations across pages collapses to a single recommendation
+    in recommendation_breakdown with page_count equal to affected_count.
+    """
+    rec_a = "Add transition words (furthermore, however, therefore) between paragraphs."
+    rec_b = "Improve connective phrasing to strengthen logical flow."
+
+    results = [
+        {
+            "url": "https://example.com/p1",
+            "status": "done",
+            "result": {
+                "url": "https://example.com/p1",
+                "detector_results": [
+                    create_mock_detector_result("passage_quality", 0.10, [
+                        {"name": "Logical Connectors", "raw_score": 40.0, "recommendations": [rec_a]}
+                    ])
+                ]
+            }
+        },
+        {
+            "url": "https://example.com/p2",
+            "status": "done",
+            "result": {
+                "url": "https://example.com/p2",
+                "detector_results": [
+                    create_mock_detector_result("passage_quality", 0.10, [
+                        {"name": "Logical Connectors", "raw_score": 40.0, "recommendations": [rec_b]}
+                    ])
+                ]
+            }
+        },
+        {
+            "url": "https://example.com/p3",
+            "status": "done",
+            "result": {
+                "url": "https://example.com/p3",
+                "detector_results": [
+                    create_mock_detector_result("passage_quality", 0.10, [
+                        {"name": "Logical Connectors", "raw_score": 40.0, "recommendations": [rec_a]}
+                    ])
+                ]
+            }
+        },
+    ]
+
+    page_issues, site_wide = aggregate_issues_by_topic(results)
+    issue = next(i for i in page_issues if i["submetric"] == "Logical Connectors")
+
+    assert issue["affected_count"] == 3
+    assert issue["top_recommendation"] == rec_a
+    breakdown = issue["recommendation_breakdown"]
+    assert len(breakdown) == 1
+    assert breakdown[0]["recommendation"] == rec_a
+    assert breakdown[0]["page_count"] == 3
+

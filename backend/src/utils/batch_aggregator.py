@@ -40,6 +40,12 @@ SITE_WIDE_SUBMETRICS: Set[str] = {
     "Trust Pages",
 }
 
+# Submetrics whose recommendations depend on the content type of the page
+TYPE_DEPENDENT_SUBMETRICS: Set[str] = {
+    "Schema Presence",
+    "Critical Schema Types",
+}
+
 
 def aggregate_issues_by_topic(
     results: List[Dict[str, Any]]
@@ -142,6 +148,12 @@ def aggregate_issues_by_topic(
                 if recommendation_breakdown
                 else None
             )
+
+            # Only submetrics in TYPE_DEPENDENT_SUBMETRICS keep multiple recommendations
+            if submetric not in TYPE_DEPENDENT_SUBMETRICS and top_recommendation:
+                recommendation_breakdown = [
+                    {"recommendation": top_recommendation, "page_count": affected_count}
+                ]
 
             output.append({
                 "dimension": dim,
