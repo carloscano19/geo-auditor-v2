@@ -9,6 +9,7 @@ Impact = dimension_weight * number_of_affected_pages.
 
 from collections import Counter
 from typing import List, Dict, Any, Optional, Set, Tuple
+from urllib.parse import urlparse
 
 # Centralized dimension display names
 DIMENSION_DISPLAY_NAMES: Dict[str, str] = {
@@ -47,6 +48,16 @@ TYPE_DEPENDENT_SUBMETRICS: Set[str] = {
 }
 
 
+def extract_domain(url: str) -> str:
+    """Extract netloc without 'www.' prefix."""
+    try:
+        if not url.startswith(("http://", "https://")):
+            url = "https://" + url
+        return urlparse(url).netloc.lower().replace("www.", "")
+    except Exception:
+        return ""
+
+
 def aggregate_issues_by_topic(
     results: List[Dict[str, Any]]
 ) -> Tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -56,6 +67,7 @@ def aggregate_issues_by_topic(
     
     Applies dependency collapsing (e.g. if Schema Presence fails on a page, its child
     submetrics are ignored for that page) and separates site-wide issues from page-level issues.
+    Site-wide issues are grouped by domain.
     
     Args:
         results: List of dicts representing BatchItemResult (each with url, status, result, error)
@@ -64,7 +76,16 @@ def aggregate_issues_by_topic(
         Tuple of (page_issues, site_wide_issues), each sorted descending by impact.
     """
     page_issue_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
-    site_issue_map: Dict[Tuple[str, str], Dict[str, Any]] = {}
+    site_issue_map: Dict[Tuple[str, str, str], Dict[str, Any]] = {}
+
+    # Count total successfully audited pages per domain
+    domain_total_pages: Counter = Counter()
+    for item in results:
+        if item.get("status") == "done" and item.get("result"):
+            u = item.get("url") or item["result"].get("url", "")
+            d = extract_domain(u)
+            if d:
+                domain_total_pages[d] += 1
 
     for item in results:
         # Only inspect successful audits
@@ -114,28 +135,45 @@ def aggregate_issues_by_topic(
             dim_weight = sub_data["dim_weight"]
             recs = sub_data["recommendations"]
 
-            target_map = site_issue_map if submetric_name in SITE_WIDE_SUBMETRICS else page_issue_map
-            key = (dimension, submetric_name)
-            if key not in target_map:
-                target_map[key] = {
-                    "dimension": dimension,
-                    "submetric": submetric_name,
-                    "dimension_weight": dim_weight,
-                    "affected_urls": [],
-                    "rec_page_counter": Counter()
-                }
-            if url not in target_map[key]["affected_urls"]:
-                target_map[key]["affected_urls"].append(url)
-            
-            # Count each distinct recommendation once per page
-            for rec in set(recs):
-                target_map[key]["rec_page_counter"][rec] += 1
+            if submetric_name in SITE_WIDE_SUBMETRICS:
+                domain = extract_domain(url)
+                site_key = (domain, dimension, submetric_name)
+                if site_key not in site_issue_map:
+                    site_issue_map[site_key] = {
+                        "domain": domain,
+                        "dimension": dimension,
+                        "submetric": submetric_name,
+                        "dimension_weight": dim_weight,
+                        "affected_urls": [],
+                        "total_domain_pages": domain_total_pages.get(domain, 0),
+                        "rec_page_counter": Counter()
+                    }
+                if url not in site_issue_map[site_key]["affected_urls"]:
+                    site_issue_map[site_key]["affected_urls"].append(url)
+                for rec in set(recs):
+                    site_issue_map[site_key]["rec_page_counter"][rec] += 1
+            else:
+                page_key = (dimension, submetric_name)
+                if page_key not in page_issue_map:
+                    page_issue_map[page_key] = {
+                        "dimension": dimension,
+                        "submetric": submetric_name,
+                        "dimension_weight": dim_weight,
+                        "affected_urls": [],
+                        "rec_page_counter": Counter()
+                    }
+                if url not in page_issue_map[page_key]["affected_urls"]:
+                    page_issue_map[page_key]["affected_urls"].append(url)
+                for rec in set(recs):
+                    page_issue_map[page_key]["rec_page_counter"][rec] += 1
 
-    def build_sorted_issues(raw_map: Dict[Tuple[str, str], Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def build_sorted_issues(raw_map: Dict[Any, Dict[str, Any]]) -> List[Dict[str, Any]]:
         output: List[Dict[str, Any]] = []
-        for (dim, submetric), data in raw_map.items():
+        for key, data in raw_map.items():
             affected_count = len(data["affected_urls"])
             dim_weight = data["dimension_weight"]
+            dim = data["dimension"]
+            submetric = data["submetric"]
             impact = round(dim_weight * affected_count, 4)
 
             rec_counter: Counter = data["rec_page_counter"]
@@ -155,7 +193,7 @@ def aggregate_issues_by_topic(
                     {"recommendation": top_recommendation, "page_count": affected_count}
                 ]
 
-            output.append({
+            issue_data = {
                 "dimension": dim,
                 "submetric": submetric,
                 "affected_count": affected_count,
@@ -163,7 +201,13 @@ def aggregate_issues_by_topic(
                 "top_recommendation": top_recommendation,
                 "recommendation_breakdown": recommendation_breakdown,
                 "impact": impact
-            })
+            }
+            if "domain" in data:
+                issue_data["domain"] = data["domain"]
+                issue_data["total_domain_pages"] = data.get("total_domain_pages", 0)
+
+            output.append(issue_data)
+
         output.sort(key=lambda x: (x["impact"], x["affected_count"]), reverse=True)
         return output
 
@@ -171,3 +215,4 @@ def aggregate_issues_by_topic(
     site_wide_issues = build_sorted_issues(site_issue_map)
 
     return page_issues, site_wide_issues
+

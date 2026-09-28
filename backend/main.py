@@ -436,10 +436,12 @@ async def export_batch_issues_csv(job_id: str):
         dim_label = DIMENSION_DISPLAY_NAMES.get(dim_key, dim_key)
         urls_joined = " | ".join(issue.get("affected_urls", []))
         impact_val = f"{issue.get('impact', 0.0):.2f}"
+        domain = issue.get("domain", "")
+        scope_str = f"Site-wide ({domain})" if domain else "Site-wide"
 
         writer.writerow([
             priority,
-            "Site-wide",
+            scope_str,
             issue.get("submetric", ""),
             dim_label,
             issue.get("affected_count", 0),

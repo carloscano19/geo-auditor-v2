@@ -85,6 +85,8 @@ export interface TopicIssue {
     top_recommendation?: string;
     recommendation_breakdown?: RecommendationBreakdownItem[];
     impact: number;
+    domain?: string;
+    total_domain_pages?: number;
 }
 
 export interface BatchJobResponse {

@@ -14,7 +14,8 @@ from urllib.parse import urlparse
 from typing import Optional
 from bs4 import BeautifulSoup
 from src.models.schemas import PageData
-from src.utils.lang_patterns import is_explanatory_h1
+from src.utils.lang_patterns import is_explanatory_h1, is_press_release_dateline
+from src.utils.text_processing import extract_main_content
 
 
 def detect_content_type(page_data: PageData) -> str:
@@ -22,9 +23,10 @@ def detect_content_type(page_data: PageData) -> str:
     Detect the content classification of a page.
     Priority:
     1. Schema.org structured data (JSON-LD and Microdata)
-    2. URL path indicators (with explanatory H1 override for news paths)
-    3. Title / H1 indicators
-    4. Default: 'guide_blog'
+    2. Press release dateline in first 400 chars of main content
+    3. URL path indicators (with explanatory H1 override for news paths)
+    4. Title / H1 indicators
+    5. Default: 'guide_blog'
     """
     html = page_data.html_rendered or page_data.html_raw or ''
     soup = None
@@ -68,6 +70,8 @@ def detect_content_type(page_data: PageData) -> str:
                             return 'review'
                         if any(t in types_lower for t in ['product', 'individualproduct', 'productmodel', 'offer', 'aggregateoffer']):
                             return 'product'
+                        if any(t in types_lower for t in ['blogposting', 'blog']):
+                            return 'guide_blog'
                 except Exception:
                     continue
 
@@ -80,10 +84,25 @@ def detect_content_type(page_data: PageData) -> str:
                     return 'review'
                 if 'product' in itemtype:
                     return 'product'
+                if 'blogposting' in itemtype or 'blog' in itemtype:
+                    return 'guide_blog'
         except Exception:
             pass
 
-    # 2. URL Path check (Priority 2)
+    # 2. Press release dateline check (Priority 2)
+    main_text = ""
+    if html:
+        try:
+            _, main_text = extract_main_content(html)
+        except Exception:
+            main_text = ""
+    if not main_text and page_data.text_content:
+        main_text = page_data.text_content
+
+    if main_text and is_press_release_dateline(main_text[:400]):
+        return 'news'
+
+    # 3. URL Path check (Priority 3)
     url_target = page_data.final_url or page_data.url or ''
     path = ''
     try:
@@ -109,9 +128,10 @@ def detect_content_type(page_data: PageData) -> str:
     if any(pp in path for pp in product_paths):
         return 'product'
 
-    # 3. Title indicators check (Priority 3)
+    # 4. Title indicators check (Priority 4)
     if h1_text:
         if re.search(r'\b(review|reviews|reseña|reseñas)\b', h1_text, re.IGNORECASE):
             return 'review'
 
+    # 5. Default (Priority 5)
     return 'guide_blog'

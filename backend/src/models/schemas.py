@@ -200,6 +200,8 @@ class TopicIssue(BaseModel):
     top_recommendation: Optional[str] = None
     recommendation_breakdown: list[RecommendationBreakdownItem] = Field(default_factory=list)
     impact: float
+    domain: Optional[str] = None
+    total_domain_pages: Optional[int] = None
 
 
 class BatchJobResponse(BaseModel):

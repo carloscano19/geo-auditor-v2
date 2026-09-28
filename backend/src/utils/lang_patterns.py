@@ -449,3 +449,65 @@ def resolve_language(page_data: Any) -> str:
     if text:
         return detect_language(text)
     return "en"
+
+
+# ---------------------------------------------------------------------------
+# Press Release Dateline Patterns (EN and ES)
+# ---------------------------------------------------------------------------
+
+_PRESS_MONTHS_EN = (
+    r"(?:January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"Jan\.?|Feb\.?|Mar\.?|Apr\.?|Jun\.?|Jul\.?|Aug\.?|Sep\.?|Sept\.?|Oct\.?|Nov\.?|Dec\.?)"
+)
+
+_PRESS_MONTHS_ES = (
+    r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|"
+    r"ene\.?|feb\.?|mar\.?|abr\.?|may\.?|jun\.?|jul\.?|ago\.?|sep\.?|sept\.?|set\.?|oct\.?|nov\.?|dic\.?)"
+)
+
+# Date formats:
+# EN: "September 2nd, 2026", "September 2, 2026", "Sept. 2, 2026", "2 September 2026"
+_PRESS_DATE_EN = rf"(?:{_PRESS_MONTHS_EN}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,)?\s+\d{{4}}|\d{{1,2}}(?:st|nd|rd|th)?\s+{_PRESS_MONTHS_EN}\s+\d{{4}})"
+
+# ES: "2 de septiembre de 2026", "2 de septiembre del 2026", "septiembre 2, 2026"
+_PRESS_DATE_ES = rf"(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:de\s+)?{_PRESS_MONTHS_ES}(?:\s+de|\s+del|,)?\s+\d{{4}}|{_PRESS_MONTHS_ES}\s+\d{{1,2}}(?:,)?\s+\d{{4}})"
+
+_PRESS_DATE = rf"(?:{_PRESS_DATE_EN}|{_PRESS_DATE_ES})"
+
+# Location: uppercase or capitalized city/cities: "MIAMI and MADRID", "LONDON", "Madrid", "NEW YORK & LONDON"
+_PRESS_CITY_WORD = r"[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+"
+_PRESS_LOCATION = rf"{_PRESS_CITY_WORD}(?:\s+(?:and|y|&)\s+{_PRESS_CITY_WORD}|\s*,\s*{_PRESS_CITY_WORD})*"
+
+# Dash: em-dash, en-dash, hyphen, or double-hyphen
+_PRESS_DASH = r"(?:[\u2014\u2013\-]{1,2})"
+
+# Wire services: (Business Wire), /PRNewswire/, Business Wire, PRNewswire
+_PRESS_WIRE = r"(?:\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/|Business\s*Wire|PRNewswire)"
+
+# Main dateline: Location, [wire]? Date [wire]? Dash
+DATELINE_REGEX = re.compile(
+    rf"\b({_PRESS_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH}",
+    re.IGNORECASE
+)
+
+# Wire equivalent dateline: Location [wire] Dash or Location, [wire] Dash, or (Business Wire) / /PRNewswire/ in text
+WIRE_EQUIVALENT_REGEX = re.compile(
+    rf"\b({_PRESS_LOCATION})\s*,?\s*{_PRESS_WIRE}\s*{_PRESS_DASH}|\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/",
+    re.IGNORECASE
+)
+
+
+def is_press_release_dateline(text: str) -> bool:
+    """
+    Detect if the given text begins with or contains a press release dateline
+    within the first 400 characters.
+    
+    Checks for:
+    - Capitalized or uppercase location(s) followed by comma, date (EN/ES), and a dash.
+    - Wire service markers such as (Business Wire) or /PRNewswire/.
+    """
+    if not text:
+        return False
+    snippet = text[:400]
+    return bool(DATELINE_REGEX.search(snippet) or WIRE_EQUIVALENT_REGEX.search(snippet))
+

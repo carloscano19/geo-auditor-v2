@@ -1012,3 +1012,239 @@ def test_recommendation_breakdown_normal_submetric_collapsed():
     assert breakdown[0]["recommendation"] == rec_a
     assert breakdown[0]["page_count"] == 3
 
+
+def test_press_release_dateline_detection():
+    """
+    Test press release dateline detection in detect_content_type.
+    1) socios fixture -> news
+    2) text starting with "MADRID, 2 de septiembre de 2026 — Socios.com anuncia…" -> news
+    3) guide mentioning date mid-paragraph -> guide_blog
+    4) page with schema BlogPosting and dateline -> guide_blog (schema takes priority)
+    """
+    import os
+    from datetime import datetime, timezone
+    from src.models.schemas import PageData
+    from src.utils.content_type import detect_content_type
+
+    # 1. Socios fixture
+    fixture_path = os.path.join(os.path.dirname(__file__), "fixtures", "socios_securitize.html")
+    with open(fixture_path, "r", encoding="utf-8") as f:
+        socios_html = f.read()
+
+    p_socios = PageData(
+        url="https://www.socios.com/socios-securitize-partner-tokenized-sports-equity-offerings/",
+        final_url="https://www.socios.com/socios-securitize-partner-tokenized-sports-equity-offerings/",
+        html_raw=socios_html,
+        html_rendered=socios_html,
+        text_content="",
+        status_code=200,
+        load_time_ms=100.0,
+        word_count=700,
+        is_ssr=True,
+        is_https=True,
+        ttfb_ms=100.0,
+        scraped_at=datetime.now(timezone.utc)
+    )
+    assert detect_content_type(p_socios) == "news"
+
+    # 2. Text starting with Madrid dateline
+    html_madrid = """
+    <html><body>
+    <h1>Socios.com anuncia acuerdo</h1>
+    <p>MADRID, 2 de septiembre de 2026 — Socios.com anuncia una nueva colaboración estratégica en el sector deportivo.</p>
+    </body></html>
+    """
+    p_madrid = PageData(
+        url="https://example.com/articulos/acuerdo-deportivo",
+        final_url="https://example.com/articulos/acuerdo-deportivo",
+        html_raw=html_madrid,
+        html_rendered=html_madrid,
+        text_content="",
+        status_code=200,
+        load_time_ms=100.0,
+        word_count=50,
+        is_ssr=True,
+        is_https=True,
+        ttfb_ms=100.0,
+        scraped_at=datetime.now(timezone.utc)
+    )
+    assert detect_content_type(p_madrid) == "news"
+
+    # 3. Guide mentioning date mid-paragraph -> guide_blog
+    html_guide = """
+    <html><body>
+    <h1>Guía de optimización de motores de búsqueda</h1>
+    <p>Esta guía ofrece un análisis detallado sobre algoritmos de búsqueda. El 2 de septiembre de 2026 se llevó a cabo una actualización importante de los motores.</p>
+    </body></html>
+    """
+    p_guide = PageData(
+        url="https://example.com/articulos/guia-motores-busqueda",
+        final_url="https://example.com/articulos/guia-motores-busqueda",
+        html_raw=html_guide,
+        html_rendered=html_guide,
+        text_content="",
+        status_code=200,
+        load_time_ms=100.0,
+        word_count=50,
+        is_ssr=True,
+        is_https=True,
+        ttfb_ms=100.0,
+        scraped_at=datetime.now(timezone.utc)
+    )
+    assert detect_content_type(p_guide) == "guide_blog"
+
+    # 4. Schema BlogPosting + dateline -> guide_blog (Schema wins!)
+    html_blog_dateline = """
+    <html>
+    <head>
+    <script type="application/ld+json">{"@context": "https://schema.org", "@type": "BlogPosting", "headline": "Blog title"}</script>
+    </head>
+    <body>
+    <h1>Blog Post Title</h1>
+    <p>MADRID, 2 de septiembre de 2026 — Socios.com anuncia algo en su blog personal.</p>
+    </body></html>
+    """
+    p_blog = PageData(
+        url="https://example.com/blog/post",
+        final_url="https://example.com/blog/post",
+        html_raw=html_blog_dateline,
+        html_rendered=html_blog_dateline,
+        text_content="",
+        status_code=200,
+        load_time_ms=100.0,
+        word_count=50,
+        is_ssr=True,
+        is_https=True,
+        ttfb_ms=100.0,
+        scraped_at=datetime.now(timezone.utc)
+    )
+    assert detect_content_type(p_blog) == "guide_blog"
+
+
+@pytest.mark.asyncio
+async def test_site_wide_issues_grouped_by_domain_and_csv():
+    """
+    Test batch audit with multiple domains:
+    3 pages of a.com and 2 of b.com.
+    Trust Pages fails in 3 of a.com and 1 of b.com.
+    -> Two separate site issue entries with their counts.
+    -> CSV issues export has Scope "Site-wide (a.com)" and "Site-wide (b.com)".
+    """
+    from datetime import datetime, timezone
+    from httpx import AsyncClient, ASGITransport
+    from main import app, batch_jobs
+
+    results = [
+        # 3 pages on a.com (all fail Trust Pages)
+        {
+            "url": "https://a.com/page1",
+            "status": "done",
+            "result": {
+                "url": "https://a.com/page1",
+                "detector_results": [
+                    create_mock_detector_result("eeat_authority", 0.12, [
+                        {"name": "Trust Pages", "raw_score": 30.0, "recommendations": ["Create About Us page"]}
+                    ])
+                ]
+            }
+        },
+        {
+            "url": "https://a.com/page2",
+            "status": "done",
+            "result": {
+                "url": "https://a.com/page2",
+                "detector_results": [
+                    create_mock_detector_result("eeat_authority", 0.12, [
+                        {"name": "Trust Pages", "raw_score": 30.0, "recommendations": ["Create About Us page"]}
+                    ])
+                ]
+            }
+        },
+        {
+            "url": "https://a.com/page3",
+            "status": "done",
+            "result": {
+                "url": "https://a.com/page3",
+                "detector_results": [
+                    create_mock_detector_result("eeat_authority", 0.12, [
+                        {"name": "Trust Pages", "raw_score": 30.0, "recommendations": ["Create About Us page"]}
+                    ])
+                ]
+            }
+        },
+        # 2 pages on b.com (only 1 fails Trust Pages)
+        {
+            "url": "https://b.com/page1",
+            "status": "done",
+            "result": {
+                "url": "https://b.com/page1",
+                "detector_results": [
+                    create_mock_detector_result("eeat_authority", 0.12, [
+                        {"name": "Trust Pages", "raw_score": 30.0, "recommendations": ["Create Team page"]}
+                    ])
+                ]
+            }
+        },
+        {
+            "url": "https://b.com/page2",
+            "status": "done",
+            "result": {
+                "url": "https://b.com/page2",
+                "detector_results": [
+                    create_mock_detector_result("eeat_authority", 0.12, [
+                        {"name": "Trust Pages", "raw_score": 100.0, "recommendations": []}
+                    ])
+                ]
+            }
+        },
+    ]
+
+    page_issues, site_wide = aggregate_issues_by_topic(results)
+
+    # Must produce 2 separate site-wide issue entries
+    assert len(site_wide) == 2
+
+    # First entry: a.com with 3 affected pages out of 3
+    issue_a = next(i for i in site_wide if i["domain"] == "a.com")
+    assert issue_a["submetric"] == "Trust Pages"
+    assert issue_a["affected_count"] == 3
+    assert issue_a["total_domain_pages"] == 3
+    assert len(issue_a["affected_urls"]) == 3
+
+    # Second entry: b.com with 1 affected page out of 2
+    issue_b = next(i for i in site_wide if i["domain"] == "b.com")
+    assert issue_b["submetric"] == "Trust Pages"
+    assert issue_b["affected_count"] == 1
+    assert issue_b["total_domain_pages"] == 2
+    assert len(issue_b["affected_urls"]) == 1
+
+    # Verify CSV issues export contains Scope by domain
+    job_id = "test-domain-grouping-csv"
+    batch_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "done",
+        "total": 5,
+        "completed": 5,
+        "results": results,
+        "issues_by_topic": page_issues,
+        "site_wide_issues": site_wide,
+        "created_at": datetime.now(timezone.utc),
+        "completed_at": datetime.now(timezone.utc),
+    }
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get(f"/api/batch/{job_id}/issues.csv")
+        assert res.status_code == 200
+        text = res.content.decode("utf-8-sig")
+        lines = text.strip().splitlines()
+
+        # Header
+        assert lines[0].startswith("Priority,Scope,Topic,Dimension")
+
+        # Must have Site-wide (a.com) and Site-wide (b.com)
+        scopes = [line.split(",")[1] for line in lines[1:]]
+        assert "Site-wide (a.com)" in scopes
+        assert "Site-wide (b.com)" in scopes
+
+

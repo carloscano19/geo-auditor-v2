@@ -68,6 +68,11 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                         <span className="font-semibold text-text-primary text-base">
                             {displaySubmetric}
                         </span>
+                        {isSiteWide && issue.domain && (
+                            <span className="text-xs px-2 py-0.5 bg-surface-border/50 text-text-secondary rounded-md font-mono">
+                                {issue.domain}
+                            </span>
+                        )}
                         <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-md font-mono">
                             {dimLabel}
                         </span>
@@ -79,7 +84,9 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                     </div>
                     <div className="flex items-center gap-4 text-xs">
                         <span className="text-score-poor font-medium">
-                            {issue.affected_count} {isSiteWide ? `of ${batchData.total} page${batchData.total === 1 ? "" : "s"}` : `page${issue.affected_count === 1 ? "" : "s"}`} affected
+                            {isSiteWide
+                                ? `${issue.affected_count} of ${issue.total_domain_pages ?? batchData.total} page${(issue.total_domain_pages ?? batchData.total) === 1 ? "" : "s"}${issue.domain ? ` on ${issue.domain}` : ""}`
+                                : `${issue.affected_count} page${issue.affected_count === 1 ? "" : "s"} affected`}
                         </span>
                         <div className="flex items-center gap-2" title={`Impact score: ${issue.impact.toFixed(2)}`}>
                             <span className="text-text-muted font-mono">
