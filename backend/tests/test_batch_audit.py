@@ -1120,6 +1120,20 @@ def test_press_release_dateline_detection():
     )
     assert detect_content_type(p_blog) == "guide_blog"
 
+    # 5. False positive blog metadata / author lines must return False
+    from src.utils.lang_patterns import is_press_release_dateline
+
+    assert is_press_release_dateline("By John Smith, June 5, 2026 - 8 min read. In this guide…") is False
+    assert is_press_release_dateline("Updated, March 3, 2026 - Here is how to buy fan tokens") is False
+    assert is_press_release_dateline("María, 5 de junio de 2026 – 6 min de lectura. Qué es un fan token") is False
+    assert is_press_release_dateline("Guide to SEO. Posted by admin, 12 May 2026 - 3 comments") is False
+
+    # 6. True positives must return True
+    assert is_press_release_dateline("MIAMI and MADRID, September 2nd, 2026 — Securitize…") is True
+    assert is_press_release_dateline("MADRID, 2 de septiembre de 2026 — Socios.com anuncia…") is True
+    assert is_press_release_dateline("Madrid, 2 de septiembre de 2026 — Socios.com anuncia…") is True
+    assert is_press_release_dateline("LONDON, Sept. 2, 2026 /PRNewswire/ — …") is True
+
 
 @pytest.mark.asyncio
 async def test_site_wide_issues_grouped_by_domain_and_csv():

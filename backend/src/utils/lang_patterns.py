@@ -456,12 +456,12 @@ def resolve_language(page_data: Any) -> str:
 # ---------------------------------------------------------------------------
 
 _PRESS_MONTHS_EN = (
-    r"(?:January|February|March|April|May|June|July|August|September|October|November|December|"
+    r"(?i:January|February|March|April|May|June|July|August|September|October|November|December|"
     r"Jan\.?|Feb\.?|Mar\.?|Apr\.?|Jun\.?|Jul\.?|Aug\.?|Sep\.?|Sept\.?|Oct\.?|Nov\.?|Dec\.?)"
 )
 
 _PRESS_MONTHS_ES = (
-    r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|"
+    r"(?i:enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|setiembre|octubre|noviembre|diciembre|"
     r"ene\.?|feb\.?|mar\.?|abr\.?|may\.?|jun\.?|jul\.?|ago\.?|sep\.?|sept\.?|set\.?|oct\.?|nov\.?|dic\.?)"
 )
 
@@ -470,29 +470,48 @@ _PRESS_MONTHS_ES = (
 _PRESS_DATE_EN = rf"(?:{_PRESS_MONTHS_EN}\s+\d{{1,2}}(?:st|nd|rd|th)?(?:,)?\s+\d{{4}}|\d{{1,2}}(?:st|nd|rd|th)?\s+{_PRESS_MONTHS_EN}\s+\d{{4}})"
 
 # ES: "2 de septiembre de 2026", "2 de septiembre del 2026", "septiembre 2, 2026"
-_PRESS_DATE_ES = rf"(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?:de\s+)?{_PRESS_MONTHS_ES}(?:\s+de|\s+del|,)?\s+\d{{4}}|{_PRESS_MONTHS_ES}\s+\d{{1,2}}(?:,)?\s+\d{{4}})"
+_PRESS_DATE_ES = rf"(?:\d{{1,2}}(?:st|nd|rd|th)?\s+(?i:de\s+)?{_PRESS_MONTHS_ES}(?:\s+(?i:de|del)|,)?\s+\d{{4}}|{_PRESS_MONTHS_ES}\s+\d{{1,2}}(?:,)?\s+\d{{4}})"
 
 _PRESS_DATE = rf"(?:{_PRESS_DATE_EN}|{_PRESS_DATE_ES})"
 
-# Location: uppercase or capitalized city/cities: "MIAMI and MADRID", "LONDON", "Madrid", "NEW YORK & LONDON"
-_PRESS_CITY_WORD = r"[A-ZÁÉÍÓÚÑ][A-ZÁÉÍÓÚÑa-záéíóúñ]+"
-_PRESS_LOCATION = rf"{_PRESS_CITY_WORD}(?:\s+(?:and|y|&)\s+{_PRESS_CITY_WORD}|\s*,\s*{_PRESS_CITY_WORD})*"
-
-# Dash: em-dash, en-dash, hyphen, or double-hyphen
-_PRESS_DASH = r"(?:[\u2014\u2013\-]{1,2})"
-
 # Wire services: (Business Wire), /PRNewswire/, Business Wire, PRNewswire
-_PRESS_WIRE = r"(?:\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/|Business\s*Wire|PRNewswire)"
+_PRESS_WIRE = r"(?i:\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/|Business\s*Wire|PRNewswire)"
 
-# Main dateline: Location, [wire]? Date [wire]? Dash
-DATELINE_REGEX = re.compile(
-    rf"\b({_PRESS_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH}",
+# 1. Uppercase location: one or more uppercase words; connectors and/y/& in lower or upper
+_PRESS_UPPER_WORD = r"[A-ZÁÉÍÓÚÑ]{2,}"
+_PRESS_UPPER_LOCATION = rf"{_PRESS_UPPER_WORD}(?:\s+(?:[A-ZÁÉÍÓÚÑ]{{2,}}|(?i:and|y|&)))*"
+_PRESS_DASH_ANY = r"(?:[\u2014\u2013\-]{1,2})"
+
+DATELINE_UPPER_REGEX = re.compile(
+    rf"\b({_PRESS_UPPER_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH_ANY}"
+)
+
+# 2. Capitalized location: 1 capitalized word or 2 joined by and/y/&; dash MUST be em-dash or en-dash
+_PRESS_CAP_WORD = r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+"
+_PRESS_CAP_LOCATION = rf"{_PRESS_CAP_WORD}(?:\s+(?:and|y|&)\s+{_PRESS_CAP_WORD})?"
+_PRESS_DASH_EM_EN = r"[\u2014\u2013]"
+
+DATELINE_CAP_REGEX = re.compile(
+    rf"\b({_PRESS_CAP_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH_EM_EN}"
+)
+
+# 3. Following rejection: min read, minute read, minutes, min de lectura, minutos, comments, comentarios within 40 chars
+FOLLOWING_REJECT_REGEX = re.compile(
+    r"\b(min\s+read|minute\s+read|minutes|min\s+de\s+lectura|minutos|comments|comentarios)\b",
     re.IGNORECASE
 )
 
-# Wire equivalent dateline: Location [wire] Dash or Location, [wire] Dash, or (Business Wire) / /PRNewswire/ in text
+# 4. Preceding rejection: By, Por, Posted by, Publicado por, Updated, Actualizado, Written by, Escrito por
+PRECEDING_REJECT_REGEX = re.compile(
+    r"\b(by|por|posted\s+by|publicado\s+por|updated|actualizado|written\s+by|escrito\s+por)\b[\s:]*$",
+    re.IGNORECASE
+)
+
+BLOCKED_LOCATIONS = {"UPDATED", "ACTUALIZADO", "ACTUALIZADA", "UPDATE", "BY", "POR", "POSTED", "PUBLICADO"}
+
+# 5. Wire equivalent signal
 WIRE_EQUIVALENT_REGEX = re.compile(
-    rf"\b({_PRESS_LOCATION})\s*,?\s*{_PRESS_WIRE}\s*{_PRESS_DASH}|\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/",
+    r"\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|BusinessWire)/",
     re.IGNORECASE
 )
 
@@ -503,11 +522,38 @@ def is_press_release_dateline(text: str) -> bool:
     within the first 400 characters.
     
     Checks for:
-    - Capitalized or uppercase location(s) followed by comma, date (EN/ES), and a dash.
+    - ALL-UPPERCASE location(s) followed by comma, date (EN/ES), and any dash.
+    - Capitalized location(s) (1 word or 2 joined by and/y/&) followed by comma,
+      date (EN/ES), and an em-dash (—) or en-dash (–) (never a normal hyphen).
     - Wire service markers such as (Business Wire) or /PRNewswire/.
+    - Rejects matches preceded by author/date prefixes (By, Updated, etc.)
+      or followed within 40 characters by reading-time/comment metadata.
     """
     if not text:
         return False
     snippet = text[:400]
-    return bool(DATELINE_REGEX.search(snippet) or WIRE_EQUIVALENT_REGEX.search(snippet))
+
+    # Check standalone agency wire signals first
+    if WIRE_EQUIVALENT_REGEX.search(snippet):
+        return True
+
+    for regex in (DATELINE_UPPER_REGEX, DATELINE_CAP_REGEX):
+        for m in regex.finditer(snippet):
+            loc = m.group(1).strip()
+            if loc.upper() in BLOCKED_LOCATIONS:
+                continue
+
+            # Check preceding text for author/update prefixes
+            preceding = snippet[:m.start()]
+            if PRECEDING_REJECT_REGEX.search(preceding):
+                continue
+
+            # Check following text (next 40 chars) for reading time / comments metadata
+            following = snippet[m.end():m.end() + 40]
+            if FOLLOWING_REJECT_REGEX.search(following):
+                continue
+
+            return True
+
+    return False
 
