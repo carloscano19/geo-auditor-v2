@@ -53,15 +53,48 @@ def extract_main_content(html: str) -> tuple[str, str]:
         return sum(len(p.get_text(separator=' ', strip=True)) for p in el.find_all('p'))
 
     def _densest_block(soup_obj) -> tuple:
-        """Return (element, paragraph_text_len) for the div/section with the most <p> text."""
-        best_el = None
-        best_len = 0
-        for cand in soup_obj.find_all(['div', 'section']):
-            pt = _paragraph_text_len(cand)
-            if pt > best_len:
-                best_len = pt
-                best_el = cand
-        return best_el, best_len
+        """Return (element, paragraph_text_len) for the div/section whose content is
+        most "paragraph-pure" among those with substantial paragraph text.
+
+        Strategy:
+        1. Compute the maximum paragraph-text length across all div/section candidates.
+        2. Keep only candidates with at least 60 % of that maximum (substantial content).
+        3. Among those, rank by paragraph-text / total-text ratio (higher = more
+           article-like, less polluted by navigation / footer / banner text).
+        4. Tie-break by minimum total text (innermost / most specific block).
+
+        Examples:
+        - div#page (wraps entire page): ratio ~0.86, because it also contains nav text.
+        - div.entry-content (article body): ratio ~0.99 — almost entirely <p> text.
+        - Result: div.entry-content wins.
+        """
+        candidates = soup_obj.find_all(['div', 'section'])
+        if not candidates:
+            return None, 0
+
+        scored = []
+        for cand in candidates:
+            p_len = _paragraph_text_len(cand)
+            t_len = len(cand.get_text(separator=' ', strip=True))
+            scored.append((cand, p_len, t_len))
+
+        max_pt = max(p for _, p, _ in scored) if scored else 0
+        if max_pt == 0:
+            return None, 0
+
+        # Keep only candidates with ≥ 60 % of the max paragraph-text
+        threshold = 0.60 * max_pt
+        dense = [(cand, p_len, t_len) for cand, p_len, t_len in scored if p_len >= threshold]
+
+        # Pick the block with the best p-text/total-text ratio (most paragraph-pure),
+        # tie-broken by minimum total text (most interior).
+        best = max(
+            dense,
+            key=lambda x: (x[1] / x[2] if x[2] else 0, -x[2])
+        )
+        return best[0], best[1]
+
+
 
     # 2. Select main content container by priority
     # If multiple <article>, [role=main], or <main> tags exist, pick the one with the most text
@@ -83,18 +116,12 @@ def extract_main_content(html: str) -> tuple[str, str]:
                 target = max(mains, key=lambda m: len(m.get_text(separator=' ', strip=True)))
                 is_article_or_main = True
             else:
-                candidates = soup.find_all(['div', 'section'])
-                best_candidate = None
-                max_len = 0
-                for cand in candidates:
-                    cand_text_len = len(cand.get_text(separator=' ', strip=True))
-                    if cand_text_len > max_len:
-                        max_len = cand_text_len
-                        best_candidate = cand
-                if best_candidate and max_len > 100:
-                    target = best_candidate
+                dense_el, dense_pt = _densest_block(soup)
+                if dense_el is not None and dense_pt > 100:
+                    target = dense_el
                 else:
                     target = soup.body or soup
+
 
     # 2b. Sanity check: if the chosen semantic container holds less than 40 % of
     # the paragraph-text of the densest div/section, it is likely a decorative tag
