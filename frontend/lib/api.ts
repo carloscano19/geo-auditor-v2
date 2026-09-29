@@ -58,6 +58,7 @@ export interface AIContext {
     detected_date_published?: string;
     detected_date_modified?: string;
     detected_publisher?: string;
+    publisher_inferred_from_domain?: boolean;
     failing_submetrics: FailingSubmetric[];
 }
 

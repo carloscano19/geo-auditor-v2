@@ -474,15 +474,49 @@ def _build_ai_context(
 
     # Publisher detection
     detected_publisher = None
-    pub_meta = soup.find("meta", property="og:site_name")
-    if pub_meta and pub_meta.get("content"):
-        detected_publisher = pub_meta.get("content").strip()
+    publisher_inferred_from_domain = False
+
+    # 1. Existing JSON-LD Organization / publisher check
+    for item in existing_json_ld:
+        if not isinstance(item, dict):
+            continue
+        # Check publisher of Article/NewsArticle/etc.
+        pub_val = item.get("publisher")
+        if isinstance(pub_val, dict):
+            p_name = pub_val.get("name")
+            if p_name and isinstance(p_name, str) and p_name.strip():
+                detected_publisher = p_name.strip()
+                break
+        elif isinstance(pub_val, str) and pub_val.strip():
+            detected_publisher = pub_val.strip()
+            break
+        # Check if item itself is an Organization
+        item_type = item.get("@type", "")
+        types = [item_type] if isinstance(item_type, str) else (item_type if isinstance(item_type, list) else [])
+        if any(str(t).lower() == "organization" for t in types):
+            org_name = item.get("name")
+            if org_name and isinstance(org_name, str) and org_name.strip():
+                detected_publisher = org_name.strip()
+                break
+
+    # 2. og:site_name
+    if not detected_publisher:
+        pub_meta = soup.find("meta", property="og:site_name")
+        if pub_meta and pub_meta.get("content"):
+            detected_publisher = pub_meta.get("content").strip()
+
+    # 3. meta publisher or site_name
     if not detected_publisher:
         pub_tag = soup.find("meta", attrs={"name": re.compile(r"publisher|site_name", re.I)})
         if pub_tag and pub_tag.get("content"):
             detected_publisher = pub_tag.get("content").strip()
+
+    # 4. Domain as last resort
     if not detected_publisher and effective_url and effective_url.startswith(("http://", "https://")):
-        detected_publisher = urlparse(effective_url).netloc.replace("www.", "")
+        domain_candidate = urlparse(effective_url).netloc.replace("www.", "")
+        if domain_candidate:
+            detected_publisher = domain_candidate
+            publisher_inferred_from_domain = True
 
     # Failing submetrics (score < 70)
     failing_submetrics: list[FailingSubmetric] = []
@@ -511,6 +545,7 @@ def _build_ai_context(
         detected_date_published=detected_date_published,
         detected_date_modified=detected_date_modified,
         detected_publisher=detected_publisher,
+        publisher_inferred_from_domain=publisher_inferred_from_domain,
         failing_submetrics=failing_submetrics,
     )
 

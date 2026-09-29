@@ -150,6 +150,7 @@ class AIContext(BaseModel):
     detected_date_published: Optional[str] = None
     detected_date_modified: Optional[str] = None
     detected_publisher: Optional[str] = None
+    publisher_inferred_from_domain: bool = False
     failing_submetrics: list[FailingSubmetric] = Field(default_factory=list)
 
 

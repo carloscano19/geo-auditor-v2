@@ -165,7 +165,29 @@ async def health_check():
 
 
 # In-memory 24h cache for AI fixes: sha256 -> (result_dict, expires_at_timestamp)
-ai_fixes_cache: Dict[str, tuple[dict, float]] = {}
+# OrderedDict to easily evict oldest entries when max capacity is reached
+from collections import OrderedDict
+AI_FIXES_CACHE_MAX_SIZE = 100
+ai_fixes_cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
+
+
+def cleanup_ai_fixes_cache(now_ts: float):
+    """Remove expired entries from ai_fixes_cache."""
+    expired_keys = [k for k, v in ai_fixes_cache.items() if now_ts >= v[1]]
+    for k in expired_keys:
+        ai_fixes_cache.pop(k, None)
+
+
+def put_ai_fixes_cache(key: str, data: dict, expires_at: float):
+    """Store result in cache, cleaning expired and evicting oldest if over 100 entries."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cleanup_ai_fixes_cache(now_ts)
+    if key in ai_fixes_cache:
+        ai_fixes_cache.pop(key, None)
+    ai_fixes_cache[key] = (data, expires_at)
+    while len(ai_fixes_cache) > AI_FIXES_CACHE_MAX_SIZE:
+        ai_fixes_cache.popitem(last=False)
+
 
 
 @app.get("/api/version")
@@ -340,19 +362,39 @@ Rules:
     if current_type not in allowed_types:
         json_ld["@type"] = expected_type
 
-    # Overwrite known fields with extracted ground-truth to prevent hallucinations
-    if ctx.title or ctx.h1 or ctx.url:
-        json_ld["headline"] = ctx.title or ctx.h1 or ctx.url
+    # Overwrite known fields with extracted ground-truth or strict placeholders to prevent hallucinations
+    # 1. Headline / Name
+    if ctx.content_type in ["product", "review"]:
+        json_ld.pop("headline", None)
+        json_ld["name"] = ctx.title or ctx.h1 or ctx.url or "REPLACE_WITH_NAME"
+    else:
+        json_ld["headline"] = ctx.title or ctx.h1 or ctx.url or "REPLACE_WITH_HEADLINE"
+
     if ctx.url:
         json_ld["url"] = ctx.url
+
+    # 2. Date published & modified
     if ctx.detected_date_published:
         json_ld["datePublished"] = ctx.detected_date_published
+    else:
+        json_ld["datePublished"] = "REPLACE_WITH_DATE_PUBLISHED"
+
     if ctx.detected_date_modified:
         json_ld["dateModified"] = ctx.detected_date_modified
+    else:
+        json_ld["dateModified"] = "REPLACE_WITH_DATE_MODIFIED"
+
+    # 3. Author
     if ctx.detected_author:
         json_ld["author"] = {"@type": "Person", "name": ctx.detected_author}
+    else:
+        json_ld["author"] = {"@type": "Person", "name": "REPLACE_WITH_AUTHOR_NAME"}
+
+    # 4. Publisher
     if ctx.detected_publisher:
         json_ld["publisher"] = {"@type": "Organization", "name": ctx.detected_publisher}
+    else:
+        json_ld["publisher"] = {"@type": "Organization", "name": "REPLACE_WITH_PUBLISHER_NAME"}
 
     # Set placeholder for image if missing
     if "image" not in json_ld or not json_ld["image"]:
@@ -362,10 +404,19 @@ Rules:
     warnings: list[str] = []
     if not ctx.detected_author:
         warnings.append("Author not detected on page; add author details manually in schema.")
+    else:
+        author_str = ctx.detected_author.strip()
+        # Check if author looks like a username: no spaces AND (contains '.', '_', '-' OR is all lowercase)
+        if " " not in author_str and (any(c in author_str for c in [".", "_", "-"]) or author_str.islower()):
+            warnings.append(f"Detected author '{author_str}' looks like a username; replace it with the author's full name.")
+
     if not ctx.detected_date_published:
         warnings.append("Publication date not detected; add datePublished manually in schema.")
     if not ctx.title and not ctx.h1:
         warnings.append("Title or H1 missing; add headline manually in schema.")
+
+    if getattr(ctx, "publisher_inferred_from_domain", False):
+        warnings.append("Publisher name inferred from domain; confirm the official organization name.")
 
     # 4. Lead paragraph validation
     lead_data = raw_result.get("lead_paragraph", {})
@@ -390,8 +441,8 @@ Rules:
         "warnings": warnings,
     }
 
-    # 5. Store in 24h cache (86400 seconds)
-    ai_fixes_cache[cache_key] = (response_data, now_ts + 86400)
+    # 5. Store in 24h cache (86400 seconds) with max 100 entries & cleanup
+    put_ai_fixes_cache(cache_key, response_data, now_ts + 86400)
 
     return AIFixesResponse(**response_data)
 
