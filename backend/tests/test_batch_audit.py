@@ -1282,32 +1282,45 @@ def test_press_release_dateline_author_name_rejection():
 def test_is_challenge_page_detection():
     """
     Test is_challenge_page anti-bot detection logic:
-    - Synthetic HTML with title 'One moment, please...' and 20 words -> True
-    - HTML with script of challenge-platform of Cloudflare -> True
-    - 800-word article mentioning 'Just a moment' in a paragraph -> False
+    - Normal landing page with Cloudflare challenge-platform script, 80 words, status 200 -> False
+    - "Just a moment..." with status 403 and challenge-platform script -> True
+    - "One moment, please..." with status 200 and 20 words -> True
+    - Page with status 503, script cf_chl_ and 10 words -> True
+    - 800-word substantive article mentioning "Just a moment" in a paragraph -> False
     """
-    from src.services.fetcher import is_challenge_page
+    from src.utils.challenge_detection import is_challenge_page
 
-    # 1. Synthetic HTML with title "One moment, please..." and 20 words -> True
-    html_cf_title = (
-        "<!DOCTYPE html><html><head><title>One moment, please...</title></head>"
-        "<body><p>" + " ".join(["security", "verification"] * 10) + "</p></body></html>"
+    # 1. Normal landing page with Cloudflare challenge-platform script, 80 words, status 200 -> False
+    html_landing = (
+        "<!DOCTYPE html><html><head><title>Download the Socios app</title>"
+        "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script></head>"
+        "<body><p>" + " ".join(["Download the app to get fan tokens and vote."] * 8) + "</p></body></html>"
     )
-    text_cf_title = " ".join(["security", "verification"] * 10)
-    assert is_challenge_page("One moment, please...", text_cf_title, html_cf_title) is True
+    text_landing = " ".join(["Download the app to get fan tokens and vote."] * 8)
+    assert is_challenge_page(title="Download the Socios app", text=text_landing, html=html_landing, status_code=200) is False
 
-    # 2. HTML with Cloudflare challenge-platform script -> True
-    html_cf_script = (
-        "<!DOCTYPE html><html><head>"
-        "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script>"
-        "</head><body><div>Verification required</div></body></html>"
+    # 2. "Just a moment..." with status 403 and script of challenge-platform -> True
+    html_cf_403 = (
+        "<!DOCTYPE html><html><head><title>Just a moment...</title>"
+        "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script></head>"
+        "<body><p>Verifying your browser...</p></body></html>"
     )
-    assert is_challenge_page(title="Just a moment...", text="Verification required", html=html_cf_script) is True
+    assert is_challenge_page(title="Just a moment...", text="Verifying your browser...", html=html_cf_403, status_code=403) is True
 
-    # 3. An 800-word substantive article mentioning "Just a moment" in a paragraph -> False
+    # 3. "One moment, please..." with status 200 and 20 words -> True
+    text_20_words = " ".join(["security", "verification"] * 10)
+    html_20_words = f"<!DOCTYPE html><html><head><title>One moment, please...</title></head><body><p>{text_20_words}</p></body></html>"
+    assert is_challenge_page(title="One moment, please...", text=text_20_words, html=html_20_words, status_code=200) is True
+
+    # 4. Page with status 503, script cf_chl_ and 10 words -> True
+    html_503 = "<!DOCTYPE html><html><head><script>var cf_chl_ = true;</script></head><body><p>Error</p></body></html>"
+    assert is_challenge_page(title="503 Service Unavailable", text=" ".join(["word"] * 10), html=html_503, status_code=503) is True
+
+    # 5. 800-word substantive article mentioning "Just a moment" in a paragraph -> False
     long_body = "Just a moment while we explore this topic. " + " ".join(["content"] * 800)
     html_article = f"<!DOCTYPE html><html><head><title>Valid Article</title></head><body><p>{long_body}</p></body></html>"
-    assert is_challenge_page(title="Valid Article", text=long_body, html=html_article) is False
+    assert is_challenge_page(title="Valid Article", text=long_body, html=html_article, status_code=200) is False
+
 
 
 def test_press_release_dateline_with_colon():
@@ -1494,6 +1507,53 @@ async def test_fetcher_retry_on_challenge_page():
             assert "This page is protected by an anti-bot challenge and could not be analyzed." in str(exc_info.value)
             # Must have retried with sleep
             assert mock_sleep.called
+
+
+def test_clean_process_import_challenge_detection():
+    """
+    Test importing src.utils.challenge_detection in a clean Python process
+    before any other module and verify that it succeeds without circular import errors.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    backend_dir = str(Path(__file__).resolve().parent.parent)
+
+    # 1. Clean import of src.utils.challenge_detection first
+    code1 = (
+        "import sys; "
+        "import src.utils.challenge_detection as cd; "
+        "assert callable(cd.is_challenge_page); "
+        "import src.scrapers.playwright_scraper as ps; "
+        "print('CHALLENGE_DETECTION_OK')"
+    )
+    res1 = subprocess.run(
+        [sys.executable, "-c", code1],
+        cwd=backend_dir,
+        capture_output=True,
+        text=True
+    )
+    assert res1.returncode == 0, f"Clean import failed: {res1.stderr}"
+    assert "CHALLENGE_DETECTION_OK" in res1.stdout
+
+    # 2. Clean import of playwright_scraper first, then challenge_detection
+    code2 = (
+        "import sys; "
+        "import src.scrapers.playwright_scraper as ps; "
+        "import src.utils.challenge_detection as cd; "
+        "assert callable(cd.is_challenge_page); "
+        "print('PLAYWRIGHT_FIRST_OK')"
+    )
+    res2 = subprocess.run(
+        [sys.executable, "-c", code2],
+        cwd=backend_dir,
+        capture_output=True,
+        text=True
+    )
+    assert res2.returncode == 0, f"Playwright-first import failed: {res2.stderr}"
+    assert "PLAYWRIGHT_FIRST_OK" in res2.stdout
+
 
 
 

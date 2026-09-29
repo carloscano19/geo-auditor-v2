@@ -23,7 +23,7 @@ from playwright.async_api import async_playwright, Browser, Page, Response
 
 from src.models.schemas import PageData
 from src.scrapers.base_scraper import BaseScraper, ScraperError, ChallengePageError
-from src.services.fetcher import is_challenge_page
+from src.utils.challenge_detection import is_challenge_page
 from config.settings import get_settings
 
 

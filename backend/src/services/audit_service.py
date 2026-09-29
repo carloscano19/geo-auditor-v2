@@ -21,7 +21,7 @@ from src.models.schemas import (
     PageData,
 )
 from src.scrapers.base_scraper import ScraperError, ChallengePageError
-from src.services.fetcher import is_challenge_page
+from src.utils.challenge_detection import is_challenge_page
 from src.detectors.infrastructure import InfrastructureDetector
 from src.detectors.evidence_density import EvidenceDensityDetector
 from src.utils.lang_patterns import detect_language
