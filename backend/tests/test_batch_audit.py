@@ -1279,4 +1279,223 @@ def test_press_release_dateline_author_name_rejection():
     assert is_press_release_dateline("Nueva alianza. Madrid, 2 de septiembre de 2026 — Socios.com anuncia…") is True
 
 
+def test_is_challenge_page_detection():
+    """
+    Test is_challenge_page anti-bot detection logic:
+    - Synthetic HTML with title 'One moment, please...' and 20 words -> True
+    - HTML with script of challenge-platform of Cloudflare -> True
+    - 800-word article mentioning 'Just a moment' in a paragraph -> False
+    """
+    from src.services.fetcher import is_challenge_page
+
+    # 1. Synthetic HTML with title "One moment, please..." and 20 words -> True
+    html_cf_title = (
+        "<!DOCTYPE html><html><head><title>One moment, please...</title></head>"
+        "<body><p>" + " ".join(["security", "verification"] * 10) + "</p></body></html>"
+    )
+    text_cf_title = " ".join(["security", "verification"] * 10)
+    assert is_challenge_page("One moment, please...", text_cf_title, html_cf_title) is True
+
+    # 2. HTML with Cloudflare challenge-platform script -> True
+    html_cf_script = (
+        "<!DOCTYPE html><html><head>"
+        "<script src=\"/cdn-cgi/challenge-platform/scripts/jsd/main.js\"></script>"
+        "</head><body><div>Verification required</div></body></html>"
+    )
+    assert is_challenge_page(title="Just a moment...", text="Verification required", html=html_cf_script) is True
+
+    # 3. An 800-word substantive article mentioning "Just a moment" in a paragraph -> False
+    long_body = "Just a moment while we explore this topic. " + " ".join(["content"] * 800)
+    html_article = f"<!DOCTYPE html><html><head><title>Valid Article</title></head><body><p>{long_body}</p></body></html>"
+    assert is_challenge_page(title="Valid Article", text=long_body, html=html_article) is False
+
+
+def test_press_release_dateline_with_colon():
+    """
+    Test dateline detection with optional colon/dot before dash, and colon alone for uppercase.
+    """
+    from src.utils.lang_patterns import is_press_release_dateline
+
+    # True for uppercase location with colon-dash and colon alone
+    assert is_press_release_dateline("LONDON, September 16th 2026:— Socios.com, the leading…") is True
+    assert is_press_release_dateline("LONDON, September 16th 2026: Socios.com…") is True
+
+    # All blog author and metadata cases must remain False
+    assert is_press_release_dateline("By John Smith, June 5, 2026 - 8 min read. In this guide…") is False
+    assert is_press_release_dateline("Updated, March 3, 2026 - Here is how to buy fan tokens") is False
+    assert is_press_release_dateline("María, 5 de junio de 2026 – 6 min de lectura. Qué es un fan token") is False
+    assert is_press_release_dateline("Guide to SEO. Posted by admin, 12 May 2026 - 3 comments") is False
+    assert is_press_release_dateline("María López, 5 de junio de 2026 — Hoy te explico qué es un fan token") is False
+    assert is_press_release_dateline("Carlos Cano, 3 de mayo de 2026 — En esta guía") is False
+
+
+@pytest.mark.asyncio
+async def test_batch_audit_challenge_page_error_and_issues_omission():
+    """
+    Test that a challenge page in batch audit:
+    - Results in status 'error'
+    - Has error message: 'This page is protected by an anti-bot challenge and could not be analyzed. Try again later or use Paste Text.'
+    - Has no score (result is None, total score 'N/A' in CSV)
+    - The URL does not count in issues_by_topic or site_wide_issues.
+    """
+    from datetime import datetime, timezone
+    from unittest.mock import AsyncMock, patch
+    from httpx import AsyncClient, ASGITransport
+    from main import app, batch_jobs, process_batch_job
+    from src.models.schemas import AuditResponse
+    from src.scrapers.base_scraper import ChallengePageError
+    from src.utils.batch_aggregator import aggregate_issues_by_topic
+
+    challenge_msg = (
+        "This page is protected by an anti-bot challenge and could not be analyzed. "
+        "Try again later or use Paste Text."
+    )
+
+    # Mock run_single_audit to simulate 1 normal page and 1 challenge page
+    normal_audit = AuditResponse(
+        url="https://example.com/ok",
+        total_score=85.0,
+        dimensions=[],
+        scoring_version="v2.3",
+        analysis_time_ms=100.0,
+        detector_results=[
+            create_mock_detector_result("technical_infrastructure", 0.10, [
+                {"name": "AI Bot Access", "raw_score": 60.0, "recommendations": ["Unblock AI bots"]}
+            ])
+        ]
+    )
+
+    async def mock_run_single_audit(req, scraper, semaphore, **kwargs):
+        if req.url == "https://example.com/blocked":
+            raise ChallengePageError(url=req.url, reason=challenge_msg)
+        return normal_audit
+
+    job_id = "test-challenge-batch"
+    urls = ["https://example.com/ok", "https://example.com/blocked"]
+    batch_jobs[job_id] = {
+        "job_id": job_id,
+        "status": "pending",
+        "total": 2,
+        "completed": 0,
+        "results": [
+            {"url": u, "status": "pending", "result": None, "error": None}
+            for u in urls
+        ],
+        "issues_by_topic": [],
+        "site_wide_issues": [],
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "completed_at": None,
+        "target_query": None,
+    }
+
+    with patch("main.run_single_audit", side_effect=mock_run_single_audit):
+        await process_batch_job(job_id, urls, None)
+
+    job = batch_jobs[job_id]
+    assert job["status"] == "done"
+    assert job["completed"] == 2
+
+    # Normal item
+    item_ok = job["results"][0]
+    assert item_ok["status"] == "done"
+    assert item_ok["result"] is not None
+
+    # Challenge item
+    item_blocked = job["results"][1]
+    assert item_blocked["status"] == "error"
+    assert item_blocked["result"] is None
+    assert item_blocked["error"] == challenge_msg
+
+    # Blocked URL must NOT appear in issues_by_topic or site_wide_issues
+    all_affected_urls = [
+        u
+        for issue in (job["issues_by_topic"] + job["site_wide_issues"])
+        for u in issue.get("affected_urls", [])
+    ]
+    assert "https://example.com/blocked" not in all_affected_urls
+
+    # Check CSV export output
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        res = await client.get(f"/api/batch/{job_id}/csv")
+        assert res.status_code == 200
+        content = res.content.decode("utf-8-sig")
+        lines = content.strip().splitlines()
+        # Find the line for the blocked URL
+        blocked_line = next(line for line in lines if "https://example.com/blocked" in line)
+        cols = [c.strip('"') for c in blocked_line.split(",")]
+        # Total Score must be N/A
+        assert cols[1] == "N/A"
+        # Status must be error
+        assert "error" in blocked_line
+        # Error column must contain challenge_msg
+        assert challenge_msg in blocked_line
+
+
+@pytest.mark.asyncio
+async def test_single_audit_challenge_page_error():
+    """
+    Test that a challenge page in single audit returns HTTP 400 with the exact challenge message.
+    """
+    from unittest.mock import patch
+    from httpx import AsyncClient, ASGITransport
+    from main import app
+    from src.scrapers.base_scraper import ChallengePageError
+
+    challenge_msg = (
+        "This page is protected by an anti-bot challenge and could not be analyzed. "
+        "Try again later or use Paste Text."
+    )
+
+    async def mock_run_single_audit(req, scraper, semaphore, **kwargs):
+        raise ChallengePageError(url=req.url, reason=challenge_msg)
+
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as client:
+        with patch("main.run_single_audit", side_effect=mock_run_single_audit):
+            res = await client.post("/api/audit", json={"url": "https://example.com/challenge"})
+            assert res.status_code == 400
+            data = res.json()
+            assert data["detail"] == challenge_msg
+
+
+@pytest.mark.asyncio
+async def test_fetcher_retry_on_challenge_page():
+    """
+    Test that PlaywrightScraper retries after 5 seconds upon receiving a challenge page.
+    If still challenge page, raises ChallengePageError.
+    """
+    from unittest.mock import AsyncMock, patch, MagicMock
+    from src.scrapers.playwright_scraper import PlaywrightScraper
+    from src.scrapers.base_scraper import ChallengePageError
+
+    scraper = PlaywrightScraper()
+    scraper.settings.challenge_retry_delay_seconds = 0.01  # fast in test
+
+    mock_page = AsyncMock()
+    mock_page.on = MagicMock()
+    mock_page.url = "https://example.com/captcha"
+    mock_page.title.return_value = "One moment, please..."
+    mock_page.content.return_value = "<html><head><title>One moment, please...</title></head><body>Verify</body></html>"
+    mock_page.goto.return_value = MagicMock(status=200, headers={})
+
+    mock_context = AsyncMock()
+    mock_context.new_page.return_value = mock_page
+
+    mock_browser = AsyncMock()
+    mock_browser.new_context.return_value = mock_context
+    scraper._browser = mock_browser
+
+    with patch("src.scrapers.playwright_scraper.asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with patch.object(scraper, "_extract_text_content", return_value="Verify"):
+            with pytest.raises(ChallengePageError) as exc_info:
+                await scraper.scrape("https://example.com/captcha")
+
+            assert "This page is protected by an anti-bot challenge and could not be analyzed." in str(exc_info.value)
+            # Must have retried with sleep
+            assert mock_sleep.called
+
+
+
+
 

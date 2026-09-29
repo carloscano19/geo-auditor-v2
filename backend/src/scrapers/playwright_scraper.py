@@ -16,12 +16,14 @@ Performance Target: Complete scraping in <30s (leaving 30s for analysis per SRS)
 
 import re
 import time
+import asyncio
 from datetime import datetime
 from typing import Optional
 from playwright.async_api import async_playwright, Browser, Page, Response
 
 from src.models.schemas import PageData
-from src.scrapers.base_scraper import BaseScraper, ScraperError
+from src.scrapers.base_scraper import BaseScraper, ScraperError, ChallengePageError
+from src.services.fetcher import is_challenge_page
 from config.settings import get_settings
 
 
@@ -140,17 +142,6 @@ class PlaywrightScraper(BaseScraper):
                 # Get raw HTML
                 html_raw = await page.content()
             
-            # BLOCK DETECTION
-            title = await page.title()
-            block_indicators = ["Access Denied", "Not Available", "403", "Captcha", "Security Check"]
-            if any(indicator.lower() in title.lower() for indicator in block_indicators):
-                raise ScraperError(url, "⛔ Scraper Blocked by Website Security (Access Denied / 403)")
-            
-            # Check for French block message mentioned by user
-            body_text = await page.inner_text("body")
-            if "Cet Article N'est Pas Encore Disponible" in body_text:
-                raise ScraperError(url, "⛔ Scraper Blocked: Article Not Available (Geo-block/Error)")
-
             # Wait for full render (network idle)
             # INCREASED TIMEOUT FOR PRODUCTION STABILITY
             try:
@@ -165,8 +156,55 @@ class PlaywrightScraper(BaseScraper):
             # Get rendered HTML after JS execution
             html_rendered = await page.content()
             
-            # Extract text content
+            # Extract text content and title
             text_content = await self._extract_text_content(page)
+            title = await page.title()
+
+            # Anti-bot Challenge Detection & Retry
+            if is_challenge_page(title=title, text=text_content, html=html_rendered, status_code=status_code):
+                retry_delay = getattr(self.settings, "challenge_retry_delay_seconds", 5.0)
+                await asyncio.sleep(retry_delay)
+
+                try:
+                    await page.wait_for_load_state(
+                        self.settings.scraper_wait_until,
+                        timeout=self.settings.scraper_timeout_ms
+                    )
+                except Exception:
+                    pass
+                title = await page.title()
+                html_rendered = await page.content()
+                text_content = await self._extract_text_content(page)
+
+                if is_challenge_page(title=title, text=text_content, html=html_rendered, status_code=status_code):
+                    try:
+                        await page.reload(wait_until="domcontentloaded", timeout=self.settings.scraper_timeout_ms)
+                        try:
+                            await page.wait_for_load_state(
+                                self.settings.scraper_wait_until,
+                                timeout=self.settings.scraper_timeout_ms
+                            )
+                        except Exception:
+                            pass
+                        title = await page.title()
+                        html_rendered = await page.content()
+                        text_content = await self._extract_text_content(page)
+                    except Exception:
+                        pass
+
+                if is_challenge_page(title=title, text=text_content, html=html_rendered, status_code=status_code):
+                    raise ChallengePageError(url=url)
+
+            # Generic block detection for non-challenge security blocks
+            block_indicators = ["Access Denied", "Not Available", "403", "Captcha", "Security Check"]
+            if any(indicator.lower() in title.lower() for indicator in block_indicators):
+                raise ScraperError(url, "⛔ Scraper Blocked by Website Security (Access Denied / 403)")
+            
+            # Check for French block message mentioned by user
+            body_text = await page.inner_text("body")
+            if "Cet Article N'est Pas Encore Disponible" in body_text:
+                raise ScraperError(url, "⛔ Scraper Blocked: Article Not Available (Geo-block/Error)")
+
             
             # Calculate load time
             load_time_ms = (time.time() - start_time) * 1000
@@ -198,12 +236,15 @@ class PlaywrightScraper(BaseScraper):
                 word_count=word_count,
             )
             
+        except ChallengePageError:
+            raise
         except Exception as e:
             raise ScraperError(
                 url=url,
                 reason=f"Failed to load page: {str(e)}",
                 original_error=e
             )
+
         finally:
             await context.close()
     

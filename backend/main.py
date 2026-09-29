@@ -36,7 +36,7 @@ from src.models.schemas import (
     TopicIssue,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
-from src.scrapers.base_scraper import ScraperError
+from src.scrapers.base_scraper import ScraperError, ChallengePageError
 import src.services.audit_service as audit_service_module
 from src.services.audit_service import run_single_audit
 from src.utils.batch_aggregator import (
@@ -186,6 +186,9 @@ async def audit_url(request: AuditRequest):
             fetch_robots_fn=fetch_robots_txt,
             measure_ttfb_fn=measure_ttfb
         )
+    except ChallengePageError as e:
+        logger.warning(f"Challenge page detected for {request.url}: {e.reason}")
+        raise HTTPException(status_code=400, detail=e.reason)
     except ScraperError as e:
         logger.warning(f"Scraper error for {request.url}: {e.reason}")
         raise HTTPException(status_code=400, detail=f"Failed to scrape URL: {e.reason}")
@@ -219,14 +222,21 @@ async def process_batch_job(job_id: str, urls: list[str], target_query: Optional
             job["results"][idx]["status"] = "done"
             job["results"][idx]["result"] = audit_res.model_dump()
             job["results"][idx]["error"] = None
+        except ChallengePageError as e:
+            logger.warning(f"Batch audit challenge detected for {url}: {e.reason}")
+            job["results"][idx]["status"] = "error"
+            job["results"][idx]["error"] = e.reason
+            job["results"][idx]["result"] = None
         except ScraperError as e:
             logger.warning(f"Batch audit failed for {url}: {e.reason}")
             job["results"][idx]["status"] = "error"
             job["results"][idx]["error"] = f"Failed to scrape URL: {e.reason}"
+            job["results"][idx]["result"] = None
         except Exception as e:
             logger.error(f"Unexpected error during batch audit of {url}: {traceback.format_exc()}")
             job["results"][idx]["status"] = "error"
             job["results"][idx]["error"] = "Internal error while auditing this URL."
+            job["results"][idx]["result"] = None
         finally:
             job["completed"] += 1
             # Recompute aggregated issues after each URL completes

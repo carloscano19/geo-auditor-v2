@@ -20,7 +20,8 @@ from src.models.schemas import (
     DimensionScore,
     PageData,
 )
-from src.scrapers.base_scraper import ScraperError
+from src.scrapers.base_scraper import ScraperError, ChallengePageError
+from src.services.fetcher import is_challenge_page
 from src.detectors.infrastructure import InfrastructureDetector
 from src.detectors.evidence_density import EvidenceDensityDetector
 from src.utils.lang_patterns import detect_language
@@ -143,6 +144,14 @@ async def run_single_audit(
             page_data.robots_txt_content = await effective_fetch_robots(target_url_for_robots)
     else:
         raise ValueError("Must provide either URL or content_text")
+
+    # Anti-bot challenge verification: a challenge page must never be scored
+    if not request.content_text and is_challenge_page(
+        text=page_data.text_content,
+        html=page_data.html_rendered,
+        status_code=page_data.status_code
+    ):
+        raise ChallengePageError(url=str(page_data.url or request.url))
 
     # Step 1.5: Language & Content Type Detection
     detected_lang = detect_language(page_data.text_content)

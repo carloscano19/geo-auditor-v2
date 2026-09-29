@@ -481,18 +481,24 @@ _PRESS_WIRE = r"(?i:\((?:Business\s*Wire|PR\s*Newswire)\)|/(?:PRNewswire|Busines
 _PRESS_UPPER_WORD = r"[A-ZÁÉÍÓÚÑ]{2,}"
 _PRESS_UPPER_LOCATION = rf"{_PRESS_UPPER_WORD}(?:\s+(?:[A-ZÁÉÍÓÚÑ]{{2,}}|(?i:and|y|&)))*"
 _PRESS_DASH_ANY = r"(?:[\u2014\u2013\-]{1,2})"
+_PRESS_DASH_EM_EN = r"[\u2014\u2013]"
+
+# Separator between date and body:
+# Allows optional ":" or "." (with optional whitespace) before the dash in both variants.
+# In uppercase variant, also accepts ":" alone as separator.
+_PRESS_SEP_UPPER = rf"(?:\s*(?:[:\.]\s*)?{_PRESS_DASH_ANY}|\s*:)"
+_PRESS_SEP_CAP = rf"(?:\s*(?:[:\.]\s*)?{_PRESS_DASH_EM_EN})"
 
 DATELINE_UPPER_REGEX = re.compile(
-    rf"\b({_PRESS_UPPER_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH_ANY}"
+    rf"\b({_PRESS_UPPER_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_SEP_UPPER}"
 )
 
 # 2. Capitalized location: 1 capitalized word or 2 joined by and/y/&; dash MUST be em-dash or en-dash
 _PRESS_CAP_WORD = r"[A-ZÁÉÍÓÚÑ][a-záéíóúñ]+"
 _PRESS_CAP_LOCATION = rf"{_PRESS_CAP_WORD}(?:\s+(?:and|y|&)\s+{_PRESS_CAP_WORD})?"
-_PRESS_DASH_EM_EN = r"[\u2014\u2013]"
 
 DATELINE_CAP_REGEX = re.compile(
-    rf"\b({_PRESS_CAP_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_DASH_EM_EN}"
+    rf"\b({_PRESS_CAP_LOCATION})\s*,\s*(?:{_PRESS_WIRE}\s*,\s*)?({_PRESS_DATE})\s*(?:{_PRESS_WIRE}\s*)?{_PRESS_SEP_CAP}"
 )
 
 # 3. Following rejection: min read, minute read, minutes, min de lectura, minutos, comments, comentarios within 40 chars

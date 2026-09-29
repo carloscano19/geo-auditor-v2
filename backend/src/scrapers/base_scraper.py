@@ -77,3 +77,17 @@ class ScraperError(Exception):
         self.reason = reason
         self.original_error = original_error
         super().__init__(f"Failed to scrape {url}: {reason}")
+
+
+class ChallengePageError(ScraperError):
+    """
+    Exception raised when a page is protected by an anti-bot challenge / captcha.
+    """
+    def __init__(
+        self,
+        url: str,
+        reason: str = "This page is protected by an anti-bot challenge and could not be analyzed. Try again later or use Paste Text.",
+        original_error: Exception = None
+    ):
+        super().__init__(url=url, reason=reason, original_error=original_error)
+

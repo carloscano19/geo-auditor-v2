@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     scraper_timeout_ms: int = 30000
     scraper_wait_until: str = "load"
     max_content_length: int = 5000000  # 5MB max
+    challenge_retry_delay_seconds: float = 5.0
     
     # Performance Targets (from SRS)
     max_analysis_time_seconds: int = 60
