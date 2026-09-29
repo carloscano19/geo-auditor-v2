@@ -131,6 +131,44 @@ class DimensionScore(BaseModel):
     status: str  # green, yellow, red
 
 
+class FailingSubmetric(BaseModel):
+    name: str
+    score: float
+    recommendation: Optional[str] = None
+
+
+class AIContext(BaseModel):
+    url: Optional[str] = None
+    title: Optional[str] = None
+    h1: Optional[str] = None
+    language: str = "en"
+    content_type: str = "guide_blog"
+    main_text: str = ""
+    first_paragraph: Optional[str] = None
+    existing_json_ld: list[dict] = Field(default_factory=list)
+    detected_author: Optional[str] = None
+    detected_date_published: Optional[str] = None
+    detected_date_modified: Optional[str] = None
+    detected_publisher: Optional[str] = None
+    failing_submetrics: list[FailingSubmetric] = Field(default_factory=list)
+
+
+class LeadParagraphFix(BaseModel):
+    original: str
+    suggested: str
+    rationale: str
+
+
+class AIFixesResponse(BaseModel):
+    json_ld: dict
+    lead_paragraph: LeadParagraphFix
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AIFixesRequest(BaseModel):
+    ai_context: AIContext
+
+
 class AuditResponse(BaseModel):
     """
     Complete audit response.
@@ -161,6 +199,7 @@ class AuditResponse(BaseModel):
     
     # Raw detector results for detailed view
     detector_results: list[DetectorResult] = Field(default_factory=list)
+    ai_context: Optional[AIContext] = None
 
 
 class BatchAuditRequest(BaseModel):

@@ -9,6 +9,7 @@ import json
 from pathlib import Path
 from functools import lru_cache
 from typing import Optional
+from pydantic import Field
 from pydantic_settings import BaseSettings
 
 
@@ -39,8 +40,25 @@ class Settings(BaseSettings):
     
     # Scoring Configuration
     scoring_weights_path: Path = Path(__file__).parent / "scoring_weights.json"
+
+    # AI / LLM Layer Configuration
+    llm_base_url: str = ""
+    llm_model: str = ""
+    llm_api_key: str = Field(default="", repr=False)
+    llm_timeout_seconds: float = 45.0
+    llm_daily_limit: int = 200
+
+    @property
+    def ai_enabled(self) -> bool:
+        """True only if llm_base_url, llm_model, and llm_api_key are all non-empty."""
+        return bool(
+            self.llm_base_url and self.llm_base_url.strip() and
+            self.llm_model and self.llm_model.strip() and
+            self.llm_api_key and self.llm_api_key.strip()
+        )
     
     class Config:
+
         env_prefix = "GEO_AUDITOR_"
         env_file = ".env"
         extra = "ignore"

@@ -39,6 +39,40 @@ export interface DimensionScore {
     status: 'green' | 'yellow' | 'red';
 }
 
+export interface FailingSubmetric {
+    name: string;
+    score: number;
+    recommendation?: string;
+}
+
+export interface AIContext {
+    url?: string;
+    title?: string;
+    h1?: string;
+    language: string;
+    content_type: string;
+    main_text: string;
+    first_paragraph?: string;
+    existing_json_ld: Record<string, unknown>[];
+    detected_author?: string;
+    detected_date_published?: string;
+    detected_date_modified?: string;
+    detected_publisher?: string;
+    failing_submetrics: FailingSubmetric[];
+}
+
+export interface LeadParagraphFix {
+    original: string;
+    suggested: string;
+    rationale: string;
+}
+
+export interface AIFixesResponse {
+    json_ld: Record<string, unknown>;
+    lead_paragraph: LeadParagraphFix;
+    warnings: string[];
+}
+
 export interface AuditResponse {
     url: string;
     total_score: number;
@@ -52,6 +86,7 @@ export interface AuditResponse {
     score_capped?: boolean;
     cap_reason?: string;
     detector_results: DetectorResult[];
+    ai_context?: AIContext;
 }
 
 export interface HealthStatus {
@@ -228,11 +263,31 @@ class ApiClient {
     /**
      * Get backend version (single source of truth)
      */
-    async getVersion(): Promise<{ version: string }> {
+    async getVersion(): Promise<{ version: string; ai_enabled?: boolean }> {
         const response = await fetch(`${this.baseUrl}/api/version`);
         if (!response.ok) {
             throw new Error('Failed to fetch version');
         }
+        return response.json();
+    }
+
+    /**
+     * Generate AI suggested fixes for Schema.org and lead paragraph
+     */
+    async generateAIFixes(aiContext: AIContext): Promise<AIFixesResponse> {
+        const response = await fetch(`${this.baseUrl}/api/ai/fixes`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ ai_context: aiContext }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || 'Failed to generate AI fixes');
+        }
+
         return response.json();
     }
 }

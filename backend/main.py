@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 
+import hashlib
 from config.settings import get_settings
 from src.models.schemas import (
     AuditRequest,
@@ -34,6 +35,14 @@ from src.models.schemas import (
     BatchJobResponse,
     BatchItemResult,
     TopicIssue,
+    AIFixesRequest,
+    AIFixesResponse,
+    LeadParagraphFix,
+)
+from src.services.llm_client import (
+    LLMClient,
+    DailyLimitExceededError,
+    LLMClientError,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError, ChallengePageError
@@ -155,11 +164,16 @@ async def health_check():
     }
 
 
+# In-memory 24h cache for AI fixes: sha256 -> (result_dict, expires_at_timestamp)
+ai_fixes_cache: Dict[str, tuple[dict, float]] = {}
+
+
 @app.get("/api/version")
 async def get_version():
     """Single source of version endpoint."""
     return {
         "version": settings.app_version,
+        "ai_enabled": settings.ai_enabled,
     }
 
 
@@ -169,7 +183,7 @@ async def get_scoring_weights():
     return settings.scoring_weights
 
 
-@app.post("/api/audit", response_model=AuditResponse)
+@app.post("/api/audit", response_model=AuditResponse, response_model_exclude_none=True)
 async def audit_url(request: AuditRequest):
     """
     Analyze a URL or text for LLM citability.
@@ -199,6 +213,188 @@ async def audit_url(request: AuditRequest):
     except Exception:
         logger.error(f"Internal error during audit: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Internal error while running the audit.")
+
+
+@app.post("/api/ai/fixes", response_model=AIFixesResponse)
+async def generate_ai_fixes(request: AIFixesRequest):
+    """
+    Generate Schema.org JSON-LD and optimized lead paragraph using LLM.
+    Protected by 24h cache, daily call limit, and strict field overwriting.
+    """
+    current_settings = get_settings()
+    if not current_settings.ai_enabled:
+        raise HTTPException(status_code=503, detail="AI layer is not configured")
+
+    ctx = request.ai_context
+
+    # 1. Check in-memory 24h cache
+    cache_key_raw = f"{ctx.url or ''}::{ctx.main_text or ''}"
+    cache_key = hashlib.sha256(cache_key_raw.encode("utf-8")).hexdigest()
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    if cache_key in ai_fixes_cache:
+        cached_data, expires_at = ai_fixes_cache[cache_key]
+        if now_ts < expires_at:
+            return AIFixesResponse(**cached_data)
+        else:
+            ai_fixes_cache.pop(cache_key, None)
+
+    # 2. Prepare LLM prompt
+    expected_type = "Article"
+    if ctx.content_type == "news":
+        expected_type = "NewsArticle"
+    elif ctx.content_type == "review":
+        expected_type = "Review"
+    elif ctx.content_type == "product":
+        expected_type = "Product"
+    elif ctx.content_type == "guide_blog":
+        expected_type = "Article"
+
+    failing_info = "\n".join([f"- {f.name}: {f.score}/100 ({f.recommendation or 'Needs improvement'})" for f in ctx.failing_submetrics])
+
+    system_prompt = (
+        "You are an expert AI Search Engine Optimization (GEO/AEO) engineer.\n"
+        "Generate actionable fixes for web content to maximize citability by AI models (ChatGPT, Perplexity, Gemini).\n"
+        "Return ONLY a valid JSON object matching the requested schema without conversational filler."
+    )
+
+    user_prompt = f"""Given this audited page content and its weaknesses, generate:
+1. Valid Schema.org JSON-LD for @type "{expected_type}".
+2. An optimized lead paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff.
+
+Page URL: {ctx.url or 'N/A'}
+Page Title: {ctx.title or 'N/A'}
+Page H1: {ctx.h1 or 'N/A'}
+Language: {ctx.language}
+Content Type: {ctx.content_type} (Target Schema @type: {expected_type})
+Detected Author: {ctx.detected_author or 'Not detected'}
+Detected Date Published: {ctx.detected_date_published or 'Not detected'}
+Detected Date Modified: {ctx.detected_date_modified or 'Not detected'}
+Detected Publisher: {ctx.detected_publisher or 'Not detected'}
+
+Original First Paragraph:
+\"\"\"{ctx.first_paragraph or 'None'}\"\"\"
+
+Failing Submetrics:
+{failing_info or 'None'}
+
+Main Text Snippet (First 8000 chars):
+\"\"\"{ctx.main_text}\"\"\"
+
+Return a JSON object with this exact structure:
+{{
+  "json_ld": {{
+    "@context": "https://schema.org",
+    "@type": "{expected_type}",
+    "headline": "{ctx.title or ctx.h1 or 'Headline'}",
+    "description": "Short summary",
+    ...
+  }},
+  "lead_paragraph": {{
+    "original": "{ctx.first_paragraph or ''}",
+    "suggested": "40-60 words optimized direct-answer paragraph",
+    "rationale": "Clear explanation of changes made"
+  }}
+}}
+Rules:
+- For missing fields (e.g. image, publisher logo), use uppercase placeholder like "REPLACE_WITH_IMAGE_URL".
+- Do NOT invent facts or statistics not present in the text.
+- Language of the suggested paragraph must match the page language ({ctx.language}).
+"""
+
+    llm = LLMClient()
+    try:
+        raw_result = await llm.call_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+    except DailyLimitExceededError as e:
+        raise HTTPException(status_code=429, detail="Daily AI limit reached, try again tomorrow")
+    except LLMClientError as e:
+        logger.error(f"LLM fixes generation error: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception as e:
+        logger.error(f"Unexpected error calling LLM: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to generate AI fixes")
+
+    # 3. Validate and enforce JSON-LD fields
+    json_ld = raw_result.get("json_ld", {})
+    if not isinstance(json_ld, dict):
+        json_ld = {}
+
+    # Always ensure @context is https://schema.org
+    json_ld["@context"] = "https://schema.org"
+
+    # Validate/enforce @type
+    valid_types = {
+        "news": ["NewsArticle"],
+        "guide_blog": ["Article", "BlogPosting"],
+        "review": ["Review"],
+        "product": ["Product"],
+    }
+    allowed_types = valid_types.get(ctx.content_type, ["Article", "BlogPosting", "NewsArticle", "Review", "Product"])
+    current_type = json_ld.get("@type")
+    if current_type not in allowed_types:
+        json_ld["@type"] = expected_type
+
+    # Overwrite known fields with extracted ground-truth to prevent hallucinations
+    if ctx.title or ctx.h1 or ctx.url:
+        json_ld["headline"] = ctx.title or ctx.h1 or ctx.url
+    if ctx.url:
+        json_ld["url"] = ctx.url
+    if ctx.detected_date_published:
+        json_ld["datePublished"] = ctx.detected_date_published
+    if ctx.detected_date_modified:
+        json_ld["dateModified"] = ctx.detected_date_modified
+    if ctx.detected_author:
+        json_ld["author"] = {"@type": "Person", "name": ctx.detected_author}
+    if ctx.detected_publisher:
+        json_ld["publisher"] = {"@type": "Organization", "name": ctx.detected_publisher}
+
+    # Set placeholder for image if missing
+    if "image" not in json_ld or not json_ld["image"]:
+        json_ld["image"] = "REPLACE_WITH_IMAGE_URL"
+
+    # Warnings collection
+    warnings: list[str] = []
+    if not ctx.detected_author:
+        warnings.append("Author not detected on page; add author details manually in schema.")
+    if not ctx.detected_date_published:
+        warnings.append("Publication date not detected; add datePublished manually in schema.")
+    if not ctx.title and not ctx.h1:
+        warnings.append("Title or H1 missing; add headline manually in schema.")
+
+    # 4. Lead paragraph validation
+    lead_data = raw_result.get("lead_paragraph", {})
+    original_lead = (ctx.first_paragraph or "").strip()
+    suggested_lead = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
+    rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
+
+    if not suggested_lead:
+        suggested_lead = original_lead or "No lead paragraph available."
+    if not rationale_lead:
+        rationale_lead = "Optimized for directness, inverted pyramid structure, and entity clarity."
+
+    lead_paragraph_fix = LeadParagraphFix(
+        original=original_lead,
+        suggested=suggested_lead,
+        rationale=rationale_lead,
+    )
+
+    response_data = {
+        "json_ld": json_ld,
+        "lead_paragraph": lead_paragraph_fix.model_dump(),
+        "warnings": warnings,
+    }
+
+    # 5. Store in 24h cache (86400 seconds)
+    ai_fixes_cache[cache_key] = (response_data, now_ts + 86400)
+
+    return AIFixesResponse(**response_data)
+
 
 
 async def process_batch_job(job_id: str, urls: list[str], target_query: Optional[str]):

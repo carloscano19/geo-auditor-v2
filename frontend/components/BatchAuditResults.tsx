@@ -348,7 +348,7 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                             ✕ Close Report
                         </button>
                     </div>
-                    <AuditResults results={selectedItem.result} />
+                    <AuditResults results={selectedItem.result} hideAiFixes={true} />
                 </div>
             )}
         </div>

@@ -19,6 +19,8 @@ from src.models.schemas import (
     AuditResponse,
     DimensionScore,
     PageData,
+    AIContext,
+    FailingSubmetric,
 )
 from src.scrapers.base_scraper import ScraperError, ChallengePageError
 from src.utils.challenge_detection import is_challenge_page
@@ -330,6 +332,16 @@ async def run_single_audit(
     scoring_version = settings.app_version
     top_recommendations = all_recommendations[:5]
 
+    ai_context = None
+    if settings.ai_enabled:
+        ai_context = _build_ai_context(
+            page_data=page_data,
+            detector_results=detector_results,
+            detected_lang=detected_lang,
+            content_type=content_type,
+            effective_url=url,
+        )
+
     return AuditResponse(
         url=url,
         total_score=total_score,
@@ -343,4 +355,162 @@ async def run_single_audit(
         score_capped=score_capped,
         cap_reason=cap_reason,
         detector_results=detector_results,
+        ai_context=ai_context,
     )
+
+
+def _build_ai_context(
+    page_data: PageData,
+    detector_results: list,
+    detected_lang: str,
+    content_type: str,
+    effective_url: str,
+) -> AIContext:
+    """Extract context elements for optional AI fixes."""
+    import json
+    import re
+    from bs4 import BeautifulSoup
+    from src.utils.text_processing import extract_main_content
+    from src.detectors.authority import AuthorityDetector
+    from src.detectors.freshness import FreshnessDetector
+
+    soup = BeautifulSoup(page_data.html_rendered or page_data.html_raw or "", "lxml")
+
+    # Title & H1
+    title = None
+    title_el = soup.find("title")
+    if title_el and title_el.get_text(strip=True):
+        title = title_el.get_text(strip=True)
+    elif soup.find("meta", property="og:title"):
+        title = soup.find("meta", property="og:title").get("content", "").strip() or None
+
+    h1 = None
+    h1_el = soup.find("h1")
+    if h1_el and h1_el.get_text(strip=True):
+        h1 = h1_el.get_text(strip=True)
+
+    # Scoped main content
+    scoped_html, scoped_text = extract_main_content(page_data.html_rendered or page_data.html_raw)
+    main_text = (scoped_text or page_data.text_content or "").strip()
+    if len(main_text) > 8000:
+        main_text = main_text[:8000]
+
+    # First paragraph (at least 20 words, or first non-empty p)
+    first_paragraph = None
+    main_soup = BeautifulSoup(scoped_html, "lxml") if scoped_html else soup
+    paragraphs = []
+    for p in main_soup.find_all("p"):
+        pt = p.get_text(separator=" ", strip=True)
+        if pt:
+            paragraphs.append(pt)
+
+    for pt in paragraphs:
+        if len(pt.split()) >= 20:
+            first_paragraph = pt
+            break
+    if not first_paragraph and paragraphs:
+        first_paragraph = paragraphs[0]
+
+    # Existing JSON-LD scripts
+    existing_json_ld: list[dict] = []
+    for script in soup.find_all("script", type=lambda t: t and "ld+json" in t):
+        try:
+            s_text = script.string or script.get_text() or ""
+            data = json.loads(s_text)
+            if isinstance(data, dict):
+                if "@graph" in data and isinstance(data["@graph"], list):
+                    for item in data["@graph"]:
+                        if isinstance(item, dict):
+                            existing_json_ld.append(item)
+                else:
+                    existing_json_ld.append(data)
+            elif isinstance(data, list):
+                for item in data:
+                    if isinstance(item, dict):
+                        existing_json_ld.append(item)
+        except Exception:
+            continue
+
+    # Truncate existing_json_ld if serialized length exceeds 5000 chars
+    try:
+        ld_str = json.dumps(existing_json_ld)
+        if len(ld_str) > 5000:
+            truncated_list = []
+            cur_len = 2
+            for item in existing_json_ld:
+                item_str = json.dumps(item)
+                if cur_len + len(item_str) + 2 > 5000:
+                    break
+                truncated_list.append(item)
+                cur_len += len(item_str) + 2
+            existing_json_ld = truncated_list
+    except Exception:
+        pass
+
+    # Author detection
+    auth_detector = AuthorityDetector()
+    detected_author = (
+        auth_detector._extract_author_from_json_ld(page_data.html_rendered) or
+        auth_detector._extract_author_from_html(page_data.html_rendered) or
+        auth_detector._extract_author_from_text(page_data.text_content, auth_detector.AUTHOR_PATTERNS)
+    )
+
+    # Date detection
+    freshness_detector = FreshnessDetector()
+    date_obj = freshness_detector._extract_date(page_data, lang=detected_lang)
+    detected_date_published = date_obj.isoformat() if date_obj else None
+
+    # Check for specific dateModified meta tag
+    detected_date_modified = None
+    mod_match = re.search(
+        r'<meta[^>]+property=["\']article:modified_time["\'][^>]+content=["\']([^"\']+)["\']',
+        page_data.html_rendered or "",
+        re.I
+    )
+    if mod_match:
+        detected_date_modified = mod_match.group(1).strip()
+    elif detected_date_published:
+        detected_date_modified = detected_date_published
+
+    # Publisher detection
+    detected_publisher = None
+    pub_meta = soup.find("meta", property="og:site_name")
+    if pub_meta and pub_meta.get("content"):
+        detected_publisher = pub_meta.get("content").strip()
+    if not detected_publisher:
+        pub_tag = soup.find("meta", attrs={"name": re.compile(r"publisher|site_name", re.I)})
+        if pub_tag and pub_tag.get("content"):
+            detected_publisher = pub_tag.get("content").strip()
+    if not detected_publisher and effective_url and effective_url.startswith(("http://", "https://")):
+        detected_publisher = urlparse(effective_url).netloc.replace("www.", "")
+
+    # Failing submetrics (score < 70)
+    failing_submetrics: list[FailingSubmetric] = []
+    for r in detector_results:
+        for b in getattr(r, "breakdown", []):
+            if b.raw_score < 70.0:
+                rec = b.recommendations[0] if b.recommendations else None
+                failing_submetrics.append(
+                    FailingSubmetric(
+                        name=b.name,
+                        score=round(b.raw_score, 1),
+                        recommendation=rec,
+                    )
+                )
+
+    return AIContext(
+        url=effective_url if effective_url != "text-mode" else None,
+        title=title,
+        h1=h1,
+        language=detected_lang,
+        content_type=content_type,
+        main_text=main_text,
+        first_paragraph=first_paragraph,
+        existing_json_ld=existing_json_ld,
+        detected_author=detected_author,
+        detected_date_published=detected_date_published,
+        detected_date_modified=detected_date_modified,
+        detected_publisher=detected_publisher,
+        failing_submetrics=failing_submetrics,
+    )
+
