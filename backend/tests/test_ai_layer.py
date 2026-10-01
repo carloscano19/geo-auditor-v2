@@ -959,23 +959,33 @@ def test_links_unwrap_redirect():
 
 
 @pytest.mark.asyncio
-async def test_aeo_detected_headers_includes_h4_and_scope():
+async def test_aeo_heading_structure_score_and_detected_headers_with_h4():
     """
-    Checks that AEO Structure detector includes h2, h3, h4 in detected_headers up to 25.
+    Checks that:
+    1. A page with 1 H2, 1 H3, and 3 H4 gives the exact same Heading Structure score as in main (raw_score=60.0, weighted_score=15.0).
+    2. detected_headers contains only H2 and H3, excluding H4.
+    3. header_count equals len(detected_headers).
+    4. With socios fixture, detected_headers includes 'About Socios.com' and 'About Securitize'.
     """
     from src.detectors.aeo_structure import AEOStructureDetector
     from src.models.schemas import PageData
 
     detector = AEOStructureDetector()
     html = """
-    <html><body>
+    <html><body><article>
+    <h1>Main Article Title</h1>
+    <p>""" + ("word " * 250) + """</p>
     <h2>Main H2 Heading</h2>
-    <p>Some text</p>
+    <p>""" + ("word " * 250) + """</p>
     <h3>Subsection H3</h3>
-    <p>Some text</p>
-    <h4>Detail H4</h4>
-    <p>Some text</p>
-    </body></html>
+    <p>""" + ("word " * 200) + """</p>
+    <h4>Detail H4 A</h4>
+    <p>detail</p>
+    <h4>Detail H4 B</h4>
+    <p>detail</p>
+    <h4>Detail H4 C</h4>
+    <p>detail</p>
+    </article></body></html>
     """
     page_data = PageData(
         url="https://example.com/headers",
@@ -987,8 +997,34 @@ async def test_aeo_detected_headers_includes_h4_and_scope():
         load_time_ms=100.0,
     )
     res = await detector.analyze(page_data)
-    assert "detected_headers" in res.debug_info
-    assert "Main H2 Heading" in res.debug_info["detected_headers"]
-    assert "Subsection H3" in res.debug_info["detected_headers"]
-    assert "Detail H4" in res.debug_info["detected_headers"]
+    heading_breakdown = [b for b in res.breakdown if b.name == "Heading Structure"][0]
+    
+    # Exact main baseline values (1 H2 for ~720 words -> raw 50.0 + 10.0 H3 bonus = 60.0)
+    assert heading_breakdown.raw_score == 60.0
+    assert heading_breakdown.weighted_score == 15.0
+    assert "Bonus: 1 H3s detected." in heading_breakdown.explanation
+    assert "H4" not in heading_breakdown.explanation
+
+    # detected_headers only H2 and H3, no H4
+    assert res.debug_info["detected_headers"] == ["Main H2 Heading", "Subsection H3"]
+    assert res.debug_info["header_count"] == 2
+    assert "Detail H4 A" not in res.debug_info["detected_headers"]
+
+    # Socios fixture check
+    with open("tests/fixtures/socios_securitize.html", "r", encoding="utf-8") as f:
+        socios_html = f.read()
+
+    socios_page = PageData(
+        url="https://example.com/socios",
+        final_url="https://example.com/socios",
+        html_raw=socios_html,
+        html_rendered=socios_html,
+        text_content="",
+        status_code=200,
+        load_time_ms=100.0,
+    )
+    socios_res = await detector.analyze(socios_page)
+    socios_detected = socios_res.debug_info["detected_headers"]
+    assert "About Socios.com" in socios_detected
+    assert "About Securitize" in socios_detected
 
