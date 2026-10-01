@@ -143,6 +143,7 @@ class SerpClient:
                 "location_code": location_code,
                 "language_code": language_code,
                 "depth": 10,
+                "load_async_ai_overview": True,
             }
         ]
 
@@ -225,47 +226,67 @@ class SerpClient:
         organic: list[dict] = []
         related_searches: list[str] = []
 
+        def _extract_paa_item(entry: dict) -> Optional[dict]:
+            q_text = (entry.get("title") or entry.get("question") or entry.get("seed_question") or "").strip()
+            if not q_text:
+                return None
+            
+            exp = entry.get("expanded_element")
+            exp_url = ""
+            exp_dom = ""
+            if isinstance(exp, list) and exp and isinstance(exp[0], dict):
+                exp_url = (exp[0].get("url") or exp[0].get("link") or "").strip()
+                exp_dom = (exp[0].get("domain") or "").strip()
+
+            url = exp_url or (entry.get("url") or entry.get("link") or "").strip()
+            dom = exp_dom or (entry.get("domain") or "").strip()
+            if not dom and url:
+                dom = normalize_domain(url)
+            if is_excluded_domain(dom, url, page_domain):
+                url = ""
+                dom = ""
+            return {
+                "question": q_text,
+                "url": url or None,
+                "domain": dom or None,
+            }
+
         for item in items:
             if not isinstance(item, dict):
                 continue
             itype = item.get("type")
 
-            # 1. People Also Ask
-            if itype in ["people_also_ask", "people_also_search"]:
+            # 1. People Also Ask (only people_also_ask and people_also_ask_element)
+            if itype == "people_also_ask":
                 sub_items = item.get("items") or []
                 for sub in sub_items:
                     if isinstance(sub, dict):
-                        q_text = (sub.get("title") or sub.get("question") or sub.get("seed_question") or "").strip()
-                        url = (sub.get("url") or sub.get("link") or "").strip()
-                        dom = (sub.get("domain") or "").strip()
-                        if not dom and url:
-                            dom = normalize_domain(url)
-                        if is_excluded_domain(dom, url, page_domain):
-                            url = ""
-                            dom = ""
-                        if q_text:
-                            people_also_ask.append({
-                                "question": q_text,
-                                "url": url or None,
-                                "domain": dom or None,
-                            })
+                        paa = _extract_paa_item(sub)
+                        if paa:
+                            people_also_ask.append(paa)
             elif itype == "people_also_ask_element":
-                q_text = (item.get("title") or item.get("question") or item.get("seed_question") or "").strip()
-                url = (item.get("url") or item.get("link") or "").strip()
-                dom = (item.get("domain") or "").strip()
-                if not dom and url:
-                    dom = normalize_domain(url)
-                if is_excluded_domain(dom, url, page_domain):
-                    url = ""
-                    dom = ""
-                if q_text:
-                    people_also_ask.append({
-                        "question": q_text,
-                        "url": url or None,
-                        "domain": dom or None,
-                    })
+                paa = _extract_paa_item(item)
+                if paa:
+                    people_also_ask.append(paa)
 
-            # 2. AI Overview
+            # 2. People Also Search (not questions; add titles to related_searches without duplicates)
+            elif itype in ["people_also_search", "people_also_search_element"]:
+                sub_items = item.get("items") or []
+                for s in sub_items:
+                    if isinstance(s, str) and s.strip():
+                        t = s.strip()
+                        if t not in related_searches:
+                            related_searches.append(t)
+                    elif isinstance(s, dict):
+                        t = (s.get("title") or s.get("query") or s.get("keyword") or "").strip()
+                        if t and t not in related_searches:
+                            related_searches.append(t)
+                if not sub_items:
+                    t = (item.get("title") or item.get("query") or "").strip()
+                    if t and t not in related_searches:
+                        related_searches.append(t)
+
+            # 3. AI Overview
             elif itype == "ai_overview":
                 refs = item.get("references") or item.get("sources") or item.get("items") or []
                 for ref in refs:
@@ -282,7 +303,7 @@ class SerpClient:
                                 "domain": dom,
                             })
 
-            # 3. Organic top 10
+            # 4. Organic top 10
             elif itype == "organic":
                 url = (item.get("url") or item.get("link") or "").strip()
                 title = (item.get("title") or "").strip()
@@ -296,15 +317,17 @@ class SerpClient:
                         "domain": dom,
                     })
 
-            # 4. Related Searches
+            # 5. Related Searches
             elif itype in ["related_searches", "related_search"]:
                 sub_items = item.get("items") or []
                 for s in sub_items:
                     if isinstance(s, str) and s.strip():
-                        related_searches.append(s.strip())
+                        t = s.strip()
+                        if t not in related_searches:
+                            related_searches.append(t)
                     elif isinstance(s, dict):
                         qt = (s.get("query") or s.get("title") or s.get("keyword") or "").strip()
-                        if qt:
+                        if qt and qt not in related_searches:
                             related_searches.append(qt)
 
         # Slice organic to top 10

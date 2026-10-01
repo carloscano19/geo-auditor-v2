@@ -1512,6 +1512,108 @@ async def test_serp_client_parse_exclusions_and_cache():
 
 
 @pytest.mark.asyncio
+async def test_serp_client_people_also_search_expanded_element_and_async_flag():
+    """
+    Test SERP client requirements:
+    1. people_also_search does not add to people_also_ask, but adds titles to related_searches (no dupes).
+    2. PAA with expanded_element[0] url uses that url instead of sub.url.
+    3. Payload sent to DataForSEO includes load_async_ai_overview: True.
+    """
+    from src.services.serp_client import SerpClient
+
+    mock_settings = Settings(
+        dataforseo_login="login_test",
+        dataforseo_password="pw_test",
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client_serp = SerpClient(mock_settings)
+
+    raw_items = [
+        # PAA question where expanded_element has url & domain
+        {
+            "type": "people_also_ask",
+            "items": [
+                {
+                    "title": "What is AI citability?",
+                    "url": "https://fallback.com/page",
+                    "domain": "fallback.com",
+                    "expanded_element": [
+                        {
+                            "url": "https://expanded-authority.org/article",
+                            "domain": "expanded-authority.org",
+                        }
+                    ],
+                },
+                # PAA question where expanded_element does not have url -> uses sub.url
+                {
+                    "title": "How to optimize for AEO?",
+                    "url": "https://fallback-kept.com/aeo",
+                    "domain": "fallback-kept.com",
+                    "expanded_element": [],
+                },
+            ],
+        },
+        # people_also_search block -> must NOT be in people_also_ask, must be in related_searches
+        {
+            "type": "people_also_search",
+            "items": [
+                {"title": "ai optimization tools"},
+                {"title": "how search engines cite sources"},
+            ],
+        },
+        # standard related_searches
+        {
+            "type": "related_searches",
+            "items": [
+                "ai optimization tools",  # duplicate of people_also_search -> should not duplicate
+                "future of search engines",
+            ],
+        },
+    ]
+
+    parsed = client_serp._parse_items(raw_items, audited_url="https://mysite.com", query="ai optimization", market_display="US/en")
+
+    # 1. people_also_ask only has the 2 questions from people_also_ask, nothing from people_also_search
+    assert len(parsed["people_also_ask"]) == 2
+    assert parsed["people_also_ask"][0]["question"] == "What is AI citability?"
+    # expanded_element url was chosen over fallback.com
+    assert parsed["people_also_ask"][0]["url"] == "https://expanded-authority.org/article"
+    assert parsed["people_also_ask"][0]["domain"] == "expanded-authority.org"
+
+    # fallback was used when expanded_element has no url
+    assert parsed["people_also_ask"][1]["question"] == "How to optimize for AEO?"
+    assert parsed["people_also_ask"][1]["url"] == "https://fallback-kept.com/aeo"
+    assert parsed["people_also_ask"][1]["domain"] == "fallback-kept.com"
+
+    # 2. people_also_search titles added to related_searches, and deduplicated
+    assert parsed["related_searches"] == [
+        "ai optimization tools",
+        "how search engines cite sources",
+        "future of search engines",
+    ]
+
+    # 3. Payload sent to DataForSEO includes load_async_ai_overview: True
+    mock_response = {
+        "tasks": [
+            {
+                "status_code": 20000,
+                "result": [{"items": []}],
+            }
+        ]
+    }
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: mock_response, raise_for_status=lambda: None)
+        await client_serp.fetch_serp_live("test query", language="en", audited_url="https://mysite.com")
+        assert mock_post.call_count == 1
+        call_kwargs = mock_post.call_args.kwargs
+        sent_json = call_kwargs.get("json")
+        assert isinstance(sent_json, list) and len(sent_json) == 1
+        assert sent_json[0].get("load_async_ai_overview") is True
+
+
+@pytest.mark.asyncio
 async def test_serp_query_resolution_target_query_llm_and_fallback():
     """
     Test 3: Query resolution priority: Target query > short LLM call > H1 trimmed to 8 words.
