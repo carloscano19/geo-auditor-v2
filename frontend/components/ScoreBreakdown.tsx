@@ -169,7 +169,7 @@ export default function ScoreBreakdown({ result }: ScoreBreakdownProps) {
                             <div className="flex flex-wrap gap-2">
                                 {(result.debug_info.detected_headers as string[]).map((header, i) => (
                                     <span key={i} className="inline-block px-2 py-1 bg-slate-800 text-slate-300 text-xs rounded border border-slate-700">
-                                        H2: {header}
+                                        {header}
                                     </span>
                                 ))}
                                 {(result.debug_info.detected_headers as string[]).length === 0 && (

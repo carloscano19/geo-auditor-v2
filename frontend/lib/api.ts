@@ -59,6 +59,7 @@ export interface AIContext {
     detected_date_modified?: string;
     detected_publisher?: string;
     publisher_inferred_from_domain?: boolean;
+    detected_image_url?: string;
     failing_submetrics: FailingSubmetric[];
 }
 
@@ -71,6 +72,46 @@ export interface LeadParagraphFix {
 export interface AIFixesResponse {
     json_ld: Record<string, unknown>;
     lead_paragraph: LeadParagraphFix;
+    warnings: string[];
+}
+
+export interface PlanQuestion {
+    question: string;
+    draft_answer: string;
+    answer_source: 'page' | 'needs_info';
+}
+
+export interface PlanOutlineItem {
+    h2: string;
+    purpose: string;
+    status: 'existing' | 'new';
+}
+
+export interface PlanTable {
+    title: string;
+    headers?: string[] | null;
+    rows?: string[][] | null;
+    table_idea?: string | null;
+}
+
+export interface PlanDataOpportunity {
+    suggestion: string;
+    source_type: string;
+}
+
+export interface PlanNewParagraph {
+    target_issue: string;
+    suggested_text: string;
+    placement: string;
+}
+
+export interface AIPlanResponse {
+    questions_to_answer: PlanQuestion[];
+    suggested_h2_structure: PlanOutlineItem[];
+    suggested_table?: PlanTable | null;
+    data_opportunities: PlanDataOpportunity[];
+    paragraphs_to_add: PlanNewParagraph[];
+    combined_schema: Record<string, unknown>;
     warnings: string[];
 }
 
@@ -287,6 +328,26 @@ class ApiClient {
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
             throw new Error(error.detail || 'Failed to generate AI fixes');
+        }
+
+        return response.json();
+    }
+
+    /**
+     * Generate comprehensive AI improvement plan
+     */
+    async generateAIPlan(aiContext: AIContext): Promise<AIPlanResponse> {
+        const response = await fetch(`${this.baseUrl}/api/ai/plan`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ ai_context: aiContext }),
+        });
+
+        if (!response.ok) {
+            const error = await response.json().catch(() => ({}));
+            throw new Error(error.detail || 'Failed to generate AI plan');
         }
 
         return response.json();

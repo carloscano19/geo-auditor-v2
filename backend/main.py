@@ -15,6 +15,7 @@ API Endpoints:
 
 import io
 import csv
+import re
 import uuid
 import asyncio
 import logging
@@ -28,6 +29,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 import hashlib
 from config.settings import get_settings
+from urllib.parse import urlparse
 from src.models.schemas import (
     AuditRequest,
     AuditResponse,
@@ -38,6 +40,13 @@ from src.models.schemas import (
     AIFixesRequest,
     AIFixesResponse,
     LeadParagraphFix,
+    AIPlanRequest,
+    AIPlanResponse,
+    PlanQuestion,
+    PlanOutlineItem,
+    PlanTable,
+    PlanDataOpportunity,
+    PlanNewParagraph,
 )
 from src.services.llm_client import (
     LLMClient,
@@ -164,11 +173,14 @@ async def health_check():
     }
 
 
-# In-memory 24h cache for AI fixes: sha256 -> (result_dict, expires_at_timestamp)
+# In-memory 24h caches for AI fixes and plan: sha256 -> (result_dict, expires_at_timestamp)
 # OrderedDict to easily evict oldest entries when max capacity is reached
 from collections import OrderedDict
 AI_FIXES_CACHE_MAX_SIZE = 100
 ai_fixes_cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
+
+AI_PLAN_CACHE_MAX_SIZE = 100
+ai_plan_cache: OrderedDict[str, tuple[dict, float]] = OrderedDict()
 
 
 def cleanup_ai_fixes_cache(now_ts: float):
@@ -187,6 +199,265 @@ def put_ai_fixes_cache(key: str, data: dict, expires_at: float):
     ai_fixes_cache[key] = (data, expires_at)
     while len(ai_fixes_cache) > AI_FIXES_CACHE_MAX_SIZE:
         ai_fixes_cache.popitem(last=False)
+
+
+def cleanup_ai_plan_cache(now_ts: float):
+    """Remove expired entries from ai_plan_cache."""
+    expired_keys = [k for k, v in ai_plan_cache.items() if now_ts >= v[1]]
+    for k in expired_keys:
+        ai_plan_cache.pop(k, None)
+
+
+def put_ai_plan_cache(key: str, data: dict, expires_at: float):
+    """Store result in cache, cleaning expired and evicting oldest if over 100 entries."""
+    now_ts = datetime.now(timezone.utc).timestamp()
+    cleanup_ai_plan_cache(now_ts)
+    if key in ai_plan_cache:
+        ai_plan_cache.pop(key, None)
+    ai_plan_cache[key] = (data, expires_at)
+    while len(ai_plan_cache) > AI_PLAN_CACHE_MAX_SIZE:
+        ai_plan_cache.popitem(last=False)
+
+
+def compute_clean_headline(ctx: Any) -> str:
+    """
+    Computes headline / name:
+    Uses H1 if present; otherwise title without site suffix (after ' - ', ' | ', ' – ', ' · '
+    when matching publisher or domain). Max 110 characters without breaking words.
+    """
+    candidate = ""
+    if ctx.h1 and ctx.h1.strip():
+        candidate = ctx.h1.strip()
+    elif ctx.title and ctx.title.strip():
+        candidate = ctx.title.strip()
+        domain = ""
+        if ctx.url:
+            try:
+                domain = urlparse(ctx.url).netloc.lower().replace("www.", "")
+            except Exception:
+                pass
+        pub = (ctx.detected_publisher or "").strip().lower()
+
+        for sep in [" - ", " | ", " – ", " · "]:
+            if sep in candidate:
+                parts = candidate.rsplit(sep, 1)
+                prefix = parts[0].strip()
+                suffix = parts[1].strip().lower()
+                matches_pub = bool(pub and (suffix == pub or pub in suffix or suffix in pub))
+                matches_dom = bool(domain and (suffix == domain or domain in suffix or suffix in domain))
+                # If matches pub/domain or suffix looks like a brand/site name (short or contains dot)
+                if matches_pub or matches_dom or len(suffix.split()) <= 4:
+                    candidate = prefix
+                    break
+
+    if not candidate:
+        candidate = ctx.url or "REPLACE_WITH_HEADLINE"
+
+    # Truncate to max 110 chars without breaking words
+    if len(candidate) > 110:
+        cut = candidate[:111]
+        last_space = cut.rfind(" ")
+        if last_space > 0:
+            candidate = candidate[:last_space].strip()
+        else:
+            candidate = candidate[:110].strip()
+
+    return candidate
+
+
+def is_organization_author(author: str, publisher: Optional[str], url: Optional[str]) -> bool:
+    """
+    Checks if author is an organization: matches publisher case-insensitively,
+    has domain or brand format (contains common TLDs), or matches URL domain.
+    """
+    if not author:
+        return False
+    a_lower = author.strip().lower()
+    
+    # 1. Matches publisher case-insensitively
+    if publisher and a_lower == publisher.strip().lower():
+        return True
+        
+    # 2. Matches URL domain
+    if url:
+        try:
+            dom = urlparse(url).netloc.lower().replace("www.", "")
+            if a_lower == dom or a_lower.replace("www.", "") == dom:
+                return True
+        except Exception:
+            pass
+
+    # 3. Has domain or brand format (contains common TLDs like .com, .io, .net, etc.)
+    if re.search(r'\.(?:com|io|net|org|es|co|info|biz|me|ai|app|dev|xyz|eu|tv|agency|store)\b', a_lower):
+        return True
+
+    return False
+
+
+def build_article_schema(ctx: Any, expected_type: str, json_ld_template: Optional[dict] = None) -> tuple[dict, list[str]]:
+    """
+    Builds and enforces schema fields for Article/NewsArticle/Product/Review.
+    Applies ground truth overwriting, placeholder substitution, and warning generation.
+    """
+    json_ld = dict(json_ld_template or {})
+    json_ld["@context"] = "https://schema.org"
+
+    valid_types = {
+        "news": ["NewsArticle"],
+        "guide_blog": ["Article", "BlogPosting"],
+        "review": ["Review"],
+        "product": ["Product"],
+    }
+    allowed_types = valid_types.get(ctx.content_type, ["Article", "BlogPosting", "NewsArticle", "Review", "Product"])
+    current_type = json_ld.get("@type")
+    if current_type not in allowed_types:
+        json_ld["@type"] = expected_type
+
+    # 1. Headline / Name
+    clean_h = compute_clean_headline(ctx)
+    if ctx.content_type in ["product", "review"]:
+        json_ld.pop("headline", None)
+        json_ld["name"] = clean_h
+    else:
+        json_ld["headline"] = clean_h
+
+    if ctx.url:
+        json_ld["url"] = ctx.url
+
+    # 2. Date published & modified
+    if ctx.detected_date_published:
+        json_ld["datePublished"] = ctx.detected_date_published
+    else:
+        json_ld["datePublished"] = "REPLACE_WITH_DATE_PUBLISHED"
+
+    if ctx.detected_date_modified:
+        json_ld["dateModified"] = ctx.detected_date_modified
+    else:
+        json_ld["dateModified"] = "REPLACE_WITH_DATE_MODIFIED"
+
+    # 3. Author & Organization author check
+    warnings: list[str] = []
+    author_str = (ctx.detected_author or "").strip()
+    if not author_str:
+        json_ld["author"] = {"@type": "Person", "name": "REPLACE_WITH_AUTHOR_NAME"}
+        warnings.append("Author not detected on page; add author details manually in schema.")
+    else:
+        if is_organization_author(author_str, ctx.detected_publisher, ctx.url):
+            json_ld["author"] = {"@type": "Organization", "name": author_str}
+            warnings.append("The author is the organization itself; add a named person as author if the page has one.")
+        else:
+            json_ld["author"] = {"@type": "Person", "name": author_str}
+            # Username check: no spaces AND (contains '.', '_', '-' OR is all lowercase)
+            if " " not in author_str and (any(c in author_str for c in [".", "_", "-"]) or author_str.islower()):
+                warnings.append(f"Detected author '{author_str}' looks like a username; replace it with the author's full name.")
+
+    # 4. Publisher
+    if ctx.detected_publisher:
+        json_ld["publisher"] = {"@type": "Organization", "name": ctx.detected_publisher}
+    else:
+        json_ld["publisher"] = {"@type": "Organization", "name": "REPLACE_WITH_PUBLISHER_NAME"}
+
+    # 5. Image
+    if getattr(ctx, "detected_image_url", None):
+        json_ld["image"] = ctx.detected_image_url
+    else:
+        json_ld["image"] = "REPLACE_WITH_IMAGE_URL"
+
+    # Warnings collection
+    if not ctx.detected_date_published:
+        warnings.append("Publication date not detected; add datePublished manually in schema.")
+    if not ctx.title and not ctx.h1:
+        warnings.append("Title or H1 missing; add headline manually in schema.")
+
+    if getattr(ctx, "publisher_inferred_from_domain", False):
+        warnings.append("Publisher name inferred from domain; confirm the official organization name.")
+
+    return json_ld, warnings
+
+
+def build_combined_schema(ctx: Any, article_schema: dict, questions: list[dict]) -> dict:
+    """
+    Constructs a JSON-LD @graph containing the article, FAQPage (only for 'page' questions),
+    and Organization publisher.
+    """
+    page_questions = [q for q in questions if q.get("answer_source") == "page"]
+    faq_schema = {
+        "@type": "FAQPage",
+        "mainEntity": [
+            {
+                "@type": "Question",
+                "name": q.get("question", ""),
+                "acceptedAnswer": {
+                    "@type": "Answer",
+                    "text": q.get("draft_answer", "")
+                }
+            }
+            for q in page_questions
+        ]
+    }
+    
+    pub_name = ctx.detected_publisher or "REPLACE_WITH_PUBLISHER_NAME"
+    org_schema = {
+        "@type": "Organization",
+        "name": pub_name
+    }
+    if ctx.url:
+        try:
+            parsed = urlparse(ctx.url)
+            org_schema["url"] = f"{parsed.scheme}://{parsed.netloc}"
+        except Exception:
+            pass
+
+    return {
+        "@context": "https://schema.org",
+        "@graph": [
+            article_schema,
+            faq_schema,
+            org_schema
+        ]
+    }
+
+
+def normalize_text_for_numbers(text: str) -> str:
+    """Normalizes currency, multipliers, percentages, and separators for numerical comparison."""
+    if not text:
+        return ""
+    t = text.lower()
+    t = re.sub(r'[\$€£¥]', '', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:bn|b)(?!illion)\b', r'\1 billion', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:mil\s+millones)\b', r'\1 billion', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:m)(?!illion)\b', r'\1 million', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:millones)\b', r'\1 million', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:k)(?!housand)\b', r'\1 thousand', t)
+    t = re.sub(r'\b(\d+(?:[\.,]\d+)?)\s*(?:mil)\b', r'\1 thousand', t)
+    t = re.sub(r'(\d+)\s*(?:%|por\s*ciento)', r'\1 percent', t)
+    t = re.sub(r'\b(\d{1,3})[,\.](\d{3})\b', r'\1\2', t)
+    return t
+
+
+def extract_numbers_with_context(text: str) -> list[str]:
+    """Extracts all numerical expressions from text."""
+    norm = normalize_text_for_numbers(text)
+    matches = re.findall(r'\b\d+(?:[\.,]\d+)?(?:\s+(?:billion|million|thousand|trillion|percent))?\b', norm)
+    return [m.strip() for m in matches if m.strip()]
+
+
+def all_numbers_in_page(text: str, page_norm: str) -> bool:
+    """Returns True if every number in text is found in page_norm."""
+    tokens = extract_numbers_with_context(text)
+    for tok in tokens:
+        escaped = re.escape(tok)
+        if not re.search(r'(?<!\d)' + escaped + r'(?!\d)', page_norm):
+            return False
+    return True
+
+
+def strip_urls(text: str) -> str:
+    """Removes all URLs from text."""
+    if not text:
+        return ""
+    t = re.sub(r'https?://[^\s]+', '', text)
+    return re.sub(r'\s+', ' ', t).strip()
 
 
 
@@ -342,81 +613,12 @@ Rules:
         logger.error(f"Unexpected error calling LLM: {traceback.format_exc()}")
         raise HTTPException(status_code=500, detail="Failed to generate AI fixes")
 
-    # 3. Validate and enforce JSON-LD fields
-    json_ld = raw_result.get("json_ld", {})
-    if not isinstance(json_ld, dict):
-        json_ld = {}
+    # 3. Validate and enforce JSON-LD fields using build_article_schema
+    json_ld_raw = raw_result.get("json_ld", {})
+    if not isinstance(json_ld_raw, dict):
+        json_ld_raw = {}
 
-    # Always ensure @context is https://schema.org
-    json_ld["@context"] = "https://schema.org"
-
-    # Validate/enforce @type
-    valid_types = {
-        "news": ["NewsArticle"],
-        "guide_blog": ["Article", "BlogPosting"],
-        "review": ["Review"],
-        "product": ["Product"],
-    }
-    allowed_types = valid_types.get(ctx.content_type, ["Article", "BlogPosting", "NewsArticle", "Review", "Product"])
-    current_type = json_ld.get("@type")
-    if current_type not in allowed_types:
-        json_ld["@type"] = expected_type
-
-    # Overwrite known fields with extracted ground-truth or strict placeholders to prevent hallucinations
-    # 1. Headline / Name
-    if ctx.content_type in ["product", "review"]:
-        json_ld.pop("headline", None)
-        json_ld["name"] = ctx.title or ctx.h1 or ctx.url or "REPLACE_WITH_NAME"
-    else:
-        json_ld["headline"] = ctx.title or ctx.h1 or ctx.url or "REPLACE_WITH_HEADLINE"
-
-    if ctx.url:
-        json_ld["url"] = ctx.url
-
-    # 2. Date published & modified
-    if ctx.detected_date_published:
-        json_ld["datePublished"] = ctx.detected_date_published
-    else:
-        json_ld["datePublished"] = "REPLACE_WITH_DATE_PUBLISHED"
-
-    if ctx.detected_date_modified:
-        json_ld["dateModified"] = ctx.detected_date_modified
-    else:
-        json_ld["dateModified"] = "REPLACE_WITH_DATE_MODIFIED"
-
-    # 3. Author
-    if ctx.detected_author:
-        json_ld["author"] = {"@type": "Person", "name": ctx.detected_author}
-    else:
-        json_ld["author"] = {"@type": "Person", "name": "REPLACE_WITH_AUTHOR_NAME"}
-
-    # 4. Publisher
-    if ctx.detected_publisher:
-        json_ld["publisher"] = {"@type": "Organization", "name": ctx.detected_publisher}
-    else:
-        json_ld["publisher"] = {"@type": "Organization", "name": "REPLACE_WITH_PUBLISHER_NAME"}
-
-    # Set placeholder for image if missing
-    if "image" not in json_ld or not json_ld["image"]:
-        json_ld["image"] = "REPLACE_WITH_IMAGE_URL"
-
-    # Warnings collection
-    warnings: list[str] = []
-    if not ctx.detected_author:
-        warnings.append("Author not detected on page; add author details manually in schema.")
-    else:
-        author_str = ctx.detected_author.strip()
-        # Check if author looks like a username: no spaces AND (contains '.', '_', '-' OR is all lowercase)
-        if " " not in author_str and (any(c in author_str for c in [".", "_", "-"]) or author_str.islower()):
-            warnings.append(f"Detected author '{author_str}' looks like a username; replace it with the author's full name.")
-
-    if not ctx.detected_date_published:
-        warnings.append("Publication date not detected; add datePublished manually in schema.")
-    if not ctx.title and not ctx.h1:
-        warnings.append("Title or H1 missing; add headline manually in schema.")
-
-    if getattr(ctx, "publisher_inferred_from_domain", False):
-        warnings.append("Publisher name inferred from domain; confirm the official organization name.")
+    json_ld, warnings = build_article_schema(ctx, expected_type, json_ld_raw)
 
     # 4. Lead paragraph validation
     lead_data = raw_result.get("lead_paragraph", {})
@@ -445,6 +647,301 @@ Rules:
     put_ai_fixes_cache(cache_key, response_data, now_ts + 86400)
 
     return AIFixesResponse(**response_data)
+
+
+@app.post("/api/ai/plan", response_model=AIPlanResponse)
+async def generate_ai_plan(request: AIPlanRequest):
+    """
+    Generate complete AI improvement plan for the audited page.
+    Includes questions to answer, suggested H2 structure, suggested table,
+    enriching data opportunities, actionable new paragraphs, and combined Schema.org.
+    """
+    current_settings = get_settings()
+    if not current_settings.ai_enabled:
+        raise HTTPException(status_code=503, detail="AI layer is not configured")
+
+    ctx = request.ai_context
+
+    # 1. Check in-memory 24h cache
+    cache_key_raw = f"plan::{ctx.url or ''}::{ctx.main_text or ''}"
+    cache_key = hashlib.sha256(cache_key_raw.encode("utf-8")).hexdigest()
+    now_ts = datetime.now(timezone.utc).timestamp()
+
+    if cache_key in ai_plan_cache:
+        cached_data, expires_at = ai_plan_cache[cache_key]
+        if now_ts < expires_at:
+            return AIPlanResponse(**cached_data)
+        else:
+            ai_plan_cache.pop(cache_key, None)
+
+    # 2. Build system and user prompt
+    lang = ctx.language or "es"
+    lang_instruction = "Spanish (Español)" if lang == "es" else "English"
+
+    expected_type = "Article"
+    if ctx.content_type == "news":
+        expected_type = "NewsArticle"
+    elif ctx.content_type == "review":
+        expected_type = "Review"
+    elif ctx.content_type == "product":
+        expected_type = "Product"
+
+    failing_info = "\n".join([f"- {f.name}: {f.score}/100 ({f.recommendation or 'Needs improvement'})" for f in ctx.failing_submetrics])
+
+    system_prompt = (
+        "You are an expert AI Search Engine Optimization (GEO/AEO) engineer.\n"
+        "Generate a thorough, practical, and highly citability-focused content improvement plan.\n"
+        f"CRITICAL: All generated suggestions and text MUST BE in {lang_instruction}.\n"
+        "STRICT TRUTHFULNESS & RESTRAINT RULES:\n"
+        "1. NEVER invent any statistics, figures, percentages, dates, names, or URLs.\n"
+        "2. Any suggested text or draft answer containing numbers MUST ONLY use figures already explicitly present in the provided page text.\n"
+        "3. If suggesting new data opportunities, describe the metric and the type of source to consult (e.g. 'official statistics', 'annual report'), but DO NOT make up URLs or numbers.\n"
+        "4. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text."
+    )
+
+    user_prompt = f"""Generate an improvement plan for the following web page to optimize its citability in AI engines (ChatGPT, Perplexity, Gemini).
+
+Page Information:
+URL: {ctx.url or 'N/A'}
+Title: {ctx.title or 'N/A'}
+H1: {ctx.h1 or 'N/A'}
+Language: {lang}
+Content Type: {ctx.content_type}
+Detected Author: {ctx.detected_author or 'Not detected'}
+Detected Publisher: {ctx.detected_publisher or 'Not detected'}
+Detected Date Published: {ctx.detected_date_published or 'Not detected'}
+Detected Date Modified: {ctx.detected_date_modified or 'Not detected'}
+
+Failing Submetrics:
+{failing_info or 'None'}
+
+Main Text Snippet (First 8000 chars):
+\"\"\"{ctx.main_text}\"\"\"
+
+Generate a JSON object with EXACTLY this structure:
+{{
+  "questions_to_answer": [
+    {{
+      "question": "Question text in {lang_instruction}",
+      "draft_answer": "Direct answer (max 60 words). If answer_source is 'page', must only use facts from page text.",
+      "answer_source": "page" // OR "needs_info" if the page lacks this information
+    }}
+  ],
+  "suggested_h2_structure": [
+    {{
+      "h2": "Suggested or preserved H2 heading text in {lang_instruction}",
+      "purpose": "Brief explanation of user intent / AEO goal",
+      "status": "existing" // OR "new"
+    }}
+  ],
+  "suggested_table": {{
+    "title": "Title of the table in {lang_instruction}",
+    "headers": ["Col 1", "Col 2", "Col 3"],
+    "rows": [
+      ["Val 1", "Val 2", "Val 3"]
+    ],
+    "table_idea": "Optional idea if text lacks comparative data for a full table"
+  }},
+  "data_opportunities": [
+    {{
+      "suggestion": "Description of data/metric to add in {lang_instruction}",
+      "source_type": "official statistics / industry benchmark / survey / financial report"
+    }}
+  ],
+  "paragraphs_to_add": [
+    {{
+      "target_issue": "Name of the problem being fixed (e.g. Missing direct answer, Missing author context, Thin content)",
+      "suggested_text": "Actionable paragraph (40-80 words) ready to insert into the page",
+      "placement": "Where to place this paragraph (e.g. Under H2 '...', After intro)"
+    }}
+  ]
+}}
+
+Requirements:
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions.
+- suggested_h2_structure: Logical H2 structure covering main aspects. Max 8 items.
+- suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
+- data_opportunities: 2 to 4 suggestions of data points that would strengthen the article's authority.
+- paragraphs_to_add: 1 to 3 paragraphs targeting the lowest-scoring issues.
+- Language: Strictly {lang_instruction}.
+"""
+
+    llm = LLMClient()
+    try:
+        raw_result = await llm.call_chat_completion(
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            temperature=0.2,
+        )
+    except DailyLimitExceededError:
+        raise HTTPException(status_code=429, detail="Daily AI limit reached, try again tomorrow")
+    except LLMClientError as e:
+        logger.error(f"LLM plan generation error: {e}")
+        raise HTTPException(status_code=502, detail=str(e))
+    except Exception:
+        logger.error(f"Unexpected error calling LLM for plan: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to generate AI plan")
+
+    if not isinstance(raw_result, dict):
+        raw_result = {}
+
+    # 3. Ground truth normalization & validation
+    page_norm = normalize_text_for_numbers(ctx.main_text or "")
+    total_removed_count = 0
+
+    # 3.1 Questions to answer validation
+    questions_raw = raw_result.get("questions_to_answer", [])
+    valid_questions: list[dict] = []
+    if isinstance(questions_raw, list):
+        for q in questions_raw:
+            if not isinstance(q, dict) or not q.get("question"):
+                continue
+            draft_ans = strip_urls(str(q.get("draft_answer") or ""))
+            # Length validation: max 60 words
+            words = draft_ans.split()
+            if len(words) > 60:
+                draft_ans = " ".join(words[:60])
+            
+            src = q.get("answer_source", "page")
+            if src not in ["page", "needs_info"]:
+                src = "page"
+            
+            # Numeric validation
+            if not all_numbers_in_page(draft_ans, page_norm):
+                total_removed_count += 1
+                continue
+            
+            valid_questions.append({
+                "question": strip_urls(str(q.get("question") or "")).strip(),
+                "draft_answer": draft_ans.strip(),
+                "answer_source": src,
+            })
+
+    # 3.2 Suggested H2 structure
+    h2_raw = raw_result.get("suggested_h2_structure", [])
+    valid_h2: list[dict] = []
+    if isinstance(h2_raw, list):
+        for h in h2_raw:
+            if not isinstance(h, dict) or not h.get("h2"):
+                continue
+            st = h.get("status", "new")
+            if st not in ["existing", "new"]:
+                st = "new"
+            valid_h2.append({
+                "h2": strip_urls(str(h.get("h2") or "")).strip(),
+                "purpose": strip_urls(str(h.get("purpose") or "")).strip(),
+                "status": st,
+            })
+
+    # 3.3 Suggested table
+    table_raw = raw_result.get("suggested_table")
+    valid_table: Optional[dict] = None
+    if isinstance(table_raw, dict):
+        title = strip_urls(str(table_raw.get("title") or "")).strip()
+        headers = table_raw.get("headers")
+        rows = table_raw.get("rows")
+        table_idea = strip_urls(str(table_raw.get("table_idea") or "")).strip() or None
+
+        valid_headers: Optional[list[str]] = None
+        valid_rows: Optional[list[list[str]]] = None
+
+        if isinstance(headers, list) and isinstance(rows, list) and len(rows) >= 1:
+            clean_headers = [strip_urls(str(h)).strip() for h in headers]
+            filtered_rows: list[list[str]] = []
+            for r in rows:
+                if not isinstance(r, list):
+                    continue
+                row_str = " ".join([str(c) for c in r])
+                if all_numbers_in_page(row_str, page_norm):
+                    filtered_rows.append([strip_urls(str(c)).strip() for c in r])
+                else:
+                    total_removed_count += 1
+            
+            if len(filtered_rows) >= 2:
+                valid_headers = clean_headers
+                valid_rows = filtered_rows
+            else:
+                # If filtered rows are fewer than 2, discard rows/headers and rely on idea
+                valid_headers = None
+                valid_rows = None
+                if not table_idea:
+                    table_idea = f"Create a comparison table covering {title or 'key dimensions'} with verified data."
+
+        if title or valid_headers or table_idea:
+            valid_table = {
+                "title": title or "Comparison Table",
+                "headers": valid_headers,
+                "rows": valid_rows,
+                "table_idea": table_idea,
+            }
+
+    # 3.4 Data opportunities
+    data_raw = raw_result.get("data_opportunities", [])
+    valid_data_opps: list[dict] = []
+    if isinstance(data_raw, list):
+        for d in data_raw:
+            if not isinstance(d, dict) or not d.get("suggestion"):
+                continue
+            sug = strip_urls(str(d.get("suggestion") or "")).strip()
+            stype = strip_urls(str(d.get("source_type") or "")).strip()
+            if not all_numbers_in_page(sug, page_norm):
+                total_removed_count += 1
+                continue
+            valid_data_opps.append({
+                "suggestion": sug,
+                "source_type": stype or "Industry Benchmark / Official Data",
+            })
+
+    # 3.5 Paragraphs to add
+    paras_raw = raw_result.get("paragraphs_to_add", [])
+    valid_paras: list[dict] = []
+    if isinstance(paras_raw, list):
+        for p in paras_raw:
+            if not isinstance(p, dict) or not p.get("suggested_text"):
+                continue
+            stext = strip_urls(str(p.get("suggested_text") or "")).strip()
+            # Length validation: 40-80 words
+            pwords = stext.split()
+            if len(pwords) > 80:
+                stext = " ".join(pwords[:80])
+            
+            if not all_numbers_in_page(stext, page_norm):
+                total_removed_count += 1
+                continue
+
+            valid_paras.append({
+                "target_issue": strip_urls(str(p.get("target_issue") or "Content Enhancement")).strip(),
+                "suggested_text": stext,
+                "placement": strip_urls(str(p.get("placement") or "In body content")).strip(),
+            })
+
+    # 4. Build combined schema
+    article_schema, article_warnings = build_article_schema(ctx, expected_type, {})
+    combined_schema = build_combined_schema(ctx, article_schema, valid_questions)
+
+    # 5. Warnings
+    all_warnings = list(article_warnings)
+    if total_removed_count > 0:
+        all_warnings.append(
+            f"{total_removed_count} suggestions were removed because they contained figures not found on the page."
+        )
+
+    response_data = {
+        "questions_to_answer": valid_questions,
+        "suggested_h2_structure": valid_h2,
+        "suggested_table": valid_table,
+        "data_opportunities": valid_data_opps,
+        "paragraphs_to_add": valid_paras,
+        "combined_schema": combined_schema,
+        "warnings": all_warnings,
+    }
+
+    # 6. Store in cache
+    put_ai_plan_cache(cache_key, response_data, now_ts + 86400)
+
+    return AIPlanResponse(**response_data)
 
 
 

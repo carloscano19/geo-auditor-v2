@@ -518,6 +518,20 @@ def _build_ai_context(
             detected_publisher = domain_candidate
             publisher_inferred_from_domain = True
 
+    # Image detection: og:image or twitter:image as absolute URL
+    detected_image_url = None
+    img_meta = (
+        soup.find("meta", property="og:image") or
+        soup.find("meta", attrs={"name": "og:image"}) or
+        soup.find("meta", property="twitter:image") or
+        soup.find("meta", attrs={"name": "twitter:image"})
+    )
+    if img_meta and img_meta.get("content"):
+        raw_img = img_meta.get("content").strip()
+        if raw_img:
+            from urllib.parse import urljoin
+            detected_image_url = urljoin(effective_url or "", raw_img)
+
     # Failing submetrics (score < 70)
     failing_submetrics: list[FailingSubmetric] = []
     for r in detector_results:
@@ -546,6 +560,7 @@ def _build_ai_context(
         detected_date_modified=detected_date_modified,
         detected_publisher=detected_publisher,
         publisher_inferred_from_domain=publisher_inferred_from_domain,
+        detected_image_url=detected_image_url,
         failing_submetrics=failing_submetrics,
     )
 

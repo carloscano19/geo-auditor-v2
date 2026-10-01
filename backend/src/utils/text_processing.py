@@ -241,7 +241,7 @@ def extract_clean_text(html: str) -> str:
 
 def extract_headers(html: str) -> list[dict]:
     """
-    Extract H1-H3 headers from HTML using BeautifulSoup with lxml.
+    Extract H1-H4 headers from HTML using BeautifulSoup with lxml.
     Includes ARIA role="heading" support.
     """
     if not html:
@@ -251,7 +251,7 @@ def extract_headers(html: str) -> list[dict]:
     headers = []
     
     # 1. Standard Tags
-    for tag in soup.find_all(['h1', 'h2', 'h3']):
+    for tag in soup.find_all(['h1', 'h2', 'h3', 'h4']):
         text = tag.get_text(strip=True)
         if text and 3 < len(text) < 200:
             headers.append({
@@ -263,7 +263,7 @@ def extract_headers(html: str) -> list[dict]:
     existing_texts = {h['text'] for h in headers}
     for tag in soup.find_all(attrs={"role": "heading"}):
         level = tag.get("aria-level")
-        if level in ['1', '2', '3']:
+        if level in ['1', '2', '3', '4']:
             text = tag.get_text(strip=True)
             if text and text not in existing_texts and 3 < len(text) < 200:
                 headers.append({

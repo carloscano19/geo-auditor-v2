@@ -6,9 +6,47 @@ Evaluates citation quality, external links, and authority sources.
 """
 
 import re
-from urllib.parse import urlparse
+from urllib.parse import urlparse, parse_qs, unquote
 from src.detectors.base_detector import BaseDetector
 from src.models.schemas import PageData, DetectorResult, ScoreBreakdown
+
+
+def unwrap_redirect_url(url: str) -> str:
+    """
+    Unwraps security rewrite URLs like Proofpoint and Outlook Safe Links.
+    """
+    if not url:
+        return url
+        
+    # 1. Proofpoint v3: urldefense.com/v3/__<URL>__;...
+    if "urldefense." in url and "/v3/__" in url:
+        m = re.search(r'/v3/__(.*?)__;', url)
+        if m:
+            unwrapped = m.group(1)
+            unwrapped = re.sub(r'^(https?:)/([^/])', r'\1//\2', unwrapped)
+            return unwrapped
+
+    # 2. Proofpoint v2: urldefense.proofpoint.com/v2/url?u=...
+    if "urldefense." in url and "/v2/url" in url:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        if "u" in params and params["u"]:
+            raw_u = params["u"][0]
+            # Proofpoint v2 replaces certain characters: -3A -> :, -2F or _ -> /, etc.
+            # e.g., https-3A__example.com_doc -> https://example.com/doc
+            if raw_u.startswith("https-3A__") or raw_u.startswith("http-3A__"):
+                trans = raw_u.replace("-3A__", "://").replace("-2F", "/").replace("_", "/")
+                return trans
+            return unquote(raw_u)
+
+    # 3. Outlook Safe Links: *.safelinks.protection.outlook.com/?url=...
+    if "safelinks.protection.outlook.com" in url:
+        parsed = urlparse(url)
+        params = parse_qs(parsed.query)
+        if "url" in params and params["url"]:
+            return unquote(params["url"][0])
+
+    return url
 
 class LinksDetector(BaseDetector):
     """
@@ -69,6 +107,8 @@ class LinksDetector(BaseDetector):
             href = href.strip()
             if not href or href.startswith("#") or href.startswith("javascript:") or href.startswith("mailto:"):
                 continue
+                
+            href = unwrap_redirect_url(href)
                 
             try:
                 # Basic classification

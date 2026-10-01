@@ -271,8 +271,8 @@ def test_ai_fixes_success_overwrites_known_fields_and_validates_type():
             assert json_ld["@context"] == "https://schema.org"
             # 2. @type forced to allowed type for guide_blog (Article)
             assert json_ld["@type"] == "Article"
-            # 3. Known fields overwritten with extracted data
-            assert json_ld["headline"] == "Real Page Title"
+            # 3. Known fields overwritten with extracted data (H1 preferred for headline)
+            assert json_ld["headline"] == "Real H1 Heading"
             assert json_ld["url"] == "https://example.com/guide"
             assert json_ld["datePublished"] == "2026-03-25T10:00:00Z"
             assert json_ld["dateModified"] == "2026-03-26T10:00:00Z"
@@ -687,3 +687,308 @@ def test_audit_scores_identical_with_and_without_ai():
     # Only ai_context should differ
     assert data_disabled.get("ai_context") is None
     assert data_enabled.get("ai_context") is not None
+
+
+# ---------------------------------------------------------------------------
+# 5. Phase 6b Tests: Parte A, B, C, D
+# ---------------------------------------------------------------------------
+
+def test_author_organization_detection():
+    """
+    If author matches publisher, domain or has domain TLD, it should be typed as Organization,
+    not trigger username warning, and add organization author note.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = {
+                "json_ld": {},
+                "lead_paragraph": {"suggested": "Optimized lead."}
+            }
+
+            res = client.post("/api/ai/fixes", json={
+                "ai_context": {
+                    "url": "https://company.com/blog/news",
+                    "title": "Company News",
+                    "detected_author": "company.com",
+                    "detected_publisher": "Company Inc",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "main_text": "Sample content text.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert data["json_ld"]["author"] == {"@type": "Organization", "name": "company.com"}
+            assert any("The author is the organization itself" in w for w in data["warnings"])
+            assert not any("looks like a username" in w for w in data["warnings"])
+
+
+def test_author_username_warning():
+    """
+    Username-style author (like marcos.perez) keeps Person type and shows username warning.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = {
+                "json_ld": {},
+                "lead_paragraph": {"suggested": "Optimized lead."}
+            }
+
+            res = client.post("/api/ai/fixes", json={
+                "ai_context": {
+                    "url": "https://example.com/post",
+                    "title": "Post Title",
+                    "detected_author": "marcos.perez",
+                    "detected_publisher": "Example Blog",
+                    "language": "es",
+                    "content_type": "guide_blog",
+                    "main_text": "Sample content text.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert data["json_ld"]["author"] == {"@type": "Person", "name": "marcos.perez"}
+            assert any("looks like a username" in w for w in data["warnings"])
+
+
+def test_clean_headline_strips_suffix_and_clamps():
+    """
+    compute_clean_headline strips site suffix and prefers H1.
+    """
+    from main import compute_clean_headline
+    from src.models.schemas import AIContext
+
+    ctx_h1 = AIContext(
+        h1="Essential GEO Best Practices for 2026",
+        title="Essential GEO Best Practices for 2026 - My Brand Website",
+        language="en",
+        content_type="guide_blog",
+        main_text="Some text",
+    )
+    assert compute_clean_headline(ctx_h1) == "Essential GEO Best Practices for 2026"
+
+    ctx_title_strip = AIContext(
+        h1="",
+        title="Comprehensive AI Search Engine Optimization Guide | TechPortal.com",
+        language="en",
+        content_type="guide_blog",
+        main_text="Some text",
+    )
+    assert compute_clean_headline(ctx_title_strip) == "Comprehensive AI Search Engine Optimization Guide"
+
+
+def test_ai_fixes_includes_detected_image():
+    """
+    If detected_image_url is present, Schema.org json-ld has that image instead of placeholder.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = {
+                "json_ld": {},
+                "lead_paragraph": {"suggested": "Optimized lead."}
+            }
+
+            res = client.post("/api/ai/fixes", json={
+                "ai_context": {
+                    "url": "https://example.com/post",
+                    "title": "Post Title",
+                    "detected_image_url": "https://example.com/images/hero.jpg",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "main_text": "Sample text",
+                }
+            })
+            assert res.status_code == 200
+            assert res.json()["json_ld"]["image"] == "https://example.com/images/hero.jpg"
+
+
+@pytest.mark.asyncio
+async def test_ai_plan_endpoint_success_and_validation():
+    """
+    Test /api/ai/plan with numerical validation, stripping invented figures,
+    combined schema, and url stripping.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        mock_plan_return = {
+            "questions_to_answer": [
+                {
+                    "question": "What is the ROI?",
+                    "draft_answer": "According to the article, the conversion rate reached 42 percent https://fake.com/link.",
+                    "answer_source": "page"
+                },
+                {
+                    "question": "What is the hallucinated figure?",
+                    "draft_answer": "Revenue grew by 999 percent in 2029.",
+                    "answer_source": "page"
+                }
+            ],
+            "suggested_h2_structure": [
+                {
+                    "h2": "Direct Strategy Implementation",
+                    "purpose": "Answers user how-to queries",
+                    "status": "new"
+                }
+            ],
+            "suggested_table": {
+                "title": "Performance Metrics",
+                "headers": ["Metric", "Value"],
+                "rows": [
+                    ["Valid Conversion", "42 percent"],
+                    ["Hallucinated Value", "99999 dollars"]
+                ]
+            },
+            "data_opportunities": [
+                {
+                    "suggestion": "Include benchmark for standard latency",
+                    "source_type": "Industry Benchmark"
+                },
+                {
+                    "suggestion": "Invented metric with 888 percent growth",
+                    "source_type": "Bogus"
+                }
+            ],
+            "paragraphs_to_add": [
+                {
+                    "target_issue": "Missing direct answer",
+                    "suggested_text": "Implementing direct answer blocks helps reach the 42 percent threshold https://badlink.com.",
+                    "placement": "Under the first H2"
+                }
+            ]
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = mock_plan_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/guide",
+                    "title": "GEO Guide 2026",
+                    "h1": "GEO Guide 2026",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "main_text": "In this guide we test conversion rate of 42 percent across 100 pages.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+
+            # 1. Questions: only question with 42 percent preserved; question with 999 percent removed
+            assert len(data["questions_to_answer"]) == 1
+            assert data["questions_to_answer"][0]["question"] == "What is the ROI?"
+            assert "https://" not in data["questions_to_answer"][0]["draft_answer"]
+
+            # 2. Table: row with 99999 removed, leaving 1 row (<2 rows), so table defaults to idea
+            assert data["suggested_table"]["rows"] is None
+            assert data["suggested_table"]["table_idea"] is not None
+
+            # 3. Data opps: bogus 888 percent removed
+            assert len(data["data_opportunities"]) == 1
+            assert "standard latency" in data["data_opportunities"][0]["suggestion"]
+
+            # 4. Paragraphs: url stripped, valid
+            assert len(data["paragraphs_to_add"]) == 1
+            assert "https://" not in data["paragraphs_to_add"][0]["suggested_text"]
+
+            # 5. Combined schema check: @graph has Article, FAQPage, Organization
+            graph = data["combined_schema"].get("@graph", [])
+            types = [item.get("@type") for item in graph]
+            assert "Article" in types
+            assert "FAQPage" in types
+            assert "Organization" in types
+
+            # 6. Warnings check
+            assert any("suggestions were removed because they contained figures" in w for w in data["warnings"])
+
+
+def test_links_unwrap_redirect():
+    """
+    Proofpoint v2, v3 and Outlook Safe Links are properly unwrapped.
+    """
+    from src.detectors.links import unwrap_redirect_url
+
+    # Proofpoint v3
+    v3 = "https://urldefense.com/v3/__https://securitize.io/about__;!!xyz!123$"
+    assert unwrap_redirect_url(v3) == "https://securitize.io/about"
+
+    # Proofpoint v2
+    v2 = "https://urldefense.proofpoint.com/v2/url?u=https-3A__example.com_doc&d=123"
+    assert unwrap_redirect_url(v2) == "https://example.com/doc"
+
+    # Outlook safelinks
+    safe = "https://eur01.safelinks.protection.outlook.com/?url=https%3A%2F%2Fpartner.com%2Fnews&data=abc"
+    assert unwrap_redirect_url(safe) == "https://partner.com/news"
+
+    # Normal url unchanged
+    normal = "https://example.com/normal"
+    assert unwrap_redirect_url(normal) == normal
+
+
+@pytest.mark.asyncio
+async def test_aeo_detected_headers_includes_h4_and_scope():
+    """
+    Checks that AEO Structure detector includes h2, h3, h4 in detected_headers up to 25.
+    """
+    from src.detectors.aeo_structure import AEOStructureDetector
+    from src.models.schemas import PageData
+
+    detector = AEOStructureDetector()
+    html = """
+    <html><body>
+    <h2>Main H2 Heading</h2>
+    <p>Some text</p>
+    <h3>Subsection H3</h3>
+    <p>Some text</p>
+    <h4>Detail H4</h4>
+    <p>Some text</p>
+    </body></html>
+    """
+    page_data = PageData(
+        url="https://example.com/headers",
+        final_url="https://example.com/headers",
+        html_raw=html,
+        html_rendered=html,
+        text_content="Some text",
+        status_code=200,
+        load_time_ms=100.0,
+    )
+    res = await detector.analyze(page_data)
+    assert "detected_headers" in res.debug_info
+    assert "Main H2 Heading" in res.debug_info["detected_headers"]
+    assert "Subsection H3" in res.debug_info["detected_headers"]
+    assert "Detail H4" in res.debug_info["detected_headers"]
+

@@ -156,6 +156,11 @@ class AEOStructureDetector(BaseDetector):
                 
             h2_headers = [h for h in all_headers if h['tag'] == 'h2']
             h3_headers = [h for h in all_headers if h['tag'] == 'h3']
+            h4_headers = [h for h in all_headers if h['tag'] == 'h4']
+            
+            # All headers evaluated for Heading Structure (H2, H3, H4)
+            counted_headers = [h for h in all_headers if h['tag'] in ('h2', 'h3', 'h4')]
+            counted_header_texts = [h['text'] for h in counted_headers]
             
             h2_texts = [h['text'] for h in h2_headers]
             h1_text = h1_headers[0]['text'] if h1_headers else ""
@@ -175,7 +180,7 @@ class AEOStructureDetector(BaseDetector):
             # 2. Heading Structure Check
             try:
                 # Use scoped text word count for more accurate ratio
-                structure_result = self._analyze_heading_structure(len(h2_headers), len(h3_headers), scoped_text)
+                structure_result = self._analyze_heading_structure(len(h2_headers), len(h3_headers), scoped_text, len(h4_headers))
                 breakdown.append(structure_result)
             except Exception as e:
                 errors.append(f"Heading structure check failed: {str(e)}")
@@ -209,8 +214,8 @@ class AEOStructureDetector(BaseDetector):
             
             # Try to salvage headers if possible
             try:
-                if not h2_texts and 'all_headers' in locals():
-                     h2_texts = [h['text'] for h in all_headers if h['tag'] == 'h2']
+                if not counted_header_texts and 'all_headers' in locals():
+                     counted_header_texts = [h['text'] for h in all_headers if h['tag'] in ('h2', 'h3', 'h4')]
             except:
                 pass
 
@@ -222,6 +227,7 @@ class AEOStructureDetector(BaseDetector):
             "h1_count": len(h1_headers),
             "h2_count": len(h2_headers),
             "h3_count": len(h3_headers),
+            "h4_count": len(h4_headers),
             "h1_text": h1_text,
             "total_words": len(scoped_text.split()) if scoped_text else 0,
             "connector_count": connector_count
@@ -235,9 +241,9 @@ class AEOStructureDetector(BaseDetector):
             breakdown=breakdown,
             errors=errors,
             debug_info={
-                "detected_headers": h2_texts[:15], # Limit for UI
+                "detected_headers": counted_header_texts[:25],
                 "structure_metrics": structure_metrics,
-                "header_count": len(h2_texts)
+                "header_count": len(counted_header_texts)
             }
         )
     
@@ -349,7 +355,7 @@ class AEOStructureDetector(BaseDetector):
             recommendations=recommendations,
         )
     
-    def _analyze_heading_structure(self, h2_count: int, h3_count: int, text: str) -> ScoreBreakdown:
+    def _analyze_heading_structure(self, h2_count: int, h3_count: int, text: str, h4_count: int = 0) -> ScoreBreakdown:
         """
         Analyze heading structure ratio.
         Per SRS Section 2.1.6: Ratio optimal: 1 H2 each 300-500 words.
@@ -366,7 +372,7 @@ class AEOStructureDetector(BaseDetector):
             )
 
         word_count = len(text.split())
-        total_headings = h2_count + h3_count
+        total_headings = h2_count + h3_count + h4_count
         
         if word_count == 0:
             return ScoreBreakdown(
@@ -418,10 +424,14 @@ class AEOStructureDetector(BaseDetector):
                         f"(currently {words_per_h2:.0f})."
                     )
         
-        # Bonus for having H3s (sub-structure)
-        if h3_count > 0 and raw_score < 100:
+        # Bonus for having H3s / H4s (sub-structure)
+        sub_count = h3_count + h4_count
+        if sub_count > 0 and raw_score < 100:
             raw_score = min(100, raw_score + 10)
-            explanation += f" Bonus: {h3_count} H3s detected."
+            if h4_count > 0:
+                explanation += f" Bonus: {sub_count} sub-headings (H3/H4) detected."
+            else:
+                explanation += f" Bonus: {h3_count} H3s detected."
         
         return ScoreBreakdown(
             name="Heading Structure",

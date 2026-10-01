@@ -6,7 +6,7 @@ Each pipeline stage produces new objects, never mutating existing ones.
 """
 
 from datetime import datetime, timezone
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from pydantic import BaseModel, Field, HttpUrl
 
 
@@ -151,6 +151,7 @@ class AIContext(BaseModel):
     detected_date_modified: Optional[str] = None
     detected_publisher: Optional[str] = None
     publisher_inferred_from_domain: bool = False
+    detected_image_url: Optional[str] = None
     failing_submetrics: list[FailingSubmetric] = Field(default_factory=list)
 
 
@@ -167,6 +168,50 @@ class AIFixesResponse(BaseModel):
 
 
 class AIFixesRequest(BaseModel):
+    ai_context: AIContext
+
+
+class PlanQuestion(BaseModel):
+    question: str
+    draft_answer: str
+    answer_source: Literal["page", "needs_info"]
+
+
+class PlanOutlineItem(BaseModel):
+    h2: str
+    purpose: str
+    status: Literal["existing", "new"]
+
+
+class PlanTable(BaseModel):
+    title: str
+    headers: Optional[list[str]] = None
+    rows: Optional[list[list[str]]] = None
+    table_idea: Optional[str] = None
+
+
+class PlanDataOpportunity(BaseModel):
+    suggestion: str
+    source_type: str
+
+
+class PlanNewParagraph(BaseModel):
+    target_issue: str
+    suggested_text: str
+    placement: str
+
+
+class AIPlanResponse(BaseModel):
+    questions_to_answer: list[PlanQuestion] = Field(default_factory=list)
+    suggested_h2_structure: list[PlanOutlineItem] = Field(default_factory=list)
+    suggested_table: Optional[PlanTable] = None
+    data_opportunities: list[PlanDataOpportunity] = Field(default_factory=list)
+    paragraphs_to_add: list[PlanNewParagraph] = Field(default_factory=list)
+    combined_schema: dict
+    warnings: list[str] = Field(default_factory=list)
+
+
+class AIPlanRequest(BaseModel):
     ai_context: AIContext
 
 
