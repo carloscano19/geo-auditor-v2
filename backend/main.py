@@ -48,11 +48,17 @@ from src.models.schemas import (
     PlanDataOpportunity,
     PlanNewParagraph,
     PlanInconsistency,
+    PlanSourceToCite,
 )
 from src.services.llm_client import (
     LLMClient,
     DailyLimitExceededError,
     LLMClientError,
+)
+from src.services.serp_client import (
+    SerpClient,
+    SerpClientError,
+    get_market_for_language,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError, ChallengePageError
@@ -467,12 +473,14 @@ def strip_urls(text: str) -> str:
 def remove_verification_phrases(text: str) -> str:
     """
     Removes sentences containing editorial verification instructions:
-    'should be verified', 'should be checked', 'verify', 'debería verificarse', 'habría que comprobar'.
+    'should be verified', 'should be checked', 'needs to be verified', 'must be verified',
+    'debería verificarse', 'habría que comprobar'.
+    Leaves standalone 'verify' intact.
     """
     if not text:
         return ""
     pattern = re.compile(
-        r'\b(should be verified|should be checked|verify|debería verificarse|deberia verificarse|habría que comprobar|habria que comprobar)\b',
+        r'\b(should be verified|should be checked|needs to be verified|must be verified|debería verificarse|deberia verificarse|habría que comprobar|habria que comprobar)\b',
         re.IGNORECASE
     )
     # Split into sentences preserving punctuation or delimiters
@@ -494,6 +502,85 @@ def remove_verification_phrases(text: str) -> str:
     return re.sub(r'\s+', ' ', result).strip()
 
 
+def remove_financial_advice_phrases(text: str) -> str:
+    """
+    Removes sentences containing investment advice / call to action:
+    'investors should', 'you should invest', 'consider investing',
+    'los inversores deberían' / 'deberian', 'deberías invertir' / 'deberias invertir'.
+    """
+    if not text:
+        return ""
+    pattern = re.compile(
+        r'\b(investors should|you should invest|consider investing|los inversores deberían|los inversores deberian|deberías invertir|deberias invertir)\b',
+        re.IGNORECASE
+    )
+    raw_sentences = re.split(r'([.!?]+(?:\s+|$))', text)
+    cleaned_chunks: list[str] = []
+    
+    idx = 0
+    while idx < len(raw_sentences):
+        sent = raw_sentences[idx]
+        punct = raw_sentences[idx + 1] if idx + 1 < len(raw_sentences) else ""
+        idx += 2
+        
+        full_sent = sent + punct
+        if not pattern.search(full_sent):
+            cleaned_chunks.append(full_sent)
+            
+    result = "".join(cleaned_chunks)
+    return re.sub(r'\s+', ' ', result).strip()
+
+
+def normalize_for_paa_match(text: str) -> str:
+    """Normalize text for PAA matching by removing punctuation, extra spaces, and lowercasing."""
+    clean = re.sub(r'[^\w\s]', '', text or '').lower()
+    return re.sub(r'\s+', ' ', clean).strip()
+
+
+async def resolve_serp_query(
+    ctx: Any,
+    llm: LLMClient,
+    request_target_query: Optional[str] = None
+) -> str:
+    """
+    Resolve the primary search query for SERP data:
+    1. If user provided Target query, use that.
+    2. Otherwise, make a short LLM call returning {"query": "..."} (2-6 words in page language).
+    3. If LLM call fails, fallback to H1 (or Title) truncated to 8 words.
+    """
+    tq = (request_target_query or getattr(ctx, "target_query", None) or "").strip()
+    if tq:
+        return tq
+
+    lang = getattr(ctx, "language", "en") or "en"
+    lang_name = "Spanish" if lang.startswith("es") else "English"
+    prompt = (
+        f"Given this page title, H1, and content snippet, return the primary search query "
+        f"(2-6 words, in {lang_name}) that a user would type into Google to find this page.\n"
+        f"Page Title: {getattr(ctx, 'title', None) or 'N/A'}\n"
+        f"Page H1: {getattr(ctx, 'h1', None) or 'N/A'}\n"
+        f"Snippet: {getattr(ctx, 'main_text', '')[:1000] if getattr(ctx, 'main_text', '') else 'N/A'}\n\n"
+        f'Return ONLY a valid JSON object: {{"query": "primary search query"}}'
+    )
+    try:
+        res = await llm.call_chat_completion(
+            messages=[
+                {"role": "system", "content": "You are an SEO keyword specialist. Return ONLY a JSON object with the requested key."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.1
+        )
+        if isinstance(res, dict) and res.get("query") and isinstance(res["query"], str):
+            q_clean = res["query"].strip()
+            if q_clean:
+                return q_clean
+    except Exception as e:
+        logger.warning(f"Short LLM query generation failed: {e}")
+
+    fallback_text = (getattr(ctx, "h1", None) or getattr(ctx, "title", None) or "guide").strip()
+    words = fallback_text.split()
+    return " ".join(words[:8])
+
 
 @app.get("/api/version")
 async def get_version():
@@ -501,6 +588,7 @@ async def get_version():
     return {
         "version": settings.app_version,
         "ai_enabled": settings.ai_enabled,
+        "serp_enabled": settings.serp_enabled,
     }
 
 
@@ -627,6 +715,7 @@ Rules:
 - For missing fields (e.g. image, publisher logo), use uppercase placeholder like "REPLACE_WITH_IMAGE_URL".
 - Do NOT invent facts or statistics not present in the text.
 - Language of the suggested paragraph must match the page language ({ctx.language}).
+- In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 """
 
     llm = LLMClient()
@@ -709,6 +798,9 @@ Rules:
     suggested_lead = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
     rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
 
+    if suggested_lead:
+        suggested_lead = remove_financial_advice_phrases(suggested_lead)
+
     if suggested_lead and not all_numbers_in_page(suggested_lead, page_norm):
         suggested_lead = original_lead
         rationale_lead = "The original lead paragraph was kept because the suggested lead contained unverified figures."
@@ -742,7 +834,7 @@ async def generate_ai_plan(request: AIPlanRequest):
     """
     Generate complete AI improvement plan for the audited page.
     Includes questions to answer, suggested H2 structure, suggested table,
-    enriching data opportunities, actionable new paragraphs, and combined Schema.org.
+    enriching data opportunities, actionable new paragraphs, sources to cite, and combined Schema.org.
     """
     current_settings = get_settings()
     if not current_settings.ai_enabled:
@@ -751,7 +843,7 @@ async def generate_ai_plan(request: AIPlanRequest):
     ctx = request.ai_context
 
     # 1. Check in-memory 24h cache
-    cache_key_raw = f"plan::{ctx.url or ''}::{ctx.main_text or ''}"
+    cache_key_raw = f"plan::{ctx.url or ''}::{ctx.main_text or ''}::{request.target_query or ctx.target_query or ''}::{current_settings.serp_enabled}"
     cache_key = hashlib.sha256(cache_key_raw.encode("utf-8")).hexdigest()
     now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -762,7 +854,72 @@ async def generate_ai_plan(request: AIPlanRequest):
         else:
             ai_plan_cache.pop(cache_key, None)
 
-    # 2. Build system and user prompt
+    llm = LLMClient()
+
+    # 2. SERP Data via DataForSEO (if serp_enabled)
+    serp_query: Optional[str] = None
+    serp_market: Optional[str] = None
+    serp_used = False
+    serp_data: Optional[dict] = None
+    candidate_sources: list[dict] = []
+    warnings: list[str] = []
+
+    if current_settings.serp_enabled:
+        try:
+            serp_query = await resolve_serp_query(ctx, llm, request.target_query)
+            _, _, default_market = get_market_for_language(ctx.language or "en")
+            serp_market = default_market
+            serp_client = SerpClient()
+            serp_data = await serp_client.fetch_serp_live(
+                query=serp_query,
+                language=ctx.language or "en",
+                audited_url=ctx.url or "",
+            )
+            serp_used = True
+            serp_market = serp_data.get("market") or default_market
+
+            # Build candidate sources (max 8, AI Overview first, then Organic top 10, no duplicate domains)
+            seen_domains = set()
+            for src in serp_data.get("ai_overview_sources", []):
+                dom = (src.get("domain") or "").lower().strip()
+                if dom and dom not in seen_domains:
+                    seen_domains.add(dom)
+                    candidate_sources.append({
+                        "url": src["url"],
+                        "title": src.get("title") or dom,
+                        "domain": dom,
+                        "found_in": "AI Overview",
+                    })
+                if len(candidate_sources) >= 8:
+                    break
+
+            if len(candidate_sources) < 8:
+                for src in serp_data.get("organic", []):
+                    dom = (src.get("domain") or "").lower().strip()
+                    if dom and dom not in seen_domains:
+                        seen_domains.add(dom)
+                        candidate_sources.append({
+                            "url": src["url"],
+                            "title": src.get("title") or dom,
+                            "domain": dom,
+                            "found_in": "Organic top 10",
+                        })
+                    if len(candidate_sources) >= 8:
+                        break
+        except SerpClientError as e:
+            logger.warning(f"DataForSEO error: {e}")
+            serp_used = False
+            serp_data = None
+            _, _, serp_market = get_market_for_language(ctx.language or "en")
+            warnings.append("Google data unavailable for this plan; questions and sources are AI-suggested only.")
+        except Exception as e:
+            logger.warning(f"Unexpected DataForSEO error: {e}")
+            serp_used = False
+            serp_data = None
+            _, _, serp_market = get_market_for_language(ctx.language or "en")
+            warnings.append("Google data unavailable for this plan; questions and sources are AI-suggested only.")
+
+    # 3. Build system and user prompt
     lang = ctx.language or "es"
     lang_instruction = "Spanish (Español)" if lang == "es" else "English"
 
@@ -784,8 +941,36 @@ async def generate_ai_plan(request: AIPlanRequest):
         "1. NEVER invent any statistics, figures, percentages, dates, names, or URLs.\n"
         "2. Any suggested text or draft answer containing numbers MUST ONLY use figures already explicitly present in the provided page text.\n"
         "3. If suggesting new data opportunities, describe the metric and the type of source to consult (e.g. 'official statistics', 'annual report'), but DO NOT make up URLs or numbers.\n"
-        "4. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text."
+        "4. In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.\n"
+        "5. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text."
     )
+
+    google_context_text = ""
+    if serp_used and serp_data:
+        paa_items = serp_data.get("people_also_ask", [])
+        rel_items = serp_data.get("related_searches", [])
+        parts = []
+        if paa_items:
+            paa_lines = "\n".join([f"- {p['question']}" for p in paa_items])
+            parts.append(f"Google 'People Also Ask' Questions for '{serp_query}':\n{paa_lines}\n* INSTRUCTION: Prioritize these real questions in your 'questions_to_answer'. Formulate matching questions closely.")
+        if rel_items:
+            rel_lines = "\n".join([f"- {r}" for r in rel_items])
+            parts.append(f"Google 'Related Searches' for '{serp_query}':\n{rel_lines}\n* INSTRUCTION: Use these related searches as inspiration for the 'suggested_h2_structure'.")
+        if candidate_sources:
+            src_lines = "\n".join([f"{i}. [{s['found_in']}] Domain: {s['domain']}, Title: {s['title']}" for i, s in enumerate(candidate_sources, start=1)])
+            parts.append(f"Candidate Sources Found on Google for '{serp_query}':\n{src_lines}\n* INSTRUCTION: For each candidate source (1 to {len(candidate_sources)}), return in 'sources_why' a concise 'why' sentence in {lang_instruction} explaining why or how this audited page should cite/link to it. Do NOT return any URLs.")
+        if parts:
+            google_context_text = "\n\nReal Google Search Data (from DataForSEO):\n" + "\n\n".join(parts) + "\n"
+
+    sources_why_schema = ""
+    if candidate_sources:
+        sources_why_schema = """,
+  "sources_why": [
+    {{
+      "index": 1,
+      "why": "Concise sentence explaining why this page should reference or cite this source"
+    }}
+  ]"""
 
     user_prompt = f"""Generate an improvement plan for the following web page to optimize its citability in AI engines (ChatGPT, Perplexity, Gemini).
 
@@ -804,7 +989,7 @@ Failing Submetrics:
 {failing_info or 'None'}
 
 Main Text Snippet (First 8000 chars):
-\"\"\"{ctx.main_text}\"\"\"
+\"\"\"{ctx.main_text}\"\"\"{google_context_text}
 
 Generate a JSON object with EXACTLY this structure:
 {{
@@ -849,20 +1034,20 @@ Generate a JSON object with EXACTLY this structure:
       "values": ["Exact value/phrase 1 from page", "Exact value/phrase 2 from page"],
       "suggestion": "How to reconcile or unify them consistently"
     }}
-  ]
+  ]{sources_why_schema}
 }}
 
 Requirements:
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions.
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided.
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
 - data_opportunities: 2 to 5 suggestions of data points that would strengthen the article's authority. Any editorial advice or verification suggestions MUST go here, not in paragraphs_to_add.
 - paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
 - inconsistencies: 0 to 3 internal contradictions found on the page (different figures, dates, or names for the same thing). The conflicting values MUST appear literally in the page text snippet. If none are found, return an empty array [].
+- In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Language: Strictly {lang_instruction}.
 """
 
-    llm = LLMClient()
     try:
         raw_result = await llm.call_chat_completion(
             messages=[
@@ -883,12 +1068,12 @@ Requirements:
     if not isinstance(raw_result, dict):
         raw_result = {}
 
-    # 3. Ground truth normalization & validation
+    # 4. Ground truth normalization & validation
     page_norm = normalize_text_for_numbers(ctx.main_text or "")
     raw_page_text = ctx.main_text or ""
     total_removed_count = 0
 
-    # 3.1 Questions to answer validation (Max 6)
+    # 4.1 Questions to answer validation (Max 6)
     questions_raw = raw_result.get("questions_to_answer", [])
     valid_questions: list[dict] = []
     if isinstance(questions_raw, list):
@@ -896,6 +1081,8 @@ Requirements:
             if not isinstance(q, dict) or not q.get("question"):
                 continue
             draft_ans = strip_urls(str(q.get("draft_answer") or ""))
+            draft_ans = remove_financial_advice_phrases(draft_ans)
+
             # Length validation: max 60 words
             words = draft_ans.split()
             if len(words) > 60:
@@ -910,15 +1097,28 @@ Requirements:
                 total_removed_count += 1
                 continue
             
+            # Origin & Google PAA exact text matching
+            origin = "ai"
+            q_text = strip_urls(str(q.get("question") or "")).strip()
+            if serp_used and serp_data and serp_data.get("people_also_ask"):
+                norm_q = normalize_for_paa_match(q_text)
+                for paa in serp_data["people_also_ask"]:
+                    paa_orig = (paa.get("question") or "").strip()
+                    if paa_orig and normalize_for_paa_match(paa_orig) == norm_q:
+                        origin = "google_paa"
+                        q_text = paa_orig  # Use exact Google text
+                        break
+
             valid_questions.append({
-                "question": strip_urls(str(q.get("question") or "")).strip(),
+                "question": q_text,
                 "draft_answer": draft_ans.strip(),
                 "answer_source": src,
+                "origin": origin,
             })
             if len(valid_questions) >= 6:
                 break
 
-    # 3.2 Suggested H2 structure (Max 7)
+    # 4.2 Suggested H2 structure (Max 7)
     h2_raw = raw_result.get("suggested_h2_structure", [])
     valid_h2: list[dict] = []
     if isinstance(h2_raw, list):
@@ -936,7 +1136,7 @@ Requirements:
             if len(valid_h2) >= 7:
                 break
 
-    # 3.3 Suggested table
+    # 4.3 Suggested table
     table_raw = raw_result.get("suggested_table")
     valid_table: Optional[dict] = None
     if isinstance(table_raw, dict):
@@ -964,7 +1164,6 @@ Requirements:
                 valid_headers = clean_headers
                 valid_rows = filtered_rows
             else:
-                # If filtered rows are fewer than 2, discard rows/headers and rely on idea
                 valid_headers = None
                 valid_rows = None
                 if not table_idea:
@@ -978,7 +1177,7 @@ Requirements:
                 "table_idea": table_idea,
             }
 
-    # 3.4 Data opportunities (Max 5)
+    # 4.4 Data opportunities (Max 5)
     data_raw = raw_result.get("data_opportunities", [])
     valid_data_opps: list[dict] = []
     if isinstance(data_raw, list):
@@ -997,7 +1196,7 @@ Requirements:
             if len(valid_data_opps) >= 5:
                 break
 
-    # 3.5 Paragraphs to add (Max 3, publishable text without verification phrases)
+    # 4.5 Paragraphs to add (Max 3, publishable text without verification phrases or financial advice)
     paras_raw = raw_result.get("paragraphs_to_add", [])
     valid_paras: list[dict] = []
     if isinstance(paras_raw, list):
@@ -1005,8 +1204,9 @@ Requirements:
             if not isinstance(p, dict) or not p.get("suggested_text"):
                 continue
             stext = strip_urls(str(p.get("suggested_text") or "")).strip()
-            # Clean editorial verification sentences
+            # Clean editorial verification sentences and financial advice
             stext = remove_verification_phrases(stext)
+            stext = remove_financial_advice_phrases(stext)
             if not stext:
                 continue
 
@@ -1027,7 +1227,7 @@ Requirements:
             if len(valid_paras) >= 3:
                 break
 
-    # 3.6 Inconsistencies (Max 3, values must appear literally in page text)
+    # 4.6 Inconsistencies (Max 3, values must appear literally in page text)
     incons_raw = raw_result.get("inconsistencies", [])
     valid_incons: list[dict] = []
     if isinstance(incons_raw, list):
@@ -1038,7 +1238,6 @@ Requirements:
             if not isinstance(vals, list) or len(vals) < 2:
                 continue
             
-            # Each value must appear literally (case-insensitive substring) in raw_page_text
             all_vals_found = True
             clean_vals = []
             for v in vals:
@@ -1062,12 +1261,46 @@ Requirements:
             if len(valid_incons) >= 3:
                 break
 
-    # 4. Build combined schema
+    # 4.7 Sources to cite (Max 8, built by backend from Google data, why from LLM)
+    final_sources_to_cite: list[dict] = []
+    if candidate_sources:
+        raw_why = raw_result.get("sources_why") or raw_result.get("sources_to_cite_reasons") or raw_result.get("sources_to_cite") or []
+        why_by_index: dict[int, str] = {}
+        why_by_domain: dict[str, str] = {}
+        if isinstance(raw_why, list):
+            for item in raw_why:
+                if isinstance(item, dict):
+                    w = str(item.get("why") or "").strip()
+                    w = remove_financial_advice_phrases(w)
+                    if "index" in item:
+                        try:
+                            why_by_index[int(item["index"])] = w
+                        except Exception:
+                            pass
+                    if "domain" in item and isinstance(item["domain"], str):
+                        why_by_domain[item["domain"].lower().strip().replace("www.", "")] = w
+        
+        for idx, cand in enumerate(candidate_sources, start=1):
+            why_str = why_by_index.get(idx) or why_by_domain.get(cand["domain"]) or ""
+            if not why_str:
+                if lang.startswith("es"):
+                    why_str = "Fuente de referencia relevante para contrastar información sobre este tema."
+                else:
+                    why_str = "Authoritative reference for relevant industry benchmarks and context."
+            final_sources_to_cite.append({
+                "url": cand["url"],
+                "title": cand["title"],
+                "domain": cand["domain"],
+                "found_in": cand["found_in"],
+                "why": why_str,
+            })
+
+    # 5. Build combined schema
     article_schema, article_warnings = build_article_schema(ctx, expected_type, {})
     combined_schema = build_combined_schema(ctx, article_schema, valid_questions)
 
-    # 5. Warnings
-    all_warnings = list(article_warnings)
+    # 6. Warnings
+    all_warnings = warnings + list(article_warnings)
     if total_removed_count > 0:
         all_warnings.append(
             f"{total_removed_count} suggestions were removed because they contained figures not found on the page."
@@ -1080,11 +1313,15 @@ Requirements:
         "data_opportunities": valid_data_opps,
         "paragraphs_to_add": valid_paras,
         "inconsistencies": valid_incons,
+        "sources_to_cite": final_sources_to_cite,
         "combined_schema": combined_schema,
         "warnings": all_warnings,
+        "serp_query": serp_query if (serp_used or serp_query) else None,
+        "serp_market": serp_market,
+        "serp_used": serp_used,
     }
 
-    # 6. Store in cache
+    # 7. Store in cache
     put_ai_plan_cache(cache_key, response_data, now_ts + 86400)
 
     return AIPlanResponse(**response_data)

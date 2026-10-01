@@ -576,3 +576,35 @@ def is_press_release_dateline(text: str) -> bool:
 
     return False
 
+
+# Editorial verification instructions to filter from AI-generated paragraphs
+VERIFICATION_EDITORIAL_PHRASES: Dict[str, List[str]] = {
+    "en": [
+        "should be verified",
+        "should be checked",
+        "needs to be verified",
+        "must be verified",
+    ],
+    "es": [
+        "debería verificarse",
+        "deberia verificarse",
+        "habría que comprobar",
+        "habria que comprobar",
+    ],
+}
+
+# Financial/investment advice phrases prohibited in AI-generated answers and paragraphs
+FINANCIAL_ADVICE_PHRASES: Dict[str, List[str]] = {
+    "en": [
+        "investors should",
+        "you should invest",
+        "consider investing",
+    ],
+    "es": [
+        "los inversores deberían",
+        "los inversores deberian",
+        "deberías invertir",
+        "deberias invertir",
+    ],
+}
+

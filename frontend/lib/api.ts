@@ -60,6 +60,7 @@ export interface AIContext {
     detected_publisher?: string;
     publisher_inferred_from_domain?: boolean;
     detected_image_url?: string;
+    target_query?: string;
     failing_submetrics: FailingSubmetric[];
 }
 
@@ -79,6 +80,7 @@ export interface PlanQuestion {
     question: string;
     draft_answer: string;
     answer_source: 'page' | 'needs_info';
+    origin?: 'google_paa' | 'ai';
 }
 
 export interface PlanOutlineItem {
@@ -111,6 +113,14 @@ export interface PlanInconsistency {
     suggestion: string;
 }
 
+export interface PlanSourceToCite {
+    url: string;
+    title: string;
+    domain: string;
+    found_in: 'AI Overview' | 'Organic top 10';
+    why: string;
+}
+
 export interface AIPlanResponse {
     questions_to_answer: PlanQuestion[];
     suggested_h2_structure: PlanOutlineItem[];
@@ -118,8 +128,12 @@ export interface AIPlanResponse {
     data_opportunities: PlanDataOpportunity[];
     paragraphs_to_add: PlanNewParagraph[];
     inconsistencies: PlanInconsistency[];
+    sources_to_cite?: PlanSourceToCite[];
     combined_schema: Record<string, unknown>;
     warnings: string[];
+    serp_query?: string | null;
+    serp_market?: string | null;
+    serp_used?: boolean;
 }
 
 export interface AuditResponse {
@@ -312,7 +326,7 @@ class ApiClient {
     /**
      * Get backend version (single source of truth)
      */
-    async getVersion(): Promise<{ version: string; ai_enabled?: boolean }> {
+    async getVersion(): Promise<{ version: string; ai_enabled?: boolean; serp_enabled?: boolean }> {
         const response = await fetch(`${this.baseUrl}/api/version`);
         if (!response.ok) {
             throw new Error('Failed to fetch version');

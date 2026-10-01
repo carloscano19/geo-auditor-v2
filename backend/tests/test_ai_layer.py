@@ -1,5 +1,6 @@
 import pytest
 import hashlib
+import asyncio
 from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 
@@ -1352,4 +1353,472 @@ def test_ai_plan_inconsistency_discarded_when_value_not_in_page():
             assert res.status_code == 200
             data = res.json()
             assert len(data["inconsistencies"]) == 0
+
+
+def test_serp_settings_property_and_version_endpoint():
+    """
+    Test 1: serp_enabled property logic, repr safety, and /api/version output.
+    """
+    # Case A: no credentials
+    s1 = Settings(llm_base_url="https://api.openai.com/v1", llm_model="gpt-4o", llm_api_key="sk-test")
+    assert s1.ai_enabled is True
+    assert s1.serp_enabled is False
+
+    # Case B: credentials but no AI
+    s2 = Settings(dataforseo_login="login1", dataforseo_password="pw1")
+    assert s2.ai_enabled is False
+    assert s2.serp_enabled is False
+
+    # Case C: both AI and SERP configured
+    s3 = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="supersecretpassword",
+    )
+    assert s3.ai_enabled is True
+    assert s3.serp_enabled is True
+    assert "supersecretpassword" not in repr(s3)
+
+    # Version endpoint check
+    with patch("main.settings", s3):
+        res = client.get("/api/version")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["ai_enabled"] is True
+        assert data["serp_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_serp_client_parse_exclusions_and_cache():
+    """
+    Test 2: DataForSEO item parsing, domain & social network exclusions, and 24h cache.
+    """
+    from src.services.serp_client import SerpClient, put_serp_cache_entry, serp_cache
+
+    # Clear cache before test
+    serp_cache.clear()
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+
+    raw_items = [
+        {
+            "type": "people_also_ask",
+            "items": [
+                {"title": "Question 1?", "url": "https://www.example.com/faq", "domain": "example.com"},
+                {"title": "Question 2?", "url": "https://twitter.com/status/123", "domain": "twitter.com"},
+                {"title": "Question 3?", "url": "https://authority.org/answer", "domain": "authority.org"},
+            ],
+        },
+        {
+            "type": "ai_overview",
+            "references": [
+                {"title": "Internal Ref", "url": "https://example.com/about", "domain": "example.com"},
+                {"title": "Social Ref", "url": "https://linkedin.com/in/carlos", "domain": "linkedin.com"},
+                {"title": "AI Ref 1", "url": "https://nature.com/articles/123", "domain": "nature.com"},
+            ],
+        },
+        {
+            "type": "organic",
+            "title": "Own Site",
+            "url": "https://example.com/blog",
+            "domain": "example.com",
+        },
+        {
+            "type": "organic",
+            "title": "Facebook Result",
+            "url": "https://facebook.com/page",
+            "domain": "facebook.com",
+        },
+    ]
+    # Add 12 organic results to verify max 10 organic
+    for i in range(1, 13):
+        raw_items.append({
+            "type": "organic",
+            "title": f"Organic Title {i}",
+            "url": f"https://source{i}.org/page",
+            "domain": f"source{i}.org",
+        })
+
+    raw_items.append({
+        "type": "related_searches",
+        "items": ["related search term 1", "related search term 2"],
+    })
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login123",
+        dataforseo_password="password123",
+    )
+    client_serp = SerpClient(mock_settings)
+    parsed = client_serp._parse_items(raw_items, audited_url="https://www.example.com/post", query="test query", market_display="US/en")
+
+    # Verify People Also Ask exclusions
+    assert len(parsed["people_also_ask"]) == 3
+    # Question 1 had example.com -> url and domain stripped
+    assert parsed["people_also_ask"][0]["question"] == "Question 1?"
+    assert parsed["people_also_ask"][0]["url"] is None
+    # Question 2 had twitter.com -> url and domain stripped
+    assert parsed["people_also_ask"][1]["question"] == "Question 2?"
+    assert parsed["people_also_ask"][1]["url"] is None
+    # Question 3 had authority.org -> kept
+    assert parsed["people_also_ask"][2]["question"] == "Question 3?"
+    assert parsed["people_also_ask"][2]["domain"] == "authority.org"
+
+    # Verify AI Overview exclusions
+    assert len(parsed["ai_overview_sources"]) == 1
+    assert parsed["ai_overview_sources"][0]["domain"] == "nature.com"
+
+    # Verify Organic top 10 and exclusions
+    assert len(parsed["organic"]) == 10
+    assert not any("example.com" in o["domain"] for o in parsed["organic"])
+    assert not any("facebook.com" in o["domain"] for o in parsed["organic"])
+    assert parsed["organic"][0]["domain"] == "source1.org"
+
+    # Verify Related Searches
+    assert parsed["related_searches"] == ["related search term 1", "related search term 2"]
+
+    # Verify Caching in fetch_serp_live
+    mock_response = {
+        "tasks": [
+            {
+                "status_code": 20000,
+                "result": [{"items": raw_items}],
+            }
+        ]
+    }
+
+    with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+        mock_post.return_value = MagicMock(status_code=200, json=lambda: mock_response, raise_for_status=lambda: None)
+
+        # First call: hits httpx
+        res1 = await client_serp.fetch_serp_live("test cache query", language="en", audited_url="https://example.com")
+        assert mock_post.call_count == 1
+        assert len(res1["ai_overview_sources"]) == 1
+
+        # Second call: uses cache
+        res2 = await client_serp.fetch_serp_live("test cache query", language="en", audited_url="https://example.com")
+        assert mock_post.call_count == 1  # No additional HTTP call
+        assert res1 == res2
+
+
+@pytest.mark.asyncio
+async def test_serp_query_resolution_target_query_llm_and_fallback():
+    """
+    Test 3: Query resolution priority: Target query > short LLM call > H1 trimmed to 8 words.
+    """
+    from src.models.schemas import AIContext
+    from main import resolve_serp_query
+    from src.services.llm_client import LLMClient
+
+    mock_llm = MagicMock(spec=LLMClient)
+
+    # Case A: Target query provided
+    ctx_a = AIContext(
+        url="https://example.com",
+        title="Page Title",
+        h1="Article Main Heading Long Long Long",
+        main_text="Some text",
+        target_query="explicit target keyword",
+    )
+    res_a = await resolve_serp_query(ctx_a, mock_llm)
+    assert res_a == "explicit target keyword"
+
+    # Case B: No target query, LLM call succeeds
+    ctx_b = AIContext(
+        url="https://example.com",
+        title="Page Title",
+        h1="Article Main Heading",
+        main_text="Some text about bitcoin mining hardware.",
+    )
+    mock_llm.call_chat_completion = AsyncMock(return_value={"query": "best bitcoin miners 2026"})
+    res_b = await resolve_serp_query(ctx_b, mock_llm)
+    assert res_b == "best bitcoin miners 2026"
+
+    # Case C: No target query, LLM call fails -> fallback to H1 trimmed to 8 words
+    mock_llm.call_chat_completion = AsyncMock(side_effect=Exception("LLM timeout"))
+    ctx_c = AIContext(
+        url="https://example.com",
+        title="Page Title",
+        h1="One Two Three Four Five Six Seven Eight Nine Ten Eleven Twelve",
+        main_text="Some text",
+    )
+    res_c = await resolve_serp_query(ctx_c, mock_llm)
+    assert res_c == "One Two Three Four Five Six Seven Eight"
+
+
+def test_ai_plan_serp_paa_sources_and_url_integrity():
+    """
+    Test 4: Questions matching PAA get origin='google_paa' and exact Google question text.
+    sources_to_cite has at most 8 sources, no duplicate domains, AI Overview first,
+    and URLs come solely from DataForSEO even if LLM returns different URLs.
+    """
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+
+    mock_serp_data = {
+        "query": "seo audit guide",
+        "market": "US/en",
+        "people_also_ask": [
+            {"question": "How do you audit website SEO?", "url": "https://authority.org/guide", "domain": "authority.org"},
+        ],
+        "ai_overview_sources": [
+            {"url": "https://ai-ref.com/page", "title": "AI Ref Title", "domain": "ai-ref.com"},
+        ],
+        "organic": [
+            {"url": "https://ai-ref.com/duplicate", "title": "Dup Domain", "domain": "ai-ref.com"},
+            {"url": "https://organic-top.org/overview", "title": "Organic Top", "domain": "organic-top.org"},
+        ],
+        "related_searches": ["seo checklist"],
+    }
+
+    mock_llm_return = {
+        "questions_to_answer": [
+            {
+                # PAA match (different casing and punctuation)
+                "question": "how do you audit website seo",
+                "draft_answer": "You analyze crawlability, content, and backlinks.",
+                "answer_source": "page",
+            },
+            {
+                "question": "Is this tool free?",
+                "draft_answer": "Yes, a free trial is available.",
+                "answer_source": "needs_info",
+            },
+        ],
+        "suggested_h2_structure": [
+            {"h2": "SEO Audit Checklist", "purpose": "Actionable steps", "status": "new"}
+        ],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+        "sources_why": [
+            {"index": 1, "why": "Comprehensive overview of AI citability factors.", "url": "https://hacker-fake.com/bad"},
+            {"domain": "organic-top.org", "why": "Benchmark standards for technical architecture."},
+        ],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.SerpClient.fetch_serp_live", new_callable=AsyncMock) as mock_serp, \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_serp.return_value = mock_serp_data
+        # First call is resolve_serp_query, second is main plan
+        mock_llm.side_effect = [
+            {"query": "seo audit guide"},
+            mock_llm_return,
+        ]
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://mysite.com/article",
+                "title": "Complete SEO Audit Guide",
+                "h1": "SEO Audit Guide",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "You analyze crawlability, content, and backlinks.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+
+        assert data["serp_used"] is True
+        assert data["serp_query"] == "seo audit guide"
+        assert data["serp_market"] == "US/en"
+
+        # Check questions matching
+        q1 = data["questions_to_answer"][0]
+        assert q1["origin"] == "google_paa"
+        # Must use exact Google question text with original casing/punctuation
+        assert q1["question"] == "How do you audit website SEO?"
+
+        q2 = data["questions_to_answer"][1]
+        assert q2["origin"] == "ai"
+        assert q2["question"] == "Is this tool free?"
+
+        # Check sources to cite
+        sources = data["sources_to_cite"]
+        assert len(sources) == 2
+        # First is AI Overview
+        assert sources[0]["domain"] == "ai-ref.com"
+        assert sources[0]["found_in"] == "AI Overview"
+        assert sources[0]["url"] == "https://ai-ref.com/page"  # DataForSEO URL preserved, fake LLM URL ignored
+        assert sources[0]["why"] == "Comprehensive overview of AI citability factors."
+
+        # Second is organic
+        assert sources[1]["domain"] == "organic-top.org"
+        assert sources[1]["found_in"] == "Organic top 10"
+        assert sources[1]["url"] == "https://organic-top.org/overview"
+        assert sources[1]["why"] == "Benchmark standards for technical architecture."
+
+
+def test_ai_plan_dataforseo_failure_graceful_fallback():
+    """
+    Test 5: If DataForSEO fails, plan is still generated, serp_used=False, warning added.
+    """
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.SerpClient.fetch_serp_live", side_effect=Exception("DataForSEO 500 error")), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.side_effect = [
+            {"query": "fallback search query"},
+            {
+                "questions_to_answer": [
+                    {"question": "How to start?", "draft_answer": "Read chapter 1.", "answer_source": "page"}
+                ],
+                "suggested_h2_structure": [],
+                "data_opportunities": [],
+                "paragraphs_to_add": [],
+                "inconsistencies": [],
+            }
+        ]
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://mysite.com/article",
+                "title": "Title",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Read chapter 1.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["serp_used"] is False
+        assert any("Google data unavailable for this plan; questions and sources are AI-suggested only." in w for w in data["warnings"])
+        assert data["questions_to_answer"][0]["origin"] == "ai"
+        assert data["sources_to_cite"] == []
+
+
+def test_verification_preserves_verify_and_filters_financial_advice():
+    """
+    Test 6:
+    - remove_verification_phrases preserves 'Investors must verify their identity before investing.'
+    - remove_financial_advice_phrases strips prohibited sentences.
+    """
+    from main import remove_verification_phrases, remove_financial_advice_phrases
+
+    # Verification: 'verify' standalone preserved, editorial phrases removed
+    text_verify = "Investors must verify their identity before investing. This should be verified by the admin. Please proceed."
+    cleaned_v = remove_verification_phrases(text_verify)
+    assert "Investors must verify their identity before investing." in cleaned_v
+    assert "Please proceed." in cleaned_v
+    assert "should be verified" not in cleaned_v
+
+    # Financial advice removal: English
+    text_fin_en = "The fund was founded in 2020. Investors should allocate 20% to bonds. It holds AAA assets."
+    cleaned_fin_en = remove_financial_advice_phrases(text_fin_en)
+    assert "The fund was founded in 2020." in cleaned_fin_en
+    assert "It holds AAA assets." in cleaned_fin_en
+    assert "Investors should allocate" not in cleaned_fin_en
+
+    # Financial advice removal: Spanish
+    text_fin_es = "La empresa reportó beneficios en 2024. Los inversores deberían comprar participaciones ahora. La sede está en Madrid."
+    cleaned_fin_es = remove_financial_advice_phrases(text_fin_es)
+    assert "La empresa reportó beneficios en 2024." in cleaned_fin_es
+    assert "La sede está en Madrid." in cleaned_fin_es
+    assert "Los inversores deberían comprar" not in cleaned_fin_es
+
+
+@pytest.mark.asyncio
+async def test_audit_scores_identical_with_and_without_serp():
+    """
+    Test 7: The audit citability score and all dimension breakdowns are strictly identical
+    regardless of whether AI and DataForSEO are enabled or disabled.
+    """
+    html_content = """
+    <!DOCTYPE html>
+    <html lang="en">
+    <head>
+        <title>Auditing AI Citability Guide</title>
+        <meta name="description" content="A comprehensive guide to understanding AI citability." />
+    </head>
+    <body>
+        <article>
+            <h1>Auditing AI Citability Guide</h1>
+            <p>Artificial intelligence systems cite web pages when content is structured, authoritative, and verified with clear citations and direct data.</p>
+            <h2>How AI Search Engines Work</h2>
+            <p>Large language models ingest high quality articles to deliver answers to user queries directly in generated summaries.</p>
+        </article>
+    </body>
+    </html>
+    """
+
+    # 1. Audit with AI & SERP disabled
+    s_disabled = Settings(llm_base_url="", llm_model="", llm_api_key="", dataforseo_login="", dataforseo_password="")
+    with patch("src.services.audit_service.get_settings", return_value=s_disabled):
+        res_disabled = await client_audit_helper(html_content)
+
+    # 2. Audit with AI & SERP enabled
+    s_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+    with patch("src.services.audit_service.get_settings", return_value=s_enabled):
+        res_enabled = await client_audit_helper(html_content)
+
+    assert res_disabled.total_score == res_enabled.total_score
+    assert len(res_disabled.dimensions) == len(res_enabled.dimensions)
+    for d1, d2 in zip(res_disabled.dimensions, res_enabled.dimensions):
+        assert d1.name == d2.name
+        assert d1.score == d2.score
+        assert d1.weight == d2.weight
+        assert d1.contribution == d2.contribution
+
+
+async def client_audit_helper(html: str):
+    from src.models.schemas import AuditRequest, PageData
+    from src.services.audit_service import run_single_audit
+
+    page_data = PageData(
+        url="https://example.com/ai-citability",
+        final_url="https://example.com/ai-citability",
+        html_raw=html,
+        html_rendered=html,
+        text_content="Auditing AI Citability Guide Artificial intelligence systems cite web pages when content is structured.",
+        status_code=200,
+        load_time_ms=50.0,
+    )
+    mock_scraper = MagicMock()
+    mock_scraper.scrape = AsyncMock(return_value=page_data)
+    semaphore = asyncio.Semaphore(1)
+
+    return await run_single_audit(
+        request=AuditRequest(url="https://example.com/ai-citability"),
+        scraper=mock_scraper,
+        scrape_semaphore=semaphore,
+        fetch_robots_fn=AsyncMock(return_value=("User-agent: *\nAllow: /", 200)),
+        measure_ttfb_fn=AsyncMock(return_value=(100.0, [100.0])),
+    )
 

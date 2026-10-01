@@ -152,6 +152,7 @@ class AIContext(BaseModel):
     detected_publisher: Optional[str] = None
     publisher_inferred_from_domain: bool = False
     detected_image_url: Optional[str] = None
+    target_query: Optional[str] = None
     failing_submetrics: list[FailingSubmetric] = Field(default_factory=list)
 
 
@@ -175,6 +176,7 @@ class PlanQuestion(BaseModel):
     question: str
     draft_answer: str
     answer_source: Literal["page", "needs_info"]
+    origin: Literal["google_paa", "ai"] = "ai"
 
 
 class PlanOutlineItem(BaseModel):
@@ -207,6 +209,14 @@ class PlanInconsistency(BaseModel):
     suggestion: str
 
 
+class PlanSourceToCite(BaseModel):
+    url: str
+    title: str
+    domain: str
+    found_in: Literal["AI Overview", "Organic top 10"]
+    why: str = ""
+
+
 class AIPlanResponse(BaseModel):
     questions_to_answer: list[PlanQuestion] = Field(default_factory=list)
     suggested_h2_structure: list[PlanOutlineItem] = Field(default_factory=list)
@@ -214,12 +224,17 @@ class AIPlanResponse(BaseModel):
     data_opportunities: list[PlanDataOpportunity] = Field(default_factory=list)
     paragraphs_to_add: list[PlanNewParagraph] = Field(default_factory=list)
     inconsistencies: list[PlanInconsistency] = Field(default_factory=list)
+    sources_to_cite: list[PlanSourceToCite] = Field(default_factory=list)
     combined_schema: dict
     warnings: list[str] = Field(default_factory=list)
+    serp_query: Optional[str] = None
+    serp_market: Optional[str] = None
+    serp_used: bool = False
 
 
 class AIPlanRequest(BaseModel):
     ai_context: AIContext
+    target_query: Optional[str] = None
 
 
 class AuditResponse(BaseModel):

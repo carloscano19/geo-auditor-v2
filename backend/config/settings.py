@@ -48,6 +48,10 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 45.0
     llm_daily_limit: int = 200
 
+    # DataForSEO / SERP Configuration
+    dataforseo_login: str = ""
+    dataforseo_password: str = Field(default="", repr=False)
+
     @property
     def ai_enabled(self) -> bool:
         """True only if llm_base_url, llm_model, and llm_api_key are all non-empty."""
@@ -55,6 +59,15 @@ class Settings(BaseSettings):
             self.llm_base_url and self.llm_base_url.strip() and
             self.llm_model and self.llm_model.strip() and
             self.llm_api_key and self.llm_api_key.strip()
+        )
+
+    @property
+    def serp_enabled(self) -> bool:
+        """True only if dataforseo_login and dataforseo_password have values AND ai_enabled is True."""
+        return bool(
+            self.ai_enabled and
+            self.dataforseo_login and self.dataforseo_login.strip() and
+            self.dataforseo_password and self.dataforseo_password.strip()
         )
     
     class Config:

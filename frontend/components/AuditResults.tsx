@@ -17,6 +17,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const [aiFixes, setAiFixes] = useState<AIFixesResponse | null>(null);
     const [aiPlan, setAiPlan] = useState<AIPlanResponse | null>(null);
     const [aiError, setAiError] = useState<string | null>(null);
+    const [copiedSources, setCopiedSources] = useState(false);
 
     const handleGenerateAIFixes = async () => {
         if (!results.ai_context) return;
@@ -66,6 +67,16 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         alert("Combined Schema.org copied to clipboard!");
     };
 
+    const handleCopySources = () => {
+        if (!aiPlan?.sources_to_cite || aiPlan.sources_to_cite.length === 0) return;
+        const text = aiPlan.sources_to_cite.map((s, i) =>
+            `${i + 1}. ${s.title} (${s.domain}) - ${s.url}\n   Found in: ${s.found_in}\n   Why: ${s.why}`
+        ).join("\n\n");
+        navigator.clipboard.writeText(text);
+        setCopiedSources(true);
+        setTimeout(() => setCopiedSources(false), 2000);
+    };
+
     const handleCopyTableHtml = () => {
         if (!aiPlan?.suggested_table?.headers || !aiPlan?.suggested_table?.rows) return;
         const { title, headers, rows } = aiPlan.suggested_table;
@@ -88,6 +99,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         if (!aiPlan) return;
         const lines: string[] = [];
         lines.push(`# Content Improvement Plan: ${results.url || results.ai_context?.title || 'Audited Page'}\n`);
+        if (aiPlan.serp_used && aiPlan.serp_query) {
+            lines.push(`> Based on Google data for: '${aiPlan.serp_query}' (${aiPlan.serp_market})\n`);
+        }
 
         if (aiPlan.warnings && aiPlan.warnings.length > 0) {
             lines.push(`## Warnings & Recommendations`);
@@ -99,7 +113,8 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push(`## Questions to Answer`);
             aiPlan.questions_to_answer.forEach((q, i) => {
                 const srcBadge = q.answer_source === "page" ? "[From Page]" : "[Needs New Information]";
-                lines.push(`### ${i + 1}. ${q.question} ${srcBadge}`);
+                const paaBadge = q.origin === "google_paa" ? " [Asked on Google]" : "";
+                lines.push(`### ${i + 1}. ${q.question} ${srcBadge}${paaBadge}`);
                 lines.push(`${q.draft_answer}\n`);
             });
         }
@@ -132,6 +147,17 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push(`## Data Opportunities to Enrich Text`);
             aiPlan.data_opportunities.forEach(d => {
                 lines.push(`- **${d.suggestion}** (Recommended Source: ${d.source_type})`);
+            });
+            lines.push("");
+        }
+
+        if (aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0) {
+            lines.push(`## Sources to Cite or Link`);
+            aiPlan.sources_to_cite.forEach((s, i) => {
+                lines.push(`${i + 1}. [${s.title}](${s.url}) - Domain: ${s.domain} (${s.found_in})`);
+                if (s.why) {
+                    lines.push(`   - *Why:* ${s.why}`);
+                }
             });
             lines.push("");
         }
@@ -447,9 +473,16 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                     {aiPlan && (
                         <div className="space-y-8 pt-2">
                             <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-surface-border/50 pb-2">
-                                <h4 className="text-sm font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
-                                    <span>📋</span> Full Improvement Plan
-                                </h4>
+                                <div>
+                                    <h4 className="text-sm font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
+                                        <span>📋</span> Full Improvement Plan
+                                    </h4>
+                                    {aiPlan.serp_used && aiPlan.serp_query && (
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            Based on Google data for: &apos;{aiPlan.serp_query}&apos; ({aiPlan.serp_market})
+                                        </p>
+                                    )}
+                                </div>
                                 <button
                                     onClick={handleCopyPlanMarkdown}
                                     className="text-xs px-3 py-1.5 bg-purple-700/60 hover:bg-purple-600 text-purple-100 rounded-md flex items-center gap-1.5 transition-colors self-start sm:self-auto font-medium"
@@ -517,13 +550,20 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                     <div className="text-xs font-semibold text-text-primary">
                                                         {q.question}
                                                     </div>
-                                                    <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
-                                                        q.answer_source === "page" 
-                                                            ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
-                                                            : "bg-amber-950/60 border border-amber-500/40 text-amber-300"
-                                                    }`}>
-                                                        {q.answer_source === "page" ? "From the page" : "Needs new information"}
-                                                    </span>
+                                                    <div className="flex items-center gap-1.5 shrink-0">
+                                                        {q.origin === "google_paa" && (
+                                                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-950/60 border border-blue-500/40 text-blue-300">
+                                                                Asked on Google
+                                                            </span>
+                                                        )}
+                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
+                                                            q.answer_source === "page" 
+                                                                ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
+                                                                : "bg-amber-950/60 border border-amber-500/40 text-amber-300"
+                                                        }`}>
+                                                            {q.answer_source === "page" ? "From the page" : "Needs new information"}
+                                                        </span>
+                                                    </div>
                                                 </div>
                                                 <p className="text-xs text-text-secondary leading-relaxed bg-slate-950/40 p-2.5 rounded border border-surface-border/40">
                                                     {q.draft_answer}
@@ -632,7 +672,59 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 5. Paragraphs to add */}
+                            {/* 5. Sources to cite or link */}
+                            {aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0 && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between gap-2">
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>🔗 Sources to Cite or Link</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.sources_to_cite.length})</span>
+                                        </h4>
+                                        <button
+                                            onClick={handleCopySources}
+                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
+                                        >
+                                            {copiedSources ? "✓ Copied" : "📋 Copy list"}
+                                        </button>
+                                    </div>
+                                    <div className="grid gap-3">
+                                        {aiPlan.sources_to_cite.map((src, idx) => (
+                                            <div key={idx} className="p-3.5 rounded-lg bg-surface/40 border border-surface-border space-y-2 text-xs">
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                                    <a
+                                                        href={src.url}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="font-semibold text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-1.5"
+                                                    >
+                                                        <span>🌐</span> {src.title || src.domain}
+                                                    </a>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-text-muted border border-surface-border font-mono">
+                                                            {src.domain}
+                                                        </span>
+                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
+                                                            src.found_in === "AI Overview"
+                                                                ? "bg-purple-950/60 border border-purple-500/40 text-purple-300"
+                                                                : "bg-blue-950/60 border border-blue-500/40 text-blue-300"
+                                                        }`}>
+                                                            {src.found_in}
+                                                        </span>
+                                                    </div>
+                                                </div>
+                                                {src.why && (
+                                                    <div className="p-2.5 rounded bg-slate-950/40 border border-surface-border/40 text-text-secondary">
+                                                        <strong className="text-text-primary">Why: </strong>
+                                                        {src.why}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* 6. Paragraphs to add */}
                             {aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0 && (
                                 <div className="space-y-3">
                                     <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">

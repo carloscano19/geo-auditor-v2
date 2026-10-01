@@ -340,6 +340,7 @@ async def run_single_audit(
             detected_lang=detected_lang,
             content_type=content_type,
             effective_url=url,
+            target_query=request.target_query,
         )
 
     return AuditResponse(
@@ -365,6 +366,7 @@ def _build_ai_context(
     detected_lang: str,
     content_type: str,
     effective_url: str,
+    target_query: Optional[str] = None,
 ) -> AIContext:
     """Extract context elements for optional AI fixes."""
     import json
@@ -561,6 +563,7 @@ def _build_ai_context(
         detected_publisher=detected_publisher,
         publisher_inferred_from_domain=publisher_inferred_from_domain,
         detected_image_url=detected_image_url,
+        target_query=target_query,
         failing_submetrics=failing_submetrics,
     )
 
