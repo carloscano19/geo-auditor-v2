@@ -168,15 +168,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=settings.cors_origins,
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-
 failed_auth_attempts: dict[str, list[float]] = {}
 
 
@@ -199,7 +190,7 @@ async def access_code_middleware(request: Request, call_next):
     if path in ["/api/health", "/api/version"]:
         return await call_next(request)
 
-    current_settings = get_settings()
+    current_settings = settings if (settings is not None and settings.access_required) else get_settings()
     if not current_settings.access_required:
         return await call_next(request)
 
@@ -239,6 +230,18 @@ async def access_code_middleware(request: Request, call_next):
         )
 
     return await call_next(request)
+
+
+# CORSMiddleware must be the outermost middleware so CORS headers
+# (e.g. access-control-allow-origin) are added to all responses,
+# including 401 and 429 errors from access_code_middleware.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=settings.cors_origins,
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.post("/api/auth/check")

@@ -2040,6 +2040,52 @@ def test_access_code_rate_limiting():
         assert client.get("/api/version", headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
 
 
+def test_access_code_cors_headers():
+    client = TestClient(app)
+    code = "cors-test-code-123"
+    s = Settings(access_code=code)
+    allowed_origin = s.cors_origins[1]  # "https://carloscanofernandez.com"
+
+    with patch("main.settings", s), patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        # 1. 401 without code includes CORS header
+        r_no_code = client.post("/api/auth/check", headers={"Origin": allowed_origin})
+        assert r_no_code.status_code == 401
+        assert r_no_code.headers.get("access-control-allow-origin") == allowed_origin
+        assert r_no_code.headers.get("access-control-allow-credentials") == "true"
+
+        # 2. 401 with wrong code includes CORS header
+        r_wrong_code = client.post(
+            "/api/auth/check",
+            headers={"X-Access-Code": "bad-code", "Origin": allowed_origin}
+        )
+        assert r_wrong_code.status_code == 401
+        assert r_wrong_code.headers.get("access-control-allow-origin") == allowed_origin
+
+        # 3. 429 rate limit includes CORS header
+        for _ in range(11):
+            client.post("/api/auth/check", headers={"X-Access-Code": "wrong", "X-Forwarded-For": "203.0.113.50"})
+        r_429 = client.post(
+            "/api/auth/check",
+            headers={"X-Access-Code": "wrong", "X-Forwarded-For": "203.0.113.50", "Origin": allowed_origin}
+        )
+        assert r_429.status_code == 429
+        assert r_429.headers.get("access-control-allow-origin") == allowed_origin
+
+        # 4. Preflight OPTIONS request to /api/audit
+        r_options = client.options(
+            "/api/audit",
+            headers={
+                "Origin": allowed_origin,
+                "Access-Control-Request-Method": "POST",
+                "Access-Control-Request-Headers": "x-access-code,content-type",
+            }
+        )
+        assert r_options.status_code == 200
+        assert r_options.headers.get("access-control-allow-origin") == allowed_origin
+        allowed_headers = r_options.headers.get("access-control-allow-headers", "").lower()
+        assert "x-access-code" in allowed_headers or "*" in allowed_headers
+
+
 # ---------------------------------------------------------------------------
 # 19. SERP Daily Limit & Fallback Tests
 # ---------------------------------------------------------------------------
