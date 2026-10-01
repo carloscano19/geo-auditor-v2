@@ -1028,3 +1028,328 @@ async def test_aeo_heading_structure_score_and_detected_headers_with_h4():
     assert "About Socios.com" in socios_detected
     assert "About Securitize" in socios_detected
 
+
+def test_ai_fixes_lead_with_unverified_figures_fallback_and_warning():
+    """
+    Test 1: Invented figure in suggested lead falls back to original lead and adds specific warning.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "json_ld": {
+                "@context": "https://schema.org",
+                "@type": "Article",
+                "headline": "Test Headline",
+            },
+            "lead_paragraph": {
+                "suggested": "This article claims revenue grew by 999 percent in Q4.",
+                "rationale": "Optimized lead",
+            },
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/fixes", json={
+                "ai_context": {
+                    "url": "https://example.com/article",
+                    "title": "Test Headline",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "first_paragraph": "Original safe paragraph with no numbers.",
+                    "main_text": "Original safe paragraph with no numbers. General body text without any figures.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert data["lead_paragraph"]["suggested"] == "Original safe paragraph with no numbers."
+            assert "The suggested lead contained figures not found on the page and was discarded." in data["warnings"]
+
+
+def test_ai_fixes_mentions_and_about_unverified_figures_removed_and_warned():
+    """
+    Test 2: Mention/about with invented figure is removed and adds warning.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "json_ld": {
+                "@context": "https://schema.org",
+                "@type": "Article",
+                "headline": "Test Headline",
+                "description": "Safe description",
+                "about": [
+                    {"@type": "Thing", "name": "Topic 8888"},
+                    {"@type": "Thing", "name": "Valid Topic"},
+                ],
+                "mentions": [
+                    {"@type": "Thing", "name": "Fake 9999 Corp"},
+                ],
+            },
+            "lead_paragraph": {
+                "suggested": "Clean lead without unverified numbers.",
+                "rationale": "Rationale",
+            },
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/fixes", json={
+                "ai_context": {
+                    "url": "https://example.com/article",
+                    "title": "Test Headline",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "first_paragraph": "Original lead.",
+                    "main_text": "Original lead. Valid Topic is discussed here.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            about_names = [a["name"] for a in data["json_ld"].get("about", [])]
+            assert "Valid Topic" in about_names
+            assert "Topic 8888" not in about_names
+            assert len(data["json_ld"].get("mentions", [])) == 0
+            assert any("Schema.org elements were removed because they contained figures not found on the page" in w for w in data["warnings"])
+
+
+def test_ai_plan_caps_outline_to_seven():
+    """
+    Test 3: Outline of 9 items returned by mock LLM is capped to exactly 7.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "questions_to_answer": [],
+            "suggested_h2_structure": [
+                {"h2": f"Section {i}", "purpose": f"Purpose {i}", "status": "new"}
+                for i in range(1, 10)
+            ],
+            "data_opportunities": [],
+            "paragraphs_to_add": [],
+            "inconsistencies": [],
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/article",
+                    "language": "es",
+                    "content_type": "guide_blog",
+                    "main_text": "Texto del artículo base.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data["suggested_h2_structure"]) == 7
+            assert data["suggested_h2_structure"][0]["h2"] == "Section 1"
+            assert data["suggested_h2_structure"][6]["h2"] == "Section 7"
+
+
+def test_ai_plan_combined_schema_no_nested_context():
+    """
+    Test 4: Combined schema has '@context' only at the root, no nested '@context' inside '@graph'.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "questions_to_answer": [
+                {"question": "¿Qué es?", "draft_answer": "Respuesta breve.", "answer_source": "page"}
+            ],
+            "suggested_h2_structure": [],
+            "data_opportunities": [],
+            "paragraphs_to_add": [],
+            "inconsistencies": [],
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/schema-test",
+                    "language": "es",
+                    "content_type": "guide_blog",
+                    "main_text": "Respuesta breve. Más texto aquí.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            combined = data["combined_schema"]
+            assert combined["@context"] == "https://schema.org"
+            assert "@graph" in combined
+            for item in combined["@graph"]:
+                assert "@context" not in item
+
+
+def test_ai_plan_strips_verification_phrases_from_suggested_paragraph():
+    """
+    Test 5: Editorial verification sentences are stripped from suggested publishable paragraphs.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "questions_to_answer": [],
+            "suggested_h2_structure": [],
+            "data_opportunities": [],
+            "paragraphs_to_add": [
+                {
+                    "target_issue": "Falta de claridad",
+                    "suggested_text": "El sistema proporciona alta disponibilidad. Habría que comprobar con el equipo técnico. Ofrece soporte 24/7.",
+                    "placement": "Al final de la sección 1",
+                },
+                {
+                    "target_issue": "Missing details",
+                    "suggested_text": "This feature reduces latency significantly. This should be verified with benchmarks. It is ready for production.",
+                    "placement": "Under section 2",
+                }
+            ],
+            "inconsistencies": [],
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/paragraphs",
+                    "language": "es",
+                    "content_type": "guide_blog",
+                    "main_text": "El sistema proporciona alta disponibilidad. Ofrece soporte 24/7. This feature reduces latency significantly. It is ready for production.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            paras = data["paragraphs_to_add"]
+            assert len(paras) == 2
+            assert "Habría que comprobar" not in paras[0]["suggested_text"]
+            assert "El sistema proporciona alta disponibilidad. Ofrece soporte 24/7." == paras[0]["suggested_text"]
+            assert "should be verified" not in paras[1]["suggested_text"].lower()
+            assert "This feature reduces latency significantly. It is ready for production." == paras[1]["suggested_text"]
+
+
+def test_ai_plan_inconsistency_kept_when_values_present_in_page():
+    """
+    Test 6: Inconsistency whose conflicting values are both literally present in page text is kept.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "questions_to_answer": [],
+            "suggested_h2_structure": [],
+            "data_opportunities": [],
+            "paragraphs_to_add": [],
+            "inconsistencies": [
+                {
+                    "issue": "Conflicting founding year",
+                    "values": ["2018", "2020"],
+                    "suggestion": "Verify official founding year in corporate registry",
+                }
+            ],
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/company",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "main_text": "The company was founded in 2018 according to the header, but later text states established in 2020.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data["inconsistencies"]) == 1
+            assert data["inconsistencies"][0]["issue"] == "Conflicting founding year"
+            assert data["inconsistencies"][0]["values"] == ["2018", "2020"]
+
+
+def test_ai_plan_inconsistency_discarded_when_value_not_in_page():
+    """
+    Test 7: Inconsistency with a value not present in the page text is discarded.
+    """
+    mock_settings_enabled = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    with patch("main.get_settings", return_value=mock_settings_enabled), \
+         patch("main.settings", mock_settings_enabled), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings_enabled):
+
+        llm_mock_return = {
+            "questions_to_answer": [],
+            "suggested_h2_structure": [],
+            "data_opportunities": [],
+            "paragraphs_to_add": [],
+            "inconsistencies": [
+                {
+                    "issue": "Conflicting founding year",
+                    "values": ["2018", "1999"],
+                    "suggestion": "Verify whether 1999 is correct",
+                }
+            ],
+        }
+
+        with patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+            mock_call.return_value = llm_mock_return
+
+            res = client.post("/api/ai/plan", json={
+                "ai_context": {
+                    "url": "https://example.com/company",
+                    "language": "en",
+                    "content_type": "guide_blog",
+                    "main_text": "The company was founded in 2018. No other year is mentioned.",
+                }
+            })
+            assert res.status_code == 200
+            data = res.json()
+            assert len(data["inconsistencies"]) == 0
+

@@ -201,12 +201,19 @@ class PlanNewParagraph(BaseModel):
     placement: str
 
 
+class PlanInconsistency(BaseModel):
+    issue: str
+    values: list[str] = Field(default_factory=list)
+    suggestion: str
+
+
 class AIPlanResponse(BaseModel):
     questions_to_answer: list[PlanQuestion] = Field(default_factory=list)
     suggested_h2_structure: list[PlanOutlineItem] = Field(default_factory=list)
     suggested_table: Optional[PlanTable] = None
     data_opportunities: list[PlanDataOpportunity] = Field(default_factory=list)
     paragraphs_to_add: list[PlanNewParagraph] = Field(default_factory=list)
+    inconsistencies: list[PlanInconsistency] = Field(default_factory=list)
     combined_schema: dict
     warnings: list[str] = Field(default_factory=list)
 

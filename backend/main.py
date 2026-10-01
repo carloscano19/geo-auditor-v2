@@ -47,6 +47,7 @@ from src.models.schemas import (
     PlanTable,
     PlanDataOpportunity,
     PlanNewParagraph,
+    PlanInconsistency,
 )
 from src.services.llm_client import (
     LLMClient,
@@ -408,10 +409,13 @@ def build_combined_schema(ctx: Any, article_schema: dict, questions: list[dict])
         except Exception:
             pass
 
+    article_obj = dict(article_schema)
+    article_obj.pop("@context", None)
+
     return {
         "@context": "https://schema.org",
         "@graph": [
-            article_schema,
+            article_obj,
             faq_schema,
             org_schema
         ]
@@ -458,6 +462,36 @@ def strip_urls(text: str) -> str:
         return ""
     t = re.sub(r'https?://[^\s]+', '', text)
     return re.sub(r'\s+', ' ', t).strip()
+
+
+def remove_verification_phrases(text: str) -> str:
+    """
+    Removes sentences containing editorial verification instructions:
+    'should be verified', 'should be checked', 'verify', 'debería verificarse', 'habría que comprobar'.
+    """
+    if not text:
+        return ""
+    pattern = re.compile(
+        r'\b(should be verified|should be checked|verify|debería verificarse|deberia verificarse|habría que comprobar|habria que comprobar)\b',
+        re.IGNORECASE
+    )
+    # Split into sentences preserving punctuation or delimiters
+    raw_sentences = re.split(r'([.!?]+(?:\s+|$))', text)
+    cleaned_chunks: list[str] = []
+    
+    # Reconstruct sentences in pairs: (sentence_content, punctuation)
+    idx = 0
+    while idx < len(raw_sentences):
+        sent = raw_sentences[idx]
+        punct = raw_sentences[idx + 1] if idx + 1 < len(raw_sentences) else ""
+        idx += 2
+        
+        full_sent = sent + punct
+        if not pattern.search(full_sent):
+            cleaned_chunks.append(full_sent)
+            
+    result = "".join(cleaned_chunks)
+    return re.sub(r'\s+', ' ', result).strip()
 
 
 
@@ -620,11 +654,65 @@ Rules:
 
     json_ld, warnings = build_article_schema(ctx, expected_type, json_ld_raw)
 
-    # 4. Lead paragraph validation
+    page_norm = normalize_text_for_numbers(ctx.main_text or "")
+    removed_fixes_count = 0
+
+    # 3.1 Validate numeric figures in LLM-generated JSON-LD text fields
+    for field in ["description", "alternativeHeadline"]:
+        if field in json_ld and isinstance(json_ld[field], str) and json_ld[field]:
+            if not all_numbers_in_page(json_ld[field], page_norm):
+                del json_ld[field]
+                removed_fixes_count += 1
+
+    for field in ["about", "mentions"]:
+        if field in json_ld:
+            val = json_ld[field]
+            if isinstance(val, list):
+                valid_items = []
+                for item in val:
+                    if isinstance(item, dict):
+                        item_ok = True
+                        for k in ["name", "description"]:
+                            if k in item and isinstance(item[k], str) and item[k]:
+                                if not all_numbers_in_page(item[k], page_norm):
+                                    item_ok = False
+                                    break
+                        if item_ok:
+                            valid_items.append(item)
+                        else:
+                            removed_fixes_count += 1
+                    elif isinstance(item, str):
+                        if all_numbers_in_page(item, page_norm):
+                            valid_items.append(item)
+                        else:
+                            removed_fixes_count += 1
+                json_ld[field] = valid_items
+            elif isinstance(val, dict):
+                item_ok = True
+                for k in ["name", "description"]:
+                    if k in val and isinstance(val[k], str) and val[k]:
+                        if not all_numbers_in_page(val[k], page_norm):
+                            item_ok = False
+                            break
+                if not item_ok:
+                    del json_ld[field]
+                    removed_fixes_count += 1
+
+    if removed_fixes_count > 0:
+        warnings.append(
+            f"{removed_fixes_count} Schema.org elements were removed because they contained figures not found on the page."
+        )
+
+    # 4. Lead paragraph validation & numeric check
     lead_data = raw_result.get("lead_paragraph", {})
     original_lead = (ctx.first_paragraph or "").strip()
     suggested_lead = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
     rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
+
+    if suggested_lead and not all_numbers_in_page(suggested_lead, page_norm):
+        suggested_lead = original_lead
+        rationale_lead = "The original lead paragraph was kept because the suggested lead contained unverified figures."
+        warnings.append("The suggested lead contained figures not found on the page and was discarded.")
 
     if not suggested_lead:
         suggested_lead = original_lead or "No lead paragraph available."
@@ -751,18 +839,26 @@ Generate a JSON object with EXACTLY this structure:
   "paragraphs_to_add": [
     {{
       "target_issue": "Name of the problem being fixed (e.g. Missing direct answer, Missing author context, Thin content)",
-      "suggested_text": "Actionable paragraph (40-80 words) ready to insert into the page",
+      "suggested_text": "Actionable paragraph (40-80 words) ready to insert into the page. Ready-to-publish text only, with NO editor notes, NO verification requests, and NO bracketed placeholders.",
       "placement": "Where to place this paragraph (e.g. Under H2 '...', After intro)"
+    }}
+  ],
+  "inconsistencies": [
+    {{
+      "issue": "Brief sentence explaining the contradiction found on the page",
+      "values": ["Exact value/phrase 1 from page", "Exact value/phrase 2 from page"],
+      "suggestion": "How to reconcile or unify them consistently"
     }}
   ]
 }}
 
 Requirements:
 - questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions.
-- suggested_h2_structure: Logical H2 structure covering main aspects. Max 8 items.
+- suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
-- data_opportunities: 2 to 4 suggestions of data points that would strengthen the article's authority.
-- paragraphs_to_add: 1 to 3 paragraphs targeting the lowest-scoring issues.
+- data_opportunities: 2 to 5 suggestions of data points that would strengthen the article's authority. Any editorial advice or verification suggestions MUST go here, not in paragraphs_to_add.
+- paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
+- inconsistencies: 0 to 3 internal contradictions found on the page (different figures, dates, or names for the same thing). The conflicting values MUST appear literally in the page text snippet. If none are found, return an empty array [].
 - Language: Strictly {lang_instruction}.
 """
 
@@ -789,9 +885,10 @@ Requirements:
 
     # 3. Ground truth normalization & validation
     page_norm = normalize_text_for_numbers(ctx.main_text or "")
+    raw_page_text = ctx.main_text or ""
     total_removed_count = 0
 
-    # 3.1 Questions to answer validation
+    # 3.1 Questions to answer validation (Max 6)
     questions_raw = raw_result.get("questions_to_answer", [])
     valid_questions: list[dict] = []
     if isinstance(questions_raw, list):
@@ -818,8 +915,10 @@ Requirements:
                 "draft_answer": draft_ans.strip(),
                 "answer_source": src,
             })
+            if len(valid_questions) >= 6:
+                break
 
-    # 3.2 Suggested H2 structure
+    # 3.2 Suggested H2 structure (Max 7)
     h2_raw = raw_result.get("suggested_h2_structure", [])
     valid_h2: list[dict] = []
     if isinstance(h2_raw, list):
@@ -834,6 +933,8 @@ Requirements:
                 "purpose": strip_urls(str(h.get("purpose") or "")).strip(),
                 "status": st,
             })
+            if len(valid_h2) >= 7:
+                break
 
     # 3.3 Suggested table
     table_raw = raw_result.get("suggested_table")
@@ -877,7 +978,7 @@ Requirements:
                 "table_idea": table_idea,
             }
 
-    # 3.4 Data opportunities
+    # 3.4 Data opportunities (Max 5)
     data_raw = raw_result.get("data_opportunities", [])
     valid_data_opps: list[dict] = []
     if isinstance(data_raw, list):
@@ -893,8 +994,10 @@ Requirements:
                 "suggestion": sug,
                 "source_type": stype or "Industry Benchmark / Official Data",
             })
+            if len(valid_data_opps) >= 5:
+                break
 
-    # 3.5 Paragraphs to add
+    # 3.5 Paragraphs to add (Max 3, publishable text without verification phrases)
     paras_raw = raw_result.get("paragraphs_to_add", [])
     valid_paras: list[dict] = []
     if isinstance(paras_raw, list):
@@ -902,6 +1005,11 @@ Requirements:
             if not isinstance(p, dict) or not p.get("suggested_text"):
                 continue
             stext = strip_urls(str(p.get("suggested_text") or "")).strip()
+            # Clean editorial verification sentences
+            stext = remove_verification_phrases(stext)
+            if not stext:
+                continue
+
             # Length validation: 40-80 words
             pwords = stext.split()
             if len(pwords) > 80:
@@ -916,6 +1024,43 @@ Requirements:
                 "suggested_text": stext,
                 "placement": strip_urls(str(p.get("placement") or "In body content")).strip(),
             })
+            if len(valid_paras) >= 3:
+                break
+
+    # 3.6 Inconsistencies (Max 3, values must appear literally in page text)
+    incons_raw = raw_result.get("inconsistencies", [])
+    valid_incons: list[dict] = []
+    if isinstance(incons_raw, list):
+        for inc in incons_raw:
+            if not isinstance(inc, dict) or not inc.get("issue") or not inc.get("values"):
+                continue
+            vals = inc.get("values")
+            if not isinstance(vals, list) or len(vals) < 2:
+                continue
+            
+            # Each value must appear literally (case-insensitive substring) in raw_page_text
+            all_vals_found = True
+            clean_vals = []
+            for v in vals:
+                v_str = str(v).strip()
+                if not v_str:
+                    all_vals_found = False
+                    break
+                if v_str.lower() not in raw_page_text.lower():
+                    all_vals_found = False
+                    break
+                clean_vals.append(v_str)
+
+            if not all_vals_found:
+                continue
+
+            valid_incons.append({
+                "issue": strip_urls(str(inc.get("issue") or "")).strip(),
+                "values": clean_vals,
+                "suggestion": strip_urls(str(inc.get("suggestion") or "")).strip(),
+            })
+            if len(valid_incons) >= 3:
+                break
 
     # 4. Build combined schema
     article_schema, article_warnings = build_article_schema(ctx, expected_type, {})
@@ -934,6 +1079,7 @@ Requirements:
         "suggested_table": valid_table,
         "data_opportunities": valid_data_opps,
         "paragraphs_to_add": valid_paras,
+        "inconsistencies": valid_incons,
         "combined_schema": combined_schema,
         "warnings": all_warnings,
     }

@@ -136,6 +136,15 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push("");
         }
 
+        if (aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0) {
+            lines.push(`## Inconsistencies Found on the Page`);
+            aiPlan.inconsistencies.forEach((inc, i) => {
+                lines.push(`### ${i + 1}. ${inc.issue}`);
+                lines.push(`- **Conflicting Values:** ${inc.values.map(v => `\`"${v}"\``).join(" vs ")}`);
+                lines.push(`- **Recommendation:** ${inc.suggestion}\n`);
+            });
+        }
+
         if (aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0) {
             lines.push(`## Paragraphs to Add`);
             aiPlan.paragraphs_to_add.forEach((p, i) => {
@@ -460,6 +469,37 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                             <li key={idx}>{w}</li>
                                         ))}
                                     </ul>
+                                </div>
+                            )}
+
+                            {/* Inconsistencies found on the page */}
+                            {aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0 && (
+                                <div className="space-y-3">
+                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                        <span>⚖️ Inconsistencies Found on the Page</span>
+                                        <span className="text-xs font-normal text-text-muted">({aiPlan.inconsistencies.length})</span>
+                                    </h4>
+                                    <div className="grid gap-3">
+                                        {aiPlan.inconsistencies.map((inc, idx) => (
+                                            <div key={idx} className="p-3.5 rounded-lg bg-amber-950/20 border border-amber-500/30 space-y-2 text-xs">
+                                                <div className="font-semibold text-amber-300 flex items-center gap-1.5">
+                                                    <span>🔍</span> {inc.issue}
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-[11px] text-text-muted uppercase tracking-wider font-medium">Conflicting values:</span>
+                                                    {inc.values.map((val, vIdx) => (
+                                                        <span key={vIdx} className="px-2 py-0.5 rounded bg-slate-800 text-rose-300 border border-rose-500/30 font-mono text-[11px]">
+                                                            &ldquo;{val}&rdquo;
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                                <div className="p-2.5 rounded bg-slate-950/50 border border-surface-border/50 text-text-secondary">
+                                                    <strong className="text-text-primary">Recommendation: </strong>
+                                                    {inc.suggestion}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
                                 </div>
                             )}
 

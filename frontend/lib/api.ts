@@ -105,12 +105,19 @@ export interface PlanNewParagraph {
     placement: string;
 }
 
+export interface PlanInconsistency {
+    issue: string;
+    values: string[];
+    suggestion: string;
+}
+
 export interface AIPlanResponse {
     questions_to_answer: PlanQuestion[];
     suggested_h2_structure: PlanOutlineItem[];
     suggested_table?: PlanTable | null;
     data_opportunities: PlanDataOpportunity[];
     paragraphs_to_add: PlanNewParagraph[];
+    inconsistencies: PlanInconsistency[];
     combined_schema: Record<string, unknown>;
     warnings: string[];
 }
