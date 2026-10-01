@@ -100,7 +100,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         const lines: string[] = [];
         lines.push(`# Content Improvement Plan: ${results.url || results.ai_context?.title || 'Audited Page'}\n`);
         if (aiPlan.serp_used && aiPlan.serp_query) {
-            lines.push(`> Based on Google data for: '${aiPlan.serp_query}' (${aiPlan.serp_market})\n`);
+            let serpLine = `> Based on Google data for: '${aiPlan.serp_query}' (${aiPlan.serp_market})`;
+            if (aiPlan.serp_paa_found !== undefined && aiPlan.serp_paa_found > 0) {
+                serpLine += ` · ${aiPlan.serp_paa_found} Google questions found`;
+            }
+            lines.push(`${serpLine}\n`);
         }
 
         if (aiPlan.warnings && aiPlan.warnings.length > 0) {
@@ -480,6 +484,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     {aiPlan.serp_used && aiPlan.serp_query && (
                                         <p className="text-xs text-text-muted mt-0.5">
                                             Based on Google data for: &apos;{aiPlan.serp_query}&apos; ({aiPlan.serp_market})
+                                            {aiPlan.serp_paa_found !== undefined && aiPlan.serp_paa_found > 0 && (
+                                                <span> · {aiPlan.serp_paa_found} Google questions found</span>
+                                            )}
                                         </p>
                                     )}
                                 </div>

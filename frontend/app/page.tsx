@@ -14,12 +14,30 @@ export default function Home() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState("v2.3");
+  const [accessRequired, setAccessRequired] = useState(false);
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
+  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [accessCodeInput, setAccessCodeInput] = useState("");
+  const [authError, setAuthError] = useState<string | null>(null);
+  const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
     // Cleanup polling on unmount
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+    };
+  }, []);
+
+  useEffect(() => {
+    const handleUnauthorized = () => {
+      setIsAuthenticated(false);
+      setAuthError("Session expired or invalid code, please enter it again.");
+    };
+
+    window.addEventListener("geo_auditor_unauthorized", handleUnauthorized);
+    return () => {
+      window.removeEventListener("geo_auditor_unauthorized", handleUnauthorized);
     };
   }, []);
 
@@ -41,13 +59,67 @@ export default function Home() {
     // 2. Fetch backend version as single source of truth
     apiClient
       .getVersion()
-      .then((data) => {
+      .then(async (data) => {
         if (data?.version) setVersion(data.version);
+        if (data?.access_required) {
+          setAccessRequired(true);
+          const storedCode = apiClient.getStoredAccessCode();
+          if (storedCode) {
+            const check = await apiClient.checkAuth(storedCode);
+            if (check.ok) {
+              setIsAuthenticated(true);
+            } else {
+              apiClient.clearStoredAccessCode();
+              setIsAuthenticated(false);
+            }
+          } else {
+            setIsAuthenticated(false);
+          }
+        } else {
+          setAccessRequired(false);
+          setIsAuthenticated(true);
+        }
       })
       .catch(() => {
         // Fallback default
+        setIsAuthenticated(true);
+      })
+      .finally(() => {
+        setIsAuthChecking(false);
       });
   }, []);
+
+  const handleAuthSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!accessCodeInput.trim()) return;
+    setIsSubmittingAuth(true);
+    setAuthError(null);
+
+    try {
+      const res = await apiClient.checkAuth(accessCodeInput.trim());
+      if (res.ok) {
+        apiClient.setStoredAccessCode(accessCodeInput.trim());
+        setIsAuthenticated(true);
+        setAccessCodeInput("");
+        setAuthError(null);
+      } else {
+        setAuthError(res.error || "Invalid access code");
+      }
+    } catch {
+      setAuthError("Invalid access code");
+    } finally {
+      setIsSubmittingAuth(false);
+    }
+  };
+
+  const handleLogout = () => {
+    apiClient.clearStoredAccessCode();
+    setIsAuthenticated(false);
+    setAuthError(null);
+    setResults(null);
+    setBatchData(null);
+    if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+  };
 
   const handleAudit = async (url: string | null, text: string | null, targetQuery?: string) => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
@@ -115,6 +187,72 @@ export default function Home() {
       setError(err instanceof Error ? err.message : "Failed to initiate batch audit");
     }
   };
+
+  if (isAuthChecking) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="w-12 h-12 relative">
+          <div className="absolute inset-0 border-4 border-surface-border rounded-full" />
+          <div className="absolute inset-0 border-4 border-primary rounded-full border-t-transparent animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  if (accessRequired && !isAuthenticated) {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-surface border border-surface-border rounded-2xl p-8 shadow-2xl">
+          <div className="text-center mb-8">
+            <h1 className="text-2xl font-bold">
+              <span className="gradient-text">GEO-AUDITOR</span>
+              <span className="text-text-primary"> AI</span>
+            </h1>
+            <p className="text-sm text-text-muted mt-2">
+              LLM Citability Audit Platform
+            </p>
+          </div>
+
+          <form onSubmit={handleAuthSubmit} className="space-y-4">
+            <div>
+              <label
+                htmlFor="access-code"
+                className="block text-xs font-semibold text-text-muted uppercase tracking-wider mb-2"
+              >
+                Access code
+              </label>
+              <input
+                id="access-code"
+                type="password"
+                value={accessCodeInput}
+                onChange={(e) => {
+                  setAccessCodeInput(e.target.value);
+                  if (authError) setAuthError(null);
+                }}
+                placeholder="Access code"
+                autoFocus
+                disabled={isSubmittingAuth}
+                className="w-full px-4 py-3 rounded-lg bg-surface-dark border border-surface-border text-text-primary placeholder-text-muted focus:outline-none focus:border-primary transition-colors text-sm"
+              />
+              {authError && (
+                <p className="mt-2 text-xs text-score-critical text-center">
+                  {authError}
+                </p>
+              )}
+            </div>
+
+            <button
+              type="submit"
+              disabled={isSubmittingAuth || !accessCodeInput.trim()}
+              className="w-full py-3 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white font-medium text-sm transition-all duration-200 shadow-lg shadow-primary/20 disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2"
+            >
+              {isSubmittingAuth ? "Checking..." : "Enter"}
+            </button>
+          </form>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="split-screen">
@@ -198,6 +336,17 @@ export default function Home() {
                 Carlos Cano Fernandez
               </a>
             </p>
+            {accessRequired && (
+              <p className="mt-2">
+                <button
+                  type="button"
+                  onClick={handleLogout}
+                  className="text-text-muted/60 hover:text-text-primary transition-colors underline"
+                >
+                  Log out
+                </button>
+              </p>
+            )}
           </div>
         </div>
       </aside>

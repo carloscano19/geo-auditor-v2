@@ -51,6 +51,15 @@ class Settings(BaseSettings):
     # DataForSEO / SERP Configuration
     dataforseo_login: str = ""
     dataforseo_password: str = Field(default="", repr=False)
+    serp_daily_limit: int = 100
+
+    # Security / Access Protection Configuration
+    access_code: str = Field(default="", repr=False)
+
+    @property
+    def access_required(self) -> bool:
+        """True if an access code has been configured."""
+        return bool(self.access_code and self.access_code.strip())
 
     @property
     def ai_enabled(self) -> bool:

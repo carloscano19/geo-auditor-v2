@@ -608,3 +608,35 @@ FINANCIAL_ADVICE_PHRASES: Dict[str, List[str]] = {
     ],
 }
 
+# Technical suggestions prohibited in data_opportunities (must be factual/content only)
+TECHNICAL_DATA_OPP_PHRASES: Dict[str, List[str]] = {
+    "en": [
+        "schema",
+        "structured data",
+        "alt text",
+        "metadata",
+    ],
+    "es": [
+        "schema",
+        "datos estructurados",
+        "alt text",
+        "metadatos",
+        "metadata",
+    ],
+}
+
+# Phrases indicating that draft answer acknowledges page lacks info (must reclassify to needs_info)
+MISSING_INFO_ANSWER_PHRASES: Dict[str, List[str]] = {
+    "en": [
+        "does not name",
+        "does not provide",
+        "does not specify",
+        "not specified",
+    ],
+    "es": [
+        "no menciona",
+        "no indica",
+    ],
+}
+
+

@@ -32,6 +32,43 @@ class SerpClientError(Exception):
     pass
 
 
+class SerpDailyLimitExceededError(SerpClientError):
+    """Raised when the daily DataForSEO call limit is exceeded."""
+    pass
+
+
+class SerpDailyCallTracker:
+    """In-memory daily call counter resetting at UTC midnight for DataForSEO."""
+
+    def __init__(self):
+        self._current_date_utc = datetime.now(timezone.utc).date()
+        self._call_count = 0
+
+    def _reset_if_new_day(self):
+        today = datetime.now(timezone.utc).date()
+        if today != self._current_date_utc:
+            self._current_date_utc = today
+            self._call_count = 0
+
+    def get_count(self) -> int:
+        self._reset_if_new_day()
+        return self._call_count
+
+    def check_and_increment(self, max_limit: int) -> int:
+        self._reset_if_new_day()
+        if self._call_count >= max_limit:
+            raise SerpDailyLimitExceededError("Daily Google data limit reached, try again tomorrow")
+        self._call_count += 1
+        return self._call_count
+
+    def reset_for_tests(self):
+        self._current_date_utc = datetime.now(timezone.utc).date()
+        self._call_count = 0
+
+
+serp_daily_tracker = SerpDailyCallTracker()
+
+
 def get_market_for_language(lang: str) -> tuple[int, str, str]:
     """
     Returns (location_code, language_code, market_display).
@@ -136,6 +173,9 @@ class SerpClient:
         cached = get_serp_cache_entry(cache_key)
         if cached is not None:
             return cached
+
+        # Check and increment daily limit for external DataForSEO calls
+        serp_daily_tracker.check_and_increment(self.settings.serp_daily_limit)
 
         payload = [
             {

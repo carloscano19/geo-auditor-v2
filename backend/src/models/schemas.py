@@ -230,6 +230,7 @@ class AIPlanResponse(BaseModel):
     serp_query: Optional[str] = None
     serp_market: Optional[str] = None
     serp_used: bool = False
+    serp_paa_found: int = 0
 
 
 class AIPlanRequest(BaseModel):

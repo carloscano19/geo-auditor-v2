@@ -2,6 +2,7 @@
 
 import React, { useState } from "react";
 import {
+    apiClient,
     type BatchJobResponse,
     type BatchItemResult,
     type TopicIssue,
@@ -13,13 +14,39 @@ import AuditResults from "./AuditResults";
 interface BatchAuditResultsProps {
     batchData: BatchJobResponse;
     onReset?: () => void;
-    csvUrl: string;
+    csvUrl?: string;
     issuesCsvUrl?: string;
 }
 
-export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: BatchAuditResultsProps) {
+export default function BatchAuditResults({ batchData, issuesCsvUrl }: BatchAuditResultsProps) {
     const [selectedItem, setSelectedItem] = useState<BatchItemResult | null>(null);
     const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
+    const [isDownloadingCsv, setIsDownloadingCsv] = useState(false);
+    const [isDownloadingIssues, setIsDownloadingIssues] = useState(false);
+
+    const handleDownloadCsv = async () => {
+        if (!batchData.job_id) return;
+        try {
+            setIsDownloadingCsv(true);
+            await apiClient.downloadBatchCsv(batchData.job_id);
+        } catch (err) {
+            console.error('Failed to download batch CSV:', err);
+        } finally {
+            setIsDownloadingCsv(false);
+        }
+    };
+
+    const handleDownloadIssuesCsv = async () => {
+        if (!batchData.job_id) return;
+        try {
+            setIsDownloadingIssues(true);
+            await apiClient.downloadBatchIssuesCsv(batchData.job_id);
+        } catch (err) {
+            console.error('Failed to download issues CSV:', err);
+        } finally {
+            setIsDownloadingIssues(false);
+        }
+    };
 
     const siteWideIssues = batchData.site_wide_issues || [];
     const topicIssues = batchData.issues_by_topic || [];
@@ -165,21 +192,23 @@ export default function BatchAuditResults({ batchData, csvUrl, issuesCsvUrl }: B
                     </p>
                 </div>
                 <div className="flex items-center gap-3 flex-wrap">
-                    <a
-                        href={csvUrl}
-                        download
-                        className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
+                    <button
+                        type="button"
+                        onClick={handleDownloadCsv}
+                        disabled={isDownloadingCsv}
+                        className="btn-secondary text-sm flex items-center gap-2 px-4 py-2 disabled:opacity-50"
                     >
-                        <span>📥</span> Export CSV
-                    </a>
-                    {issuesCsvUrl && (
-                        <a
-                            href={issuesCsvUrl}
-                            download
-                            className="btn-secondary text-sm flex items-center gap-2 px-4 py-2"
+                        <span>📥</span> {isDownloadingCsv ? "Downloading..." : "Export CSV"}
+                    </button>
+                    {(issuesCsvUrl || allIssues.length > 0) && (
+                        <button
+                            type="button"
+                            onClick={handleDownloadIssuesCsv}
+                            disabled={isDownloadingIssues}
+                            className="btn-secondary text-sm flex items-center gap-2 px-4 py-2 disabled:opacity-50"
                         >
-                            <span>📋</span> Export Issues
-                        </a>
+                            <span>📋</span> {isDownloadingIssues ? "Downloading..." : "Export Issues"}
+                        </button>
                     )}
                 </div>
             </div>

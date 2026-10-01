@@ -23,8 +23,10 @@ import traceback
 from datetime import datetime, timezone, timedelta
 from typing import Dict, Any, Optional
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Response
-from fastapi.responses import StreamingResponse
+import time
+import hmac
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request
+from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 
 import hashlib
@@ -58,6 +60,7 @@ from src.services.llm_client import (
 from src.services.serp_client import (
     SerpClient,
     SerpClientError,
+    SerpDailyLimitExceededError,
     get_market_for_language,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
@@ -67,6 +70,10 @@ from src.services.audit_service import run_single_audit
 from src.utils.batch_aggregator import (
     aggregate_issues_by_topic,
     DIMENSION_DISPLAY_NAMES,
+)
+from src.utils.lang_patterns import (
+    TECHNICAL_DATA_OPP_PHRASES,
+    MISSING_INFO_ANSWER_PHRASES,
 )
 
 CONTENT_TYPE_DISPLAY_NAMES: Dict[str, str] = {
@@ -168,6 +175,76 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+failed_auth_attempts: dict[str, list[float]] = {}
+
+
+def reset_failed_auth_attempts():
+    """Reset failed auth attempts for tests."""
+    failed_auth_attempts.clear()
+
+
+@app.middleware("http")
+async def access_code_middleware(request: Request, call_next):
+    # Allow CORS preflight requests
+    if request.method == "OPTIONS":
+        return await call_next(request)
+
+    path = request.url.path
+    if not path.startswith("/api/"):
+        return await call_next(request)
+
+    # Health and version are exempt (needed by keep-alive and login screen)
+    if path in ["/api/health", "/api/version"]:
+        return await call_next(request)
+
+    current_settings = get_settings()
+    if not current_settings.access_required:
+        return await call_next(request)
+
+    # Determine client IP
+    client_ip = "127.0.0.1"
+    forwarded = request.headers.get("x-forwarded-for")
+    if forwarded:
+        client_ip = forwarded.split(",")[0].strip()
+    elif request.client and request.client.host:
+        client_ip = request.client.host
+
+    now = time.time()
+    recent_failures = [t for t in failed_auth_attempts.get(client_ip, []) if now - t < 900.0]
+    failed_auth_attempts[client_ip] = recent_failures
+
+    # Freno a intentos fallidos: más de 10 códigos incorrectos desde la misma IP en 15 minutos -> 429
+    if len(recent_failures) > 10:
+        return JSONResponse(
+            status_code=429,
+            content={"detail": "Too many attempts, try again later"}
+        )
+
+    header_code = request.headers.get("X-Access-Code")
+    if not header_code:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Access code required"}
+        )
+
+    expected_code = current_settings.access_code
+    if not hmac.compare_digest(header_code.encode("utf-8"), expected_code.encode("utf-8")):
+        recent_failures.append(now)
+        failed_auth_attempts[client_ip] = recent_failures
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Invalid access code"}
+        )
+
+    return await call_next(request)
+
+
+@app.post("/api/auth/check")
+async def check_access_code():
+    """Verify access code validity."""
+    return {"status": "ok"}
 
 
 @app.get("/api/health")
@@ -532,9 +609,14 @@ def remove_financial_advice_phrases(text: str) -> str:
 
 
 def normalize_for_paa_match(text: str) -> str:
-    """Normalize text for PAA matching by removing punctuation, extra spaces, and lowercasing."""
-    clean = re.sub(r'[^\w\s]', '', text or '').lower()
-    return re.sub(r'\s+', ' ', clean).strip()
+    """Normalize text for PAA matching by removing accents/diacritics, punctuation, extra spaces, and lowercasing."""
+    if not text:
+        return ""
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
+    clean = re.sub(r"[^\w\s]", "", without_accents).lower()
+    return re.sub(r"\s+", " ", clean).strip()
 
 
 async def resolve_serp_query(
@@ -585,10 +667,12 @@ async def resolve_serp_query(
 @app.get("/api/version")
 async def get_version():
     """Single source of version endpoint."""
+    s = settings if (settings is not None and (settings.ai_enabled or settings.serp_enabled or settings.access_required)) else get_settings()
     return {
-        "version": settings.app_version,
-        "ai_enabled": settings.ai_enabled,
-        "serp_enabled": settings.serp_enabled,
+        "version": s.app_version,
+        "ai_enabled": s.ai_enabled,
+        "serp_enabled": s.serp_enabled,
+        "access_required": s.access_required,
     }
 
 
@@ -906,6 +990,12 @@ async def generate_ai_plan(request: AIPlanRequest):
                         })
                     if len(candidate_sources) >= 8:
                         break
+        except SerpDailyLimitExceededError as e:
+            logger.warning(f"DataForSEO daily limit reached: {e}")
+            serp_used = False
+            serp_data = None
+            _, _, serp_market = get_market_for_language(ctx.language or "en")
+            warnings.append("Daily Google data limit reached; questions and sources are AI-suggested only.")
         except SerpClientError as e:
             logger.warning(f"DataForSEO error: {e}")
             serp_used = False
@@ -918,6 +1008,10 @@ async def generate_ai_plan(request: AIPlanRequest):
             serp_data = None
             _, _, serp_market = get_market_for_language(ctx.language or "en")
             warnings.append("Google data unavailable for this plan; questions and sources are AI-suggested only.")
+
+    serp_paa_found = 0
+    if serp_used and serp_data:
+        serp_paa_found = len(serp_data.get("people_also_ask") or [])
 
     # 3. Build system and user prompt
     lang = ctx.language or "es"
@@ -942,7 +1036,8 @@ async def generate_ai_plan(request: AIPlanRequest):
         "2. Any suggested text or draft answer containing numbers MUST ONLY use figures already explicitly present in the provided page text.\n"
         "3. If suggesting new data opportunities, describe the metric and the type of source to consult (e.g. 'official statistics', 'annual report'), but DO NOT make up URLs or numbers.\n"
         "4. In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.\n"
-        "5. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text."
+        "5. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text.\n"
+        "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links)."
     )
 
     google_context_text = ""
@@ -997,7 +1092,7 @@ Generate a JSON object with EXACTLY this structure:
     {{
       "question": "Question text in {lang_instruction}",
       "draft_answer": "Direct answer (max 60 words). If answer_source is 'page', must only use facts from page text.",
-      "answer_source": "page" // OR "needs_info" if the page lacks this information
+      "answer_source": "page" // ONLY if the page actually answers the question directly. If the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'
     }}
   ],
   "suggested_h2_structure": [
@@ -1017,7 +1112,7 @@ Generate a JSON object with EXACTLY this structure:
   }},
   "data_opportunities": [
     {{
-      "suggestion": "Description of data/metric to add in {lang_instruction}",
+      "suggestion": "Description of data/metric to add in {lang_instruction} (factual/content data only; NO technical suggestions like schema, alt text, metadata, speed, or internal links)",
       "source_type": "official statistics / industry benchmark / survey / financial report"
     }}
   ],
@@ -1038,10 +1133,10 @@ Generate a JSON object with EXACTLY this structure:
 }}
 
 Requirements:
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided.
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
-- data_opportunities: 2 to 5 suggestions of data points that would strengthen the article's authority. Any editorial advice or verification suggestions MUST go here, not in paragraphs_to_add.
+- data_opportunities: 2 to 5 suggestions of data points or factual metrics to strengthen the content. Factual and content data only. PROHIBITED: Do NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).
 - paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
 - inconsistencies: 0 to 3 internal contradictions found on the page (different figures, dates, or names for the same thing). The conflicting values MUST appear literally in the page text snippet. If none are found, return an empty array [].
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
@@ -1091,7 +1186,15 @@ Requirements:
             src = q.get("answer_source", "page")
             if src not in ["page", "needs_info"]:
                 src = "page"
-            
+
+            # If marked as page, verify it does not acknowledge missing info
+            if src == "page":
+                draft_lower = draft_ans.lower()
+                for lk in ["en", "es"]:
+                    if any(phrase in draft_lower for phrase in MISSING_INFO_ANSWER_PHRASES.get(lk, [])):
+                        src = "needs_info"
+                        break
+
             # Numeric validation
             if not all_numbers_in_page(draft_ans, page_norm):
                 total_removed_count += 1
@@ -1186,6 +1289,17 @@ Requirements:
                 continue
             sug = strip_urls(str(d.get("suggestion") or "")).strip()
             stype = strip_urls(str(d.get("source_type") or "")).strip()
+
+            # Discard technical suggestions (schema, structured data, alt text, metadata, etc.)
+            check_text = f"{sug} {stype}".lower()
+            is_technical = False
+            for lk in ["en", "es"]:
+                if any(phrase in check_text for phrase in TECHNICAL_DATA_OPP_PHRASES.get(lk, [])):
+                    is_technical = True
+                    break
+            if is_technical:
+                continue
+
             if not all_numbers_in_page(sug, page_norm):
                 total_removed_count += 1
                 continue
@@ -1319,6 +1433,7 @@ Requirements:
         "serp_query": serp_query if (serp_used or serp_query) else None,
         "serp_market": serp_market,
         "serp_used": serp_used,
+        "serp_paa_found": serp_paa_found,
     }
 
     # 7. Store in cache

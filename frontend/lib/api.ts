@@ -134,6 +134,7 @@ export interface AIPlanResponse {
     serp_query?: string | null;
     serp_market?: string | null;
     serp_used?: boolean;
+    serp_paa_found?: number;
 }
 
 export interface AuditResponse {
@@ -235,8 +236,55 @@ class ApiClient {
         this.baseUrl = baseUrl;
     }
 
+    getStoredAccessCode(): string | null {
+        if (typeof window !== 'undefined') {
+            try {
+                return localStorage.getItem('geo_auditor_access_code');
+            } catch {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    setStoredAccessCode(code: string): void {
+        if (typeof window !== 'undefined') {
+            try {
+                localStorage.setItem('geo_auditor_access_code', code);
+            } catch {
+                // Ignore storage errors
+            }
+        }
+    }
+
+    clearStoredAccessCode(): void {
+        if (typeof window !== 'undefined') {
+            try {
+                localStorage.removeItem('geo_auditor_access_code');
+            } catch {
+                // Ignore storage errors
+            }
+        }
+    }
+
+    private async fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
+        const headers = new Headers(options.headers || {});
+        const code = this.getStoredAccessCode();
+        if (code) {
+            headers.set('X-Access-Code', code);
+        }
+        const response = await fetch(url, { ...options, headers });
+        if (response.status === 401) {
+            this.clearStoredAccessCode();
+            if (typeof window !== 'undefined') {
+                window.dispatchEvent(new CustomEvent('geo_auditor_unauthorized'));
+            }
+        }
+        return response;
+    }
+
     /**
-     * Check API health status
+     * Check API health status (exempt from access code)
      */
     async health(): Promise<HealthStatus> {
         const response = await fetch(`${this.baseUrl}/api/health`);
@@ -247,10 +295,34 @@ class ApiClient {
     }
 
     /**
+     * Check access code validity via POST /api/auth/check
+     */
+    async checkAuth(code: string): Promise<{ ok: boolean; error?: string }> {
+        try {
+            const response = await fetch(`${this.baseUrl}/api/auth/check`, {
+                method: 'POST',
+                headers: {
+                    'X-Access-Code': code,
+                },
+            });
+            if (response.status === 200) {
+                return { ok: true };
+            }
+            if (response.status === 429) {
+                const data = await response.json().catch(() => ({}));
+                return { ok: false, error: data.detail || 'Too many attempts, try again later' };
+            }
+            return { ok: false, error: 'Invalid access code' };
+        } catch {
+            return { ok: false, error: 'Connection error' };
+        }
+    }
+
+    /**
      * Run audit on a URL
      */
     async audit(request: AuditRequest): Promise<AuditResponse> {
-        const response = await fetch(`${this.baseUrl}/api/audit`, {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/audit`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -259,7 +331,7 @@ class ApiClient {
         });
 
         if (!response.ok) {
-            const error = await response.json();
+            const error = await response.json().catch(() => ({}));
             throw new Error(error.detail || 'Audit failed');
         }
 
@@ -270,7 +342,7 @@ class ApiClient {
      * Start a batch audit
      */
     async startBatch(request: BatchAuditRequest): Promise<{ job_id: string }> {
-        const response = await fetch(`${this.baseUrl}/api/batch`, {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -290,7 +362,7 @@ class ApiClient {
      * Get batch job status
      */
     async getBatchStatus(jobId: string): Promise<BatchJobResponse> {
-        const response = await fetch(`${this.baseUrl}/api/batch/${jobId}`);
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}`);
         if (!response.ok) {
             const error = await response.json().catch(() => ({}));
             throw new Error(error.detail || 'Failed to get batch status');
@@ -299,14 +371,66 @@ class ApiClient {
     }
 
     /**
-     * Get batch CSV download URL
+     * Download batch summary CSV using fetch with auth and trigger Blob download
+     */
+    async downloadBatchCsv(jobId: string): Promise<void> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/csv`);
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to download batch CSV');
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition');
+        let filename = `geo_audit_batch_${jobId.slice(0, 8)}.csv`;
+        if (disposition && disposition.includes('filename=')) {
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            if (match && match[1]) filename = match[1];
+        }
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(blobUrl);
+    }
+
+    /**
+     * Download batch aggregated issues CSV using fetch with auth and trigger Blob download
+     */
+    async downloadBatchIssuesCsv(jobId: string): Promise<void> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/issues.csv`);
+        if (!response.ok) {
+            const err = await response.json().catch(() => ({}));
+            throw new Error(err.detail || 'Failed to download issues CSV');
+        }
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition');
+        let filename = `geo_audit_issues_${jobId.slice(0, 8)}.csv`;
+        if (disposition && disposition.includes('filename=')) {
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            if (match && match[1]) filename = match[1];
+        }
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(blobUrl);
+    }
+
+    /**
+     * Get batch CSV download URL (fallback reference)
      */
     getBatchCsvUrl(jobId: string): string {
         return `${this.baseUrl}/api/batch/${jobId}/csv`;
     }
 
     /**
-     * Get batch issues CSV download URL
+     * Get batch issues CSV download URL (fallback reference)
      */
     getBatchIssuesCsvUrl(jobId: string): string {
         return `${this.baseUrl}/api/batch/${jobId}/issues.csv`;
@@ -316,7 +440,7 @@ class ApiClient {
      * Get scoring weights configuration
      */
     async getScoringWeights(): Promise<Record<string, unknown>> {
-        const response = await fetch(`${this.baseUrl}/api/scoring-weights`);
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/scoring-weights`);
         if (!response.ok) {
             throw new Error('Failed to fetch scoring weights');
         }
@@ -324,9 +448,14 @@ class ApiClient {
     }
 
     /**
-     * Get backend version (single source of truth)
+     * Get backend version (single source of truth, exempt from access code)
      */
-    async getVersion(): Promise<{ version: string; ai_enabled?: boolean; serp_enabled?: boolean }> {
+    async getVersion(): Promise<{
+        version: string;
+        ai_enabled?: boolean;
+        serp_enabled?: boolean;
+        access_required?: boolean;
+    }> {
         const response = await fetch(`${this.baseUrl}/api/version`);
         if (!response.ok) {
             throw new Error('Failed to fetch version');
@@ -338,7 +467,7 @@ class ApiClient {
      * Generate AI suggested fixes for Schema.org and lead paragraph
      */
     async generateAIFixes(aiContext: AIContext): Promise<AIFixesResponse> {
-        const response = await fetch(`${this.baseUrl}/api/ai/fixes`, {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/fixes`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
@@ -358,7 +487,7 @@ class ApiClient {
      * Generate comprehensive AI improvement plan
      */
     async generateAIPlan(aiContext: AIContext): Promise<AIPlanResponse> {
-        const response = await fetch(`${this.baseUrl}/api/ai/plan`, {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/plan`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',

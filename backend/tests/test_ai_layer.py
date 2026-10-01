@@ -12,16 +12,21 @@ from src.services.llm_client import (
     extract_json_from_text,
     daily_tracker,
 )
-from main import app, ai_fixes_cache
+from main import app, ai_fixes_cache, reset_failed_auth_attempts
+from src.services.serp_client import serp_daily_tracker
 
 
 @pytest.fixture(autouse=True)
 def reset_state():
     daily_tracker.reset_for_tests()
+    serp_daily_tracker.reset_for_tests()
+    reset_failed_auth_attempts()
     ai_fixes_cache.clear()
     get_settings.cache_clear()
     yield
     daily_tracker.reset_for_tests()
+    serp_daily_tracker.reset_for_tests()
+    reset_failed_auth_attempts()
     ai_fixes_cache.clear()
     get_settings.cache_clear()
 
@@ -1923,4 +1928,446 @@ async def client_audit_helper(html: str):
         fetch_robots_fn=AsyncMock(return_value=("User-agent: *\nAllow: /", 200)),
         measure_ttfb_fn=AsyncMock(return_value=(100.0, [100.0])),
     )
+
+
+# ---------------------------------------------------------------------------
+# 18. Access Code Protection & Rate Limiting Tests
+# ---------------------------------------------------------------------------
+
+def test_access_code_settings():
+    s_default = Settings(access_code="")
+    assert s_default.access_required is False
+    assert s_default.serp_daily_limit == 100
+
+    s_configured = Settings(
+        access_code="super-secret-code",
+        dataforseo_password="my-password",
+        serp_daily_limit=50,
+    )
+    assert s_configured.access_required is True
+    assert s_configured.serp_daily_limit == 50
+    # Ensure secrets are masked in repr
+    r = repr(s_configured)
+    assert "super-secret-code" not in r
+    assert "my-password" not in r
+
+
+def test_access_code_protection_disabled():
+    client = TestClient(app)
+    s = Settings(access_code="")
+    with patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        r_version = client.get("/api/version")
+        assert r_version.status_code == 200
+        assert r_version.json()["access_required"] is False
+
+        r_health = client.get("/api/health")
+        assert r_health.status_code == 200
+
+        r_check = client.post("/api/auth/check")
+        assert r_check.status_code == 200
+        assert r_check.json() == {"status": "ok"}
+
+
+def test_access_code_protection_enabled():
+    client = TestClient(app)
+    code = "correct-auth-token-123"
+    s = Settings(access_code=code)
+
+    with patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        # 1. /api/health and /api/version exempt
+        r_health = client.get("/api/health")
+        assert r_health.status_code == 200
+
+        r_version = client.get("/api/version")
+        assert r_version.status_code == 200
+        assert r_version.json()["access_required"] is True
+        assert code not in r_version.text
+
+        # 2. Missing access code -> 401 "Access code required"
+        r_no_header = client.post("/api/auth/check")
+        assert r_no_header.status_code == 401
+        assert r_no_header.json()["detail"] == "Access code required"
+
+        # 3. Wrong access code -> 401 "Invalid access code"
+        r_wrong = client.post("/api/auth/check", headers={"X-Access-Code": "wrong-code"})
+        assert r_wrong.status_code == 401
+        assert r_wrong.json()["detail"] == "Invalid access code"
+
+        # 4. Correct access code -> 200
+        r_valid = client.post("/api/auth/check", headers={"X-Access-Code": code})
+        assert r_valid.status_code == 200
+        assert r_valid.json() == {"status": "ok"}
+
+        # 5. Protected endpoints without code return 401
+        assert client.post("/api/audit", json={"url": "https://example.com"}).status_code == 401
+        assert client.post("/api/batch", json={"urls": ["https://example.com"]}).status_code == 401
+        assert client.get("/api/batch/some-job/csv").status_code == 401
+        assert client.get("/api/batch/some-job/issues-csv").status_code == 401
+        assert client.post("/api/ai/fixes", json={"url": "https://example.com"}).status_code == 401
+        assert client.post("/api/ai/plan", json={"url": "https://example.com"}).status_code == 401
+
+
+def test_access_code_rate_limiting():
+    client = TestClient(app)
+    code = "vault-pass-999"
+    s = Settings(access_code=code)
+
+    with patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        # 10 incorrect attempts -> 401
+        for _ in range(10):
+            res = client.post("/api/auth/check", headers={"X-Access-Code": "wrong", "X-Forwarded-For": "198.51.100.1"})
+            assert res.status_code == 401
+
+        # 11th incorrect attempt -> 401 (len(recent_failures) becomes 11)
+        res11 = client.post("/api/auth/check", headers={"X-Access-Code": "wrong", "X-Forwarded-For": "198.51.100.1"})
+        assert res11.status_code == 401
+
+        # 12th attempt from same IP -> 429
+        res12 = client.post("/api/auth/check", headers={"X-Access-Code": "wrong", "X-Forwarded-For": "198.51.100.1"})
+        assert res12.status_code == 429
+        assert res12.json()["detail"] == "Too many attempts, try again later"
+
+        # Even with the correct code, blocked during 15-minute window
+        res_blocked = client.post("/api/auth/check", headers={"X-Access-Code": code, "X-Forwarded-For": "198.51.100.1"})
+        assert res_blocked.status_code == 429
+
+        # A different IP is not blocked
+        res_other = client.post("/api/auth/check", headers={"X-Access-Code": code, "X-Forwarded-For": "198.51.100.2"})
+        assert res_other.status_code == 200
+
+        # Exempt routes are not blocked
+        assert client.get("/api/health", headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
+        assert client.get("/api/version", headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
+
+
+# ---------------------------------------------------------------------------
+# 19. SERP Daily Limit & Fallback Tests
+# ---------------------------------------------------------------------------
+
+def test_serp_daily_limit_tracker():
+    from src.services.serp_client import SerpDailyCallTracker, SerpDailyLimitExceededError
+    tracker = SerpDailyCallTracker()
+    assert tracker.get_count() == 0
+    assert tracker.check_and_increment(2) == 1
+    assert tracker.check_and_increment(2) == 2
+    with pytest.raises(SerpDailyLimitExceededError):
+        tracker.check_and_increment(2)
+
+
+@pytest.mark.asyncio
+async def test_plan_serp_daily_limit_exceeded_fallback():
+    from src.services.serp_client import SerpDailyLimitExceededError
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+        serp_daily_limit=5,
+    )
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "What is citability?",
+                "why_it_matters": "Core concept",
+                "answer_source": "page",
+                "draft_answer": "Citability is the readiness of content for AI models.",
+                "suggested_location": "Under introduction",
+            }
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "new_paragraphs": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm, \
+         patch("src.services.serp_client.SerpClient.fetch_serp_live", side_effect=SerpDailyLimitExceededError("Daily Google data limit reached, try again tomorrow")):
+
+        mock_llm.return_value = mock_llm_plan
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/test",
+                "title": "Citability Guide",
+                "h1": "Citability Guide",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Citability is the readiness of content for AI models. It measures clarity.",
+            }
+        }
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["serp_used"] is False
+        assert data["serp_paa_found"] == 0
+        assert "Daily Google data limit reached; questions and sources are AI-suggested only." in data["warnings"]
+
+
+# ---------------------------------------------------------------------------
+# 20. Plan Adjustments Tests (serp_paa_found, Normalization, Data Opps, Missing Info)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_serp_paa_found_and_paa_normalization_matching():
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+
+    mock_serp = {
+        "organic_results": [{"position": 1, "domain": "source.com", "url": "https://source.com/a", "title": "A"}],
+        "people_also_ask": [
+            {"question": "¿Cuál es la diferencia entre IA y machine learning?", "url": "https://ex.com/1", "domain": "ex.com"},
+            {"question": "¿Cómo auditar una web?", "url": "https://ex.com/2", "domain": "ex.com"},
+        ],
+        "ai_overview": None,
+        "related_searches": [],
+        "market": "ES/es",
+    }
+
+    # LLM plan returns 2 questions: one matches PAA with missing ¿ and lowercasing, the other is brand new
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "Cual es la diferencia entre ia y machine learning",
+                "why_it_matters": "Distinction needed",
+                "answer_source": "page",
+                "draft_answer": "AI is broader while ML is a subset.",
+                "suggested_location": "Section 2",
+            },
+            {
+                "question": "Cuanto cuesta una auditoria GEO",
+                "why_it_matters": "Pricing intent",
+                "answer_source": "needs_info",
+                "draft_answer": "Depende de la complejidad.",
+                "suggested_location": "FAQ",
+            },
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "new_paragraphs": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm, \
+         patch("src.services.serp_client.SerpClient.fetch_serp_live", new_callable=AsyncMock) as mock_serp_call:
+
+        mock_llm.return_value = mock_llm_plan
+        mock_serp_call.return_value = mock_serp
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/es/test",
+                "title": "Machine Learning vs IA",
+                "h1": "Machine Learning vs IA",
+                "language": "es",
+                "content_type": "guide_blog",
+                "main_text": "AI is broader while ML is a subset. Guide on machine learning.",
+            },
+            "target_query": "diferencia entre ia y machine learning",
+        }
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["serp_used"] is True
+        assert data["serp_paa_found"] == 2
+
+        q0 = data["questions_to_answer"][0]
+        assert q0["origin"] == "google_paa"
+        assert q0["question"] == "¿Cuál es la diferencia entre IA y machine learning?"
+
+        q1 = data["questions_to_answer"][1]
+        assert q1["origin"] == "ai"
+
+
+@pytest.mark.asyncio
+async def test_plan_discards_technical_data_opportunities():
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_plan = {
+        "questions_to_answer": [],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [
+            {
+                "suggestion": "Implement schema markup for organization",
+                "source_type": "Schema generator",
+            },
+            {
+                "suggestion": "Include benchmark for standard latency",
+                "source_type": "Annual financial report",
+            },
+            {
+                "suggestion": "Añadir alt text a los diagramas",
+                "source_type": "CMS image editor",
+            },
+            {
+                "suggestion": "Optimizar metadata de la página",
+                "source_type": "Yoast plugin",
+            },
+            {
+                "suggestion": "Añadir datos estructurados de producto",
+                "source_type": "Schema.org",
+            },
+            {
+                "suggestion": "Add survey findings on user retention",
+                "source_type": "Product analytics dashboard",
+            },
+        ],
+        "new_paragraphs": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.return_value = mock_llm_plan
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/test",
+                "title": "Product Growth",
+                "h1": "Product Growth",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Sample text about product growth and metrics.",
+            }
+        }
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        opps = data["data_opportunities"]
+        # Only 2 non-technical opportunities should remain
+        assert len(opps) == 2
+        suggestions = [o["suggestion"] for o in opps]
+        assert "Include benchmark for standard latency" in suggestions
+        assert "Add survey findings on user retention" in suggestions
+        for o in opps:
+            combined = (o["suggestion"] + " " + o["source_type"]).lower()
+            assert "schema" not in combined
+            assert "structured data" not in combined
+            assert "alt text" not in combined
+            assert "metadata" not in combined
+            assert "datos estructurados" not in combined
+
+
+@pytest.mark.asyncio
+async def test_plan_reclassifies_page_to_needs_info():
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "What is the launch date?",
+                "why_it_matters": "Timeline",
+                "answer_source": "page",
+                "draft_answer": "The page does not specify the exact launch date of the product.",
+                "suggested_location": "Under Section 1",
+            },
+            {
+                "question": "Who conducted the survey?",
+                "why_it_matters": "Authority",
+                "answer_source": "page",
+                "draft_answer": "The study was conducted by Oxford University in October 2023.",
+                "suggested_location": "Under Methodology",
+            },
+            {
+                "question": "¿Cuáles son los requisitos de acceso?",
+                "why_it_matters": "Onboarding",
+                "answer_source": "page",
+                "draft_answer": "El artículo no menciona los requisitos para solicitar la beca.",
+                "suggested_location": "Sección requisitos",
+            },
+            {
+                "question": "¿Cuál es la tasa de éxito?",
+                "why_it_matters": "Results",
+                "answer_source": "page",
+                "draft_answer": "El texto no indica el porcentaje final de aprobados.",
+                "suggested_location": "Conclusión",
+            },
+            {
+                "question": "What are the supported payment methods?",
+                "why_it_matters": "Purchasing",
+                "answer_source": "page",
+                "draft_answer": "The guide does not provide details on payment gateways.",
+                "suggested_location": "Pricing FAQ",
+            },
+            {
+                "question": "What is the warranty period?",
+                "why_it_matters": "Policy",
+                "answer_source": "page",
+                "draft_answer": "Warranty coverage is not specified in the documentation.",
+                "suggested_location": "Terms",
+            },
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "new_paragraphs": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.return_value = mock_llm_plan
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/test",
+                "title": "Study results",
+                "h1": "Study results",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Oxford University published a study in October 2023.",
+            }
+        }
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        questions = data["questions_to_answer"]
+        # Question 0: "does not specify" -> reclassified to "needs_info"
+        assert questions[0]["answer_source"] == "needs_info"
+        # Question 1: valid page answer -> kept as "page"
+        assert questions[1]["answer_source"] == "page"
+        # Question 2: "no menciona" -> reclassified to "needs_info"
+        assert questions[2]["answer_source"] == "needs_info"
+        # Question 3: "no indica" -> reclassified to "needs_info"
+        assert questions[3]["answer_source"] == "needs_info"
+        # Question 4: "does not provide" -> reclassified to "needs_info"
+        assert questions[4]["answer_source"] == "needs_info"
+        # Question 5: "not specified" -> reclassified to "needs_info"
+        assert questions[5]["answer_source"] == "needs_info"
+
 
