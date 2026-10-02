@@ -32,6 +32,7 @@ from src.models.schemas import (
     AuditResponse,
     AIFixesResponse,
     AIPlanResponse,
+    AhrefsOffpageResponse,
     DetectorResult,
     ScoreBreakdown,
 )
@@ -121,14 +122,17 @@ def get_top_non_technical_actions(
             if any(kw in name_lower for kw in EXCLUDED_SUBMETRIC_KEYWORDS):
                 continue
 
-            # Only consider submetrics that have room for improvement (< 100)
-            if raw_score >= 100.0:
+            # Only consider submetrics with raw_score < 70 and with at least one recommendation
+            if raw_score >= 70.0:
                 continue
 
-            impact = det_weight * (100.0 - raw_score)
             recs = getattr(b, "recommendations", []) or []
-            rec_text = recs[0] if recs else getattr(b, "explanation", "Needs improvement.")
+            valid_recs = [r.strip() for r in recs if isinstance(r, str) and r.strip()]
+            if not valid_recs:
+                continue
+            rec_text = valid_recs[0]
 
+            impact = det_weight * (100.0 - raw_score)
             friendly_name = FRIENDLY_SUBMETRIC_NAMES.get(name, name)
             candidates.append((friendly_name, rec_text, impact))
 
@@ -190,6 +194,7 @@ def generate_editor_brief_docx(
     audit_result: AuditResponse,
     ai_fixes: Optional[AIFixesResponse] = None,
     ai_plan: Optional[AIPlanResponse] = None,
+    ahrefs_offpage: Optional[AhrefsOffpageResponse] = None,
 ) -> bytes:
     """
     Build the complete Word (.docx) document and return as raw bytes.
@@ -290,6 +295,93 @@ def generate_editor_brief_docx(
         r = p.add_run("No high-priority content actions needed! The page content meets all quality thresholds.")
         r.font.size = Pt(10)
         r.font.italic = True
+
+    # 2.1 Off-page signals (Ahrefs) (if Ahrefs data present)
+    if ahrefs_offpage:
+        h2_offpage = doc.add_heading(level=1)
+        h2_offpage.paragraph_format.space_before = Pt(16)
+        h2_offpage.paragraph_format.space_after = Pt(4)
+        run_h2_off = h2_offpage.add_run("Off-page signals (Ahrefs)")
+        run_h2_off.font.name = "Arial"
+        run_h2_off.font.size = Pt(16)
+        run_h2_off.bold = True
+        run_h2_off.font.color.rgb = RGBColor(31, 41, 55)
+
+        sub_off = doc.add_paragraph()
+        sub_off.paragraph_format.space_after = Pt(8)
+        run_sub_off = sub_off.add_run("Data from Ahrefs. Not included in the Citation Score.")
+        run_sub_off.font.italic = True
+        run_sub_off.font.size = Pt(9.5)
+        run_sub_off.font.color.rgb = RGBColor(107, 114, 128)
+
+        # Off-page Metrics Table
+        table_off = doc.add_table(rows=1, cols=2)
+        table_off.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table_off.autofit = True
+
+        hdr_cells = table_off.rows[0].cells
+        hdr_cells[0].text = "Signal"
+        hdr_cells[1].text = "Value"
+        for c in hdr_cells:
+            set_cell_background(c, "F9FAFB")
+            set_cell_margins(c, 100, 100, 150, 150)
+            for p in c.paragraphs:
+                for r in p.runs:
+                    r.bold = True
+                    r.font.size = Pt(9.5)
+                    r.font.color.rgb = RGBColor(55, 65, 81)
+
+        def _fmt(v: Any) -> str:
+            if v is None:
+                return "n/a"
+            if isinstance(v, float) and v.is_integer():
+                return str(int(v))
+            if isinstance(v, (int, float)):
+                return f"{v:,.0f}" if isinstance(v, int) else f"{v:,.1f}"
+            return str(v)
+
+        metrics_list = [
+            ("Domain Rating", _fmt(ahrefs_offpage.domain_rating)),
+            ("URL Rating", _fmt(ahrefs_offpage.url_rating)),
+            ("Referring domains", _fmt(ahrefs_offpage.referring_domains)),
+            ("Backlinks", _fmt(ahrefs_offpage.backlinks)),
+            ("Organic keywords", _fmt(ahrefs_offpage.organic_keywords)),
+            ("Top 3 keywords", _fmt(ahrefs_offpage.top3_keywords)),
+            ("Organic traffic/month", _fmt(ahrefs_offpage.organic_traffic)),
+        ]
+
+        for label, val_str in metrics_list:
+            row_cells = table_off.add_row().cells
+            row_cells[0].text = label
+            row_cells[1].text = val_str
+            for c in row_cells:
+                set_cell_margins(c, 80, 80, 150, 150)
+                for p in c.paragraphs:
+                    for r in p.runs:
+                        r.font.size = Pt(9.5)
+                        r.font.color.rgb = RGBColor(55, 65, 81)
+            for p in row_cells[1].paragraphs:
+                for r in p.runs:
+                    r.bold = True
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
+        if ahrefs_offpage.recommendations:
+            p_rec_title = doc.add_paragraph()
+            p_rec_title.paragraph_format.space_before = Pt(6)
+            p_rec_title.paragraph_format.space_after = Pt(2)
+            r_rec_title = p_rec_title.add_run("Off-page recommendations:")
+            r_rec_title.bold = True
+            r_rec_title.font.size = Pt(10)
+            r_rec_title.font.color.rgb = RGBColor(31, 41, 55)
+
+            for rec in ahrefs_offpage.recommendations:
+                b_rec = doc.add_paragraph(style="List Bullet")
+                b_rec.paragraph_format.space_before = Pt(2)
+                b_rec.paragraph_format.space_after = Pt(4)
+                r_b = b_rec.add_run(rec)
+                r_b.font.size = Pt(9.5)
+                r_b.font.color.rgb = RGBColor(55, 65, 81)
 
     # 3. Suggested opening paragraph (if Quick fixes present)
     if ai_fixes and ai_fixes.lead_paragraph:

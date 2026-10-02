@@ -143,10 +143,24 @@ export interface AIPlanRequest {
     query?: string;
 }
 
+export interface AhrefsOffpageResponse {
+    domain_rating: number | null;
+    url_rating: number | null;
+    referring_domains: number | null;
+    backlinks: number | null;
+    referring_domains_all_time: number | null;
+    organic_keywords: number | null;
+    top3_keywords: number | null;
+    organic_traffic: number | null;
+    checked_at: string;
+    recommendations: string[];
+}
+
 export interface BriefExportRequest {
     audit_result: AuditResponse;
     ai_fixes?: AIFixesResponse | null;
     ai_plan?: AIPlanResponse | null;
+    ahrefs_offpage?: AhrefsOffpageResponse | null;
 }
 
 export interface AuditResponse {
@@ -513,6 +527,7 @@ class ApiClient {
         ai_enabled?: boolean;
         serp_enabled?: boolean;
         access_required?: boolean;
+        ahrefs_enabled?: boolean;
     }> {
         let response: Response;
         try {
@@ -592,6 +607,20 @@ class ApiClient {
         link.click();
         link.remove();
         window.URL.revokeObjectURL(blobUrl);
+    }
+
+    /**
+     * Fetch off-page authority and ranking signals from Ahrefs
+     */
+    async checkOffpage(url: string, language?: string): Promise<AhrefsOffpageResponse> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/offpage`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({ url, language: language || 'en' }),
+        });
+        return this.parseResponse<AhrefsOffpageResponse>(response, 'Failed to fetch Ahrefs off-page signals');
     }
 }
 

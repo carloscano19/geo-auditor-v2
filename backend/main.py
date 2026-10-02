@@ -52,6 +52,8 @@ from src.models.schemas import (
     PlanInconsistency,
     PlanSourceToCite,
     BriefExportRequest,
+    AhrefsOffpageRequest,
+    AhrefsOffpageResponse,
 )
 from src.services.llm_client import (
     LLMClient,
@@ -76,10 +78,20 @@ from src.utils.lang_patterns import (
     TECHNICAL_DATA_OPP_PHRASES,
     MISSING_INFO_ANSWER_PHRASES,
     DISCARD_QUESTION_KEYWORDS,
+    generate_ahrefs_recommendations,
 )
 from src.utils.docx_brief import (
     generate_editor_brief_docx,
     sanitize_domain_for_filename,
+)
+from src.services.ahrefs_client import (
+    AhrefsClient,
+    get_cached_ahrefs_data,
+    put_cached_ahrefs_data,
+    get_ahrefs_daily_count,
+    increment_ahrefs_daily_count,
+    reset_ahrefs_cache,
+    reset_ahrefs_daily_usage,
 )
 
 CONTENT_TYPE_DISPLAY_NAMES: Dict[str, str] = {
@@ -676,12 +688,13 @@ async def resolve_serp_query(
 @app.get("/api/version")
 async def get_version():
     """Single source of version endpoint."""
-    s = settings if (settings is not None and (settings.ai_enabled or settings.serp_enabled or settings.access_required)) else get_settings()
+    s = settings if (settings is not None and (settings.ai_enabled or settings.serp_enabled or settings.access_required or settings.ahrefs_enabled)) else get_settings()
     return {
         "version": s.app_version,
         "ai_enabled": s.ai_enabled,
         "serp_enabled": s.serp_enabled,
         "access_required": s.access_required,
+        "ahrefs_enabled": s.ahrefs_enabled,
     }
 
 
@@ -1481,6 +1494,7 @@ async def export_editor_brief(request: BriefExportRequest):
             audit_result=request.audit_result,
             ai_fixes=request.ai_fixes,
             ai_plan=request.ai_plan,
+            ahrefs_offpage=request.ahrefs_offpage,
         )
     except Exception as e:
         logger.error(f"Failed to generate editor brief .docx: {traceback.format_exc()}")
@@ -1497,6 +1511,75 @@ async def export_editor_brief(request: BriefExportRequest):
             "Content-Disposition": f'attachment; filename="{filename}"'
         },
     )
+
+
+@app.post("/api/offpage", response_model=AhrefsOffpageResponse)
+async def get_offpage_signals(request: AhrefsOffpageRequest):
+    """
+    Fetch off-page authority and ranking signals from Ahrefs API v3.
+    Protected by access code. Results do not affect the Citation Score.
+    """
+    s = get_settings()
+    if not s.ahrefs_enabled:
+        raise HTTPException(status_code=503, detail="Ahrefs is not configured")
+
+    if not request.url or not request.url.strip():
+        raise HTTPException(status_code=400, detail="URL is required")
+
+    url = request.url.strip()
+
+    # 1. Check in-memory 7-day cache
+    cached_data = get_cached_ahrefs_data(url)
+    if cached_data:
+        recs = generate_ahrefs_recommendations(
+            referring_domains=cached_data.get("referring_domains"),
+            organic_keywords=cached_data.get("organic_keywords"),
+            top3_keywords=cached_data.get("top3_keywords"),
+            url_rating=cached_data.get("url_rating"),
+            domain_rating=cached_data.get("domain_rating"),
+            language=request.language or "en",
+        )
+        return AhrefsOffpageResponse(
+            **cached_data,
+            recommendations=recs,
+        )
+
+    # 2. Check daily limit
+    daily_count = get_ahrefs_daily_count()
+    if daily_count >= s.ahrefs_daily_limit:
+        raise HTTPException(status_code=429, detail="Daily Ahrefs limit reached, try again tomorrow")
+
+    # Increment daily count (each analysis of a non-cached URL counts as 1)
+    increment_ahrefs_daily_count()
+
+    # 3. Call Ahrefs client
+    client = AhrefsClient(api_key=s.ahrefs_api_key)
+    try:
+        signals = await client.fetch_offpage_signals(url)
+    except ValueError:
+        raise HTTPException(status_code=503, detail="Ahrefs is not configured")
+    except Exception as e:
+        logger.error(f"Failed to fetch Ahrefs off-page signals: {type(e).__name__}")
+        raise HTTPException(status_code=502, detail="Failed to fetch Ahrefs data")
+
+    # Store raw signals in 7-day cache
+    put_cached_ahrefs_data(url, signals)
+
+    # Generate rule-based recommendations
+    recs = generate_ahrefs_recommendations(
+        referring_domains=signals.get("referring_domains"),
+        organic_keywords=signals.get("organic_keywords"),
+        top3_keywords=signals.get("top3_keywords"),
+        url_rating=signals.get("url_rating"),
+        domain_rating=signals.get("domain_rating"),
+        language=request.language or "en",
+    )
+
+    return AhrefsOffpageResponse(
+        **signals,
+        recommendations=recs,
+    )
+
 
 
 

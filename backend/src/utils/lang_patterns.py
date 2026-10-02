@@ -659,3 +659,92 @@ DISCARD_QUESTION_KEYWORDS: Dict[str, List[str]] = {
 }
 
 
+def _format_score_number(val: Any) -> str:
+    """Format numeric score (e.g. 50.0 -> '50', 52.5 -> '52.5')."""
+    if val is None:
+        return ""
+    try:
+        f = float(val)
+        if f.is_integer():
+            return str(int(f))
+        return f"{f:.1f}".rstrip("0").rstrip(".")
+    except Exception:
+        return str(val)
+
+
+def generate_ahrefs_recommendations(
+    referring_domains: Optional[int] = None,
+    organic_keywords: Optional[int] = None,
+    top3_keywords: Optional[int] = None,
+    url_rating: Optional[float] = None,
+    domain_rating: Optional[float] = None,
+    language: str = "en",
+) -> List[str]:
+    """
+    Generate deterministic rule-based recommendations from Ahrefs off-page signals.
+    Bilingual support (English default, Spanish if language starts with 'es').
+    Rules without available data are skipped.
+    """
+    lang = "es" if str(language).lower().startswith("es") else "en"
+    recs: List[str] = []
+
+    # Rule 1 & 2: Referring domains
+    if referring_domains is not None:
+        if referring_domains == 0:
+            if lang == "es":
+                recs.append(
+                    "Ningún otro sitio web enlaza a esta página. Los motores de IA se basan en páginas que otros referencian: promociónala (colaboradores, notas de prensa, enlaces internos desde tus páginas más fuertes)."
+                )
+            else:
+                recs.append(
+                    "No other website links to this page. AI engines rely on pages that others reference: promote it (partners, PR, internal links from your strongest pages)."
+                )
+        elif 1 <= referring_domains <= 4:
+            if lang == "es":
+                recs.append(
+                    f"Solo {referring_domains} sitios web enlazan a esta página. Conseguir algunos enlaces más de sitios relevantes reforzaría su autoridad."
+                )
+            else:
+                recs.append(
+                    f"Only {referring_domains} websites link to this page. Earning a few more links from relevant sites would strengthen its authority."
+                )
+
+    # Rule 3 & 4: Keywords & Rankings
+    if organic_keywords is not None:
+        if organic_keywords == 0:
+            if lang == "es":
+                recs.append(
+                    "Esta página no posiciona en el top 100 de Google para ninguna palabra clave. Los motores de IA citan principalmente páginas que ya posicionan; mejora primero el contenido en la página y apunta a una consulta de búsqueda clara."
+                )
+            else:
+                recs.append(
+                    "This page doesn't rank in Google's top 100 for any keyword. AI engines mostly cite pages that already rank; improve on-page content first and target a clear search query."
+                )
+        elif organic_keywords > 0 and top3_keywords is not None and top3_keywords == 0:
+            if lang == "es":
+                recs.append(
+                    f"La página posiciona para {organic_keywords} palabras clave pero ninguna en el top 3. Reforzar el contenido para su consulta principal es la forma más rápida de ser citado."
+                )
+            else:
+                recs.append(
+                    f"The page ranks for {organic_keywords} keywords but none in the top 3. Strengthening the content for its main query is the fastest way to get cited."
+                )
+
+    # Rule 5: Low UR with strong DR
+    if url_rating is not None and domain_rating is not None:
+        if url_rating < 10.0 and domain_rating >= 50.0:
+            dr_str = _format_score_number(domain_rating)
+            ur_str = _format_score_number(url_rating)
+            if lang == "es":
+                recs.append(
+                    f"El dominio es fuerte (DR {dr_str}) pero esta página tiene poca autoridad propia (UR {ur_str}). Enlázala desde tus páginas más visitadas."
+                )
+            else:
+                recs.append(
+                    f"The domain is strong (DR {dr_str}) but this page has little authority of its own (UR {ur_str}). Link to it from your most visited pages."
+                )
+
+    return recs
+
+
+

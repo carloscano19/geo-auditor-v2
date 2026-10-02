@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     # Security / Access Protection Configuration
     access_code: str = Field(default="", repr=False)
 
+    # Ahrefs Configuration
+    ahrefs_api_key: str = Field(default="", repr=False)
+    ahrefs_daily_limit: int = 50
+
+    @property
+    def ahrefs_enabled(self) -> bool:
+        """True only if an Ahrefs API key is configured."""
+        return bool(self.ahrefs_api_key and self.ahrefs_api_key.strip())
+
     @property
     def access_required(self) -> bool:
         """True if an access code has been configured."""

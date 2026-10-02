@@ -239,10 +239,29 @@ class AIPlanRequest(BaseModel):
     query: Optional[str] = None
 
 
+class AhrefsOffpageRequest(BaseModel):
+    url: str
+    language: Optional[str] = "en"
+
+
+class AhrefsOffpageResponse(BaseModel):
+    domain_rating: Optional[float] = None
+    url_rating: Optional[float] = None
+    referring_domains: Optional[int] = None
+    backlinks: Optional[int] = None
+    referring_domains_all_time: Optional[int] = None
+    organic_keywords: Optional[int] = None
+    top3_keywords: Optional[int] = None
+    organic_traffic: Optional[float] = None
+    checked_at: str
+    recommendations: list[str] = Field(default_factory=list)
+
+
 class BriefExportRequest(BaseModel):
     audit_result: 'AuditResponse'
     ai_fixes: Optional[AIFixesResponse] = None
     ai_plan: Optional[AIPlanResponse] = None
+    ahrefs_offpage: Optional[AhrefsOffpageResponse] = None
 
 
 class AuditResponse(BaseModel):
