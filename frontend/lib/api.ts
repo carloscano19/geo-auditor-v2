@@ -229,6 +229,8 @@ export function getContentTypeDisplayName(ct: string): string {
     return CONTENT_TYPE_DISPLAY_NAMES[ct] || ct.replace(/_/g, " ").replace(/\b\w/g, (l) => l.toUpperCase());
 }
 
+export const SERVER_BUSY_MESSAGE = 'The server is waking up or busy. Please try again in a minute.';
+
 class ApiClient {
     private baseUrl: string;
 
@@ -267,13 +269,42 @@ class ApiClient {
         }
     }
 
+    private async parseResponse<T>(response: Response, defaultError: string): Promise<T> {
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+
+        const contentType = response.headers.get('content-type') || '';
+        if (!contentType.includes('application/json')) {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+
+        let data: Record<string, unknown> = {};
+        try {
+            data = (await response.json()) as Record<string, unknown>;
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+
+        if (!response.ok) {
+            throw new Error((data?.detail as string) || defaultError);
+        }
+
+        return data as unknown as T;
+    }
+
     private async fetchWithAuth(url: string, options: RequestInit = {}): Promise<Response> {
         const headers = new Headers(options.headers || {});
         const code = this.getStoredAccessCode();
         if (code) {
             headers.set('X-Access-Code', code);
         }
-        const response = await fetch(url, { ...options, headers });
+        let response: Response;
+        try {
+            response = await fetch(url, { ...options, headers });
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
         if (response.status === 401) {
             this.clearStoredAccessCode();
             if (typeof window !== 'undefined') {
@@ -287,11 +318,13 @@ class ApiClient {
      * Check API health status (exempt from access code)
      */
     async health(): Promise<HealthStatus> {
-        const response = await fetch(`${this.baseUrl}/api/health`);
-        if (!response.ok) {
-            throw new Error('API is not available');
+        let response: Response;
+        try {
+            response = await fetch(`${this.baseUrl}/api/health`);
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
         }
-        return response.json();
+        return this.parseResponse<HealthStatus>(response, 'API is not available');
     }
 
     /**
@@ -310,11 +343,19 @@ class ApiClient {
             }
             if (response.status === 429) {
                 const data = await response.json().catch(() => ({}));
-                return { ok: false, error: data.detail || 'Too many attempts, try again later' };
+                return { ok: false, error: data?.detail || 'Too many attempts, try again later' };
             }
-            return { ok: false, error: 'Invalid access code' };
+            if (response.status === 502 || response.status === 503 || response.status === 504) {
+                return { ok: false, error: SERVER_BUSY_MESSAGE };
+            }
+            const contentType = response.headers.get('content-type') || '';
+            if (!contentType.includes('application/json')) {
+                return { ok: false, error: SERVER_BUSY_MESSAGE };
+            }
+            const data = await response.json().catch(() => ({}));
+            return { ok: false, error: data?.detail || 'Invalid access code' };
         } catch {
-            return { ok: false, error: 'Connection error' };
+            return { ok: false, error: SERVER_BUSY_MESSAGE };
         }
     }
 
@@ -329,13 +370,7 @@ class ApiClient {
             },
             body: JSON.stringify(request),
         });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Audit failed');
-        }
-
-        return response.json();
+        return this.parseResponse<AuditResponse>(response, 'Audit failed');
     }
 
     /**
@@ -349,13 +384,7 @@ class ApiClient {
             },
             body: JSON.stringify(request),
         });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Batch audit initiation failed');
-        }
-
-        return response.json();
+        return this.parseResponse<{ job_id: string }>(response, 'Batch audit initiation failed');
     }
 
     /**
@@ -363,21 +392,29 @@ class ApiClient {
      */
     async getBatchStatus(jobId: string): Promise<BatchJobResponse> {
         const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}`);
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Failed to get batch status');
-        }
-        return response.json();
+        return this.parseResponse<BatchJobResponse>(response, 'Failed to get batch status');
     }
 
     /**
      * Download batch summary CSV using fetch with auth and trigger Blob download
      */
     async downloadBatchCsv(jobId: string): Promise<void> {
-        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/csv`);
+        let response: Response;
+        try {
+            response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/csv`);
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
         if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            throw new Error(err.detail || 'Failed to download batch CSV');
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err?.detail || 'Failed to download batch CSV');
+            }
+            throw new Error(SERVER_BUSY_MESSAGE);
         }
         const blob = await response.blob();
         const disposition = response.headers.get('content-disposition');
@@ -400,10 +437,22 @@ class ApiClient {
      * Download batch aggregated issues CSV using fetch with auth and trigger Blob download
      */
     async downloadBatchIssuesCsv(jobId: string): Promise<void> {
-        const response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/issues.csv`);
+        let response: Response;
+        try {
+            response = await this.fetchWithAuth(`${this.baseUrl}/api/batch/${jobId}/issues.csv`);
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+        if (response.status === 502 || response.status === 503 || response.status === 504) {
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
         if (!response.ok) {
-            const err = await response.json().catch(() => ({}));
-            throw new Error(err.detail || 'Failed to download issues CSV');
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err?.detail || 'Failed to download issues CSV');
+            }
+            throw new Error(SERVER_BUSY_MESSAGE);
         }
         const blob = await response.blob();
         const disposition = response.headers.get('content-disposition');
@@ -441,10 +490,7 @@ class ApiClient {
      */
     async getScoringWeights(): Promise<Record<string, unknown>> {
         const response = await this.fetchWithAuth(`${this.baseUrl}/api/scoring-weights`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch scoring weights');
-        }
-        return response.json();
+        return this.parseResponse<Record<string, unknown>>(response, 'Failed to fetch scoring weights');
     }
 
     /**
@@ -456,11 +502,13 @@ class ApiClient {
         serp_enabled?: boolean;
         access_required?: boolean;
     }> {
-        const response = await fetch(`${this.baseUrl}/api/version`);
-        if (!response.ok) {
-            throw new Error('Failed to fetch version');
+        let response: Response;
+        try {
+            response = await fetch(`${this.baseUrl}/api/version`);
+        } catch {
+            throw new Error(SERVER_BUSY_MESSAGE);
         }
-        return response.json();
+        return this.parseResponse(response, 'Failed to fetch version');
     }
 
     /**
@@ -474,13 +522,7 @@ class ApiClient {
             },
             body: JSON.stringify({ ai_context: aiContext }),
         });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Failed to generate AI fixes');
-        }
-
-        return response.json();
+        return this.parseResponse<AIFixesResponse>(response, 'Failed to generate AI fixes');
     }
 
     /**
@@ -494,13 +536,7 @@ class ApiClient {
             },
             body: JSON.stringify({ ai_context: aiContext }),
         });
-
-        if (!response.ok) {
-            const error = await response.json().catch(() => ({}));
-            throw new Error(error.detail || 'Failed to generate AI plan');
-        }
-
-        return response.json();
+        return this.parseResponse<AIPlanResponse>(response, 'Failed to generate AI plan');
     }
 }
 

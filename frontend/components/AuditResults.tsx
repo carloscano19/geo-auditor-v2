@@ -5,6 +5,59 @@ import { type AuditResponse, type AIFixesResponse, type AIPlanResponse, getDimen
 import ScoreDisplay from "./ScoreDisplay";
 import ScoreBreakdown from "./ScoreBreakdown";
 
+export function formatMarketInWords(market?: string | null): string {
+    if (!market) return "";
+    const m = market.trim().toLowerCase();
+    const map: Record<string, string> = {
+        "us/en": "United States, English",
+        "es/es": "Spain, Spanish",
+        "gb/en": "United Kingdom, English",
+        "uk/en": "United Kingdom, English",
+        "mx/es": "Mexico, Spanish",
+        "ca/en": "Canada, English",
+        "ca/fr": "Canada, French",
+        "au/en": "Australia, English",
+        "fr/fr": "France, French",
+        "de/de": "Germany, German",
+        "it/it": "Italy, Italian",
+        "br/pt": "Brazil, Portuguese",
+    };
+    if (map[m]) return map[m];
+    if (market.includes("/")) {
+        const parts = market.split("/");
+        const countryCode = parts[0]?.toUpperCase() || "";
+        const langCode = parts[1]?.toLowerCase() || "";
+        const countryMap: Record<string, string> = {
+            US: "United States",
+            ES: "Spain",
+            GB: "United Kingdom",
+            UK: "United Kingdom",
+            MX: "Mexico",
+            CA: "Canada",
+            AU: "Australia",
+            FR: "France",
+            DE: "Germany",
+            IT: "Italy",
+            BR: "Brazil",
+            AR: "Argentina",
+            CO: "Colombia",
+            CL: "Chile",
+        };
+        const langMap: Record<string, string> = {
+            en: "English",
+            es: "Spanish",
+            fr: "French",
+            de: "German",
+            it: "Italian",
+            pt: "Portuguese",
+        };
+        const country = countryMap[countryCode] || countryCode;
+        const lang = langMap[langCode] || langCode;
+        return `${country}, ${lang}`;
+    }
+    return market;
+}
+
 interface AuditResultsProps {
     results: AuditResponse;
     originalText?: string;
@@ -100,11 +153,10 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         const lines: string[] = [];
         lines.push(`# Content Improvement Plan: ${results.url || results.ai_context?.title || 'Audited Page'}\n`);
         if (aiPlan.serp_used && aiPlan.serp_query) {
-            let serpLine = `> Based on Google data for: '${aiPlan.serp_query}' (${aiPlan.serp_market})`;
-            if (aiPlan.serp_paa_found !== undefined && aiPlan.serp_paa_found > 0) {
-                serpLine += ` · ${aiPlan.serp_paa_found} Google questions found`;
-            }
-            lines.push(`${serpLine}\n`);
+            const marketWords = formatMarketInWords(aiPlan.serp_market);
+            const marketPart = marketWords ? ` (${marketWords})` : "";
+            const paaCount = aiPlan.serp_paa_found ?? 0;
+            lines.push(`> Google data used: search '${aiPlan.serp_query}'${marketPart} · ${paaCount} real Google questions found · sources listed below\n`);
         }
 
         if (aiPlan.warnings && aiPlan.warnings.length > 0) {
@@ -113,11 +165,22 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push("");
         }
 
+        if (aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0) {
+            lines.push(`## Inconsistencies Found on the Page`);
+            lines.push(`*The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.*\n`);
+            aiPlan.inconsistencies.forEach((inc, i) => {
+                lines.push(`### ${i + 1}. ${inc.issue}`);
+                lines.push(`- **Conflicting Values:** ${inc.values.map(v => `\`"${v}"\``).join(" vs ")}`);
+                lines.push(`- **Recommendation:** ${inc.suggestion}\n`);
+            });
+        }
+
         if (aiPlan.questions_to_answer && aiPlan.questions_to_answer.length > 0) {
-            lines.push(`## Questions to Answer`);
+            lines.push(`## Questions Your Page Should Answer`);
+            lines.push(`*Add these as an FAQ block. Short, direct answers are what AI engines quote.*\n`);
             aiPlan.questions_to_answer.forEach((q, i) => {
-                const srcBadge = q.answer_source === "page" ? "[From Page]" : "[Needs New Information]";
-                const paaBadge = q.origin === "google_paa" ? " [Asked on Google]" : "";
+                const srcBadge = q.answer_source === "page" ? "[Answer is on the page — add it as FAQ]" : "[Not answered — add new information]";
+                const paaBadge = q.origin === "google_paa" ? " [Real Google question]" : "";
                 lines.push(`### ${i + 1}. ${q.question} ${srcBadge}${paaBadge}`);
                 lines.push(`${q.draft_answer}\n`);
             });
@@ -125,8 +188,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
         if (aiPlan.suggested_h2_structure && aiPlan.suggested_h2_structure.length > 0) {
             lines.push(`## Suggested H2 Structure`);
+            lines.push(`*Use these headings to organise the page. 'New' means the section has to be written.*\n`);
             aiPlan.suggested_h2_structure.forEach((h, i) => {
-                const statusBadge = h.status === "existing" ? "[Existing]" : "[New]";
+                const statusBadge = h.status === "existing" ? "[Exists — add the heading]" : "[New — write this section]";
                 lines.push(`- **H2 ${i + 1}: ${h.h2}** ${statusBadge}`);
                 lines.push(`  - *Purpose:* ${h.purpose}`);
             });
@@ -135,6 +199,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
         if (aiPlan.suggested_table) {
             lines.push(`## Suggested Table: ${aiPlan.suggested_table.title}`);
+            lines.push(`*Add this table to the page. All values come from the page itself.*\n`);
             if (aiPlan.suggested_table.headers && aiPlan.suggested_table.rows) {
                 lines.push(`| ${aiPlan.suggested_table.headers.join(" | ")} |`);
                 lines.push(`| ${aiPlan.suggested_table.headers.map(() => "---").join(" | ")} |`);
@@ -148,7 +213,8 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }
 
         if (aiPlan.data_opportunities && aiPlan.data_opportunities.length > 0) {
-            lines.push(`## Data Opportunities to Enrich Text`);
+            lines.push(`## Data that Would Enrich the Text`);
+            lines.push(`*Information worth adding. No figures are suggested: find them in the type of source shown.*\n`);
             aiPlan.data_opportunities.forEach(d => {
                 lines.push(`- **${d.suggestion}** (Recommended Source: ${d.source_type})`);
             });
@@ -157,6 +223,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
         if (aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0) {
             lines.push(`## Sources to Cite or Link`);
+            lines.push(`*Real pages that Google ranks or cites for this topic. Link or cite the relevant ones.*\n`);
             aiPlan.sources_to_cite.forEach((s, i) => {
                 lines.push(`${i + 1}. [${s.title}](${s.url}) - Domain: ${s.domain} (${s.found_in})`);
                 if (s.why) {
@@ -166,17 +233,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push("");
         }
 
-        if (aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0) {
-            lines.push(`## Inconsistencies Found on the Page`);
-            aiPlan.inconsistencies.forEach((inc, i) => {
-                lines.push(`### ${i + 1}. ${inc.issue}`);
-                lines.push(`- **Conflicting Values:** ${inc.values.map(v => `\`"${v}"\``).join(" vs ")}`);
-                lines.push(`- **Recommendation:** ${inc.suggestion}\n`);
-            });
-        }
-
         if (aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0) {
             lines.push(`## Paragraphs to Add`);
+            lines.push(`*Ready-to-paste paragraphs, written only with facts from the page.*\n`);
             aiPlan.paragraphs_to_add.forEach((p, i) => {
                 lines.push(`### Paragraph ${i + 1}: Addressing "${p.target_issue}"`);
                 lines.push(`*Placement:* ${p.placement}\n`);
@@ -186,6 +245,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
         if (aiPlan.combined_schema) {
             lines.push(`## Combined Schema.org JSON-LD`);
+            lines.push(`*For the developer: paste in the page <head>.*\n`);
             lines.push("```json");
             lines.push(JSON.stringify(aiPlan.combined_schema, null, 2));
             lines.push("```\n");
@@ -483,10 +543,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </h4>
                                     {aiPlan.serp_used && aiPlan.serp_query && (
                                         <p className="text-xs text-text-muted mt-0.5">
-                                            Based on Google data for: &apos;{aiPlan.serp_query}&apos; ({aiPlan.serp_market})
-                                            {aiPlan.serp_paa_found !== undefined && aiPlan.serp_paa_found > 0 && (
-                                                <span> · {aiPlan.serp_paa_found} Google questions found</span>
-                                            )}
+                                            Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
                                         </p>
                                     )}
                                 </div>
@@ -515,10 +572,15 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {/* Inconsistencies found on the page */}
                             {aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0 && (
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                        <span>⚖️ Inconsistencies Found on the Page</span>
-                                        <span className="text-xs font-normal text-text-muted">({aiPlan.inconsistencies.length})</span>
-                                    </h4>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>⚖️ Inconsistencies Found on the Page</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.inconsistencies.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.
+                                        </p>
+                                    </div>
                                     <div className="grid gap-3">
                                         {aiPlan.inconsistencies.map((inc, idx) => (
                                             <div key={idx} className="p-3.5 rounded-lg bg-amber-950/20 border border-amber-500/30 space-y-2 text-xs">
@@ -543,13 +605,18 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 1. Questions to answer */}
+                            {/* 1. Questions your page should answer */}
                             {aiPlan.questions_to_answer && aiPlan.questions_to_answer.length > 0 && (
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                        <span>❓ Questions to Answer</span>
-                                        <span className="text-xs font-normal text-text-muted">({aiPlan.questions_to_answer.length})</span>
-                                    </h4>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>❓ Questions Your Page Should Answer</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.questions_to_answer.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            Add these as an FAQ block. Short, direct answers are what AI engines quote.
+                                        </p>
+                                    </div>
                                     <div className="grid gap-3">
                                         {aiPlan.questions_to_answer.map((q, idx) => (
                                             <div key={idx} className="p-3.5 rounded-lg bg-surface/50 border border-surface-border space-y-2">
@@ -560,7 +627,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                     <div className="flex items-center gap-1.5 shrink-0">
                                                         {q.origin === "google_paa" && (
                                                             <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-950/60 border border-blue-500/40 text-blue-300">
-                                                                Asked on Google
+                                                                Real Google question
                                                             </span>
                                                         )}
                                                         <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
@@ -568,7 +635,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                                 ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
                                                                 : "bg-amber-950/60 border border-amber-500/40 text-amber-300"
                                                         }`}>
-                                                            {q.answer_source === "page" ? "From the page" : "Needs new information"}
+                                                            {q.answer_source === "page" ? "Answer is on the page — add it as FAQ" : "Not answered — add new information"}
                                                         </span>
                                                     </div>
                                                 </div>
@@ -584,10 +651,15 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {/* 2. Suggested H2 Structure */}
                             {aiPlan.suggested_h2_structure && aiPlan.suggested_h2_structure.length > 0 && (
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                        <span>📑 Suggested H2 Structure</span>
-                                        <span className="text-xs font-normal text-text-muted">({aiPlan.suggested_h2_structure.length})</span>
-                                    </h4>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>📑 Suggested H2 Structure</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.suggested_h2_structure.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            Use these headings to organise the page. &apos;New&apos; means the section has to be written.
+                                        </p>
+                                    </div>
                                     <div className="divide-y divide-surface-border rounded-lg border border-surface-border overflow-hidden bg-surface/40">
                                         {aiPlan.suggested_h2_structure.map((item, idx) => (
                                             <div key={idx} className="p-3 flex items-start justify-between gap-3 text-xs">
@@ -604,7 +676,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                         ? "bg-slate-800 text-slate-300 border border-slate-700"
                                                         : "bg-purple-950/60 border border-purple-500/40 text-purple-300"
                                                 }`}>
-                                                    {item.status === "existing" ? "Existing" : "New"}
+                                                    {item.status === "existing" ? "Exists — add the heading" : "New — write this section"}
                                                 </span>
                                             </div>
                                         ))}
@@ -616,13 +688,18 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {aiPlan.suggested_table && (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>📊 Suggested Table: {aiPlan.suggested_table.title}</span>
-                                        </h4>
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                                <span>📊 Suggested Table: {aiPlan.suggested_table.title}</span>
+                                            </h4>
+                                            <p className="text-xs text-text-muted mt-0.5">
+                                                Add this table to the page. All values come from the page itself.
+                                            </p>
+                                        </div>
                                         {aiPlan.suggested_table.headers && aiPlan.suggested_table.rows && (
                                             <button
                                                 onClick={handleCopyTableHtml}
-                                                className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
+                                                className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
                                             >
                                                 📋 Copy HTML
                                             </button>
@@ -662,10 +739,15 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {/* 4. Data that would enrich the text */}
                             {aiPlan.data_opportunities && aiPlan.data_opportunities.length > 0 && (
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                        <span>💡 Data that Would Enrich the Text</span>
-                                        <span className="text-xs font-normal text-text-muted">({aiPlan.data_opportunities.length})</span>
-                                    </h4>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>💡 Data that Would Enrich the Text</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.data_opportunities.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            Information worth adding. No figures are suggested: find them in the type of source shown.
+                                        </p>
+                                    </div>
                                     <div className="grid gap-2.5">
                                         {aiPlan.data_opportunities.map((item, idx) => (
                                             <div key={idx} className="p-3 rounded-lg bg-surface/40 border border-surface-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
@@ -683,13 +765,18 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0 && (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between gap-2">
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>🔗 Sources to Cite or Link</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.sources_to_cite.length})</span>
-                                        </h4>
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                                <span>🔗 Sources to Cite or Link</span>
+                                                <span className="text-xs font-normal text-text-muted">({aiPlan.sources_to_cite.length})</span>
+                                            </h4>
+                                            <p className="text-xs text-text-muted mt-0.5">
+                                                Real pages that Google ranks or cites for this topic. Link or cite the relevant ones.
+                                            </p>
+                                        </div>
                                         <button
                                             onClick={handleCopySources}
-                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
+                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
                                         >
                                             {copiedSources ? "✓ Copied" : "📋 Copy list"}
                                         </button>
@@ -734,10 +821,15 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             {/* 6. Paragraphs to add */}
                             {aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0 && (
                                 <div className="space-y-3">
-                                    <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                        <span>✍️ Paragraphs to Add</span>
-                                        <span className="text-xs font-normal text-text-muted">({aiPlan.paragraphs_to_add.length})</span>
-                                    </h4>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
+                                            <span>✍️ Paragraphs to Add</span>
+                                            <span className="text-xs font-normal text-text-muted">({aiPlan.paragraphs_to_add.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-text-muted mt-0.5">
+                                            Ready-to-paste paragraphs, written only with facts from the page.
+                                        </p>
+                                    </div>
                                     <div className="grid gap-3">
                                         {aiPlan.paragraphs_to_add.map((p, idx) => (
                                             <div key={idx} className="p-3.5 rounded-lg bg-surface/50 border border-surface-border space-y-2">
@@ -767,16 +859,21 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 6. Combined Schema */}
+                            {/* 7. Combined Schema */}
                             {aiPlan.combined_schema && (
                                 <div className="space-y-2">
                                     <div className="flex items-center justify-between">
-                                        <h4 className="text-sm font-semibold text-text-primary">
-                                            Combined Schema.org (@graph with Article, FAQPage & Organization)
-                                        </h4>
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-text-primary">
+                                                Combined Schema.org (@graph with Article, FAQPage &amp; Organization)
+                                            </h4>
+                                            <p className="text-xs text-text-muted mt-0.5">
+                                                For the developer: paste in the page &lt;head&gt;.
+                                            </p>
+                                        </div>
                                         <button
                                             onClick={handleCopyCombinedSchema}
-                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
+                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
                                         >
                                             📋 Copy Combined Schema
                                         </button>

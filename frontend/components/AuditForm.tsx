@@ -1,22 +1,43 @@
 "use client";
 
-import { useState, FormEvent } from "react";
+import { useState, useEffect, FormEvent } from "react";
 
 interface AuditFormProps {
     onSubmit: (url: string | null, text: string | null, targetQuery?: string) => void;
     onBatchSubmit?: (urls: string[], targetQuery?: string) => void;
     isLoading: boolean;
     batchProgress?: { completed: number; total: number } | null;
+    initialUrl?: string;
+    initialMode?: "url" | "text" | "batch";
 }
 
-export default function AuditForm({ onSubmit, onBatchSubmit, isLoading, batchProgress }: AuditFormProps) {
-    const [mode, setMode] = useState<"url" | "text" | "batch">("url");
-    const [url, setUrl] = useState("");
+export default function AuditForm({
+    onSubmit,
+    onBatchSubmit,
+    isLoading,
+    batchProgress,
+    initialUrl = "",
+    initialMode = "url",
+}: AuditFormProps) {
+    const [mode, setMode] = useState<"url" | "text" | "batch">(initialMode);
+    const [url, setUrl] = useState(initialUrl);
     const [title, setTitle] = useState("");
     const [body, setBody] = useState("");
     const [batchUrlsText, setBatchUrlsText] = useState("");
     const [targetQuery, setTargetQuery] = useState("");
     const [batchError, setBatchError] = useState<string | null>(null);
+
+    useEffect(() => {
+        if (initialUrl !== undefined) {
+            setUrl(initialUrl);
+        }
+    }, [initialUrl]);
+
+    useEffect(() => {
+        if (initialMode !== undefined) {
+            setMode(initialMode);
+        }
+    }, [initialMode]);
 
     const handleSubmit = (e: FormEvent) => {
         e.preventDefault();

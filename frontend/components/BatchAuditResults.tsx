@@ -16,9 +16,16 @@ interface BatchAuditResultsProps {
     onReset?: () => void;
     csvUrl?: string;
     issuesCsvUrl?: string;
+    aiEnabled?: boolean;
+    onAnalyzeWithAI?: (url: string) => void;
 }
 
-export default function BatchAuditResults({ batchData, issuesCsvUrl }: BatchAuditResultsProps) {
+export default function BatchAuditResults({
+    batchData,
+    issuesCsvUrl,
+    aiEnabled = false,
+    onAnalyzeWithAI,
+}: BatchAuditResultsProps) {
     const [selectedItem, setSelectedItem] = useState<BatchItemResult | null>(null);
     const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
     const [isDownloadingCsv, setIsDownloadingCsv] = useState(false);
@@ -342,18 +349,35 @@ export default function BatchAuditResults({ batchData, issuesCsvUrl }: BatchAudi
                                             {item.result?.language ? item.result.language.toUpperCase() : "—"}
                                         </td>
                                         <td className="py-3.5 px-3 text-right">
-                                            {item.status === "done" && (
-                                                <span className="text-xs text-score-excellent font-medium">Done</span>
-                                            )}
-                                            {item.status === "running" && (
-                                                <span className="text-xs text-primary font-medium animate-pulse">Running...</span>
-                                            )}
-                                            {item.status === "pending" && (
-                                                <span className="text-xs text-text-muted">Pending</span>
-                                            )}
-                                            {item.status === "error" && (
-                                                <span className="text-xs text-score-critical font-medium">Failed</span>
-                                            )}
+                                            <div className="flex items-center justify-end gap-2.5">
+                                                {item.status === "done" && (
+                                                    <>
+                                                        <span className="text-xs text-score-excellent font-medium">Done</span>
+                                                        {aiEnabled && onAnalyzeWithAI && (
+                                                            <button
+                                                                type="button"
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
+                                                                    onAnalyzeWithAI(item.url);
+                                                                }}
+                                                                className="text-xs px-2.5 py-1 bg-surface hover:bg-surface-border border border-surface-border text-purple-300 hover:text-purple-200 rounded transition-colors flex items-center gap-1 font-medium shadow-sm"
+                                                                title="Analyze with AI"
+                                                            >
+                                                                <span>✨</span> Analyze with AI
+                                                            </button>
+                                                        )}
+                                                    </>
+                                                )}
+                                                {item.status === "running" && (
+                                                    <span className="text-xs text-primary font-medium animate-pulse">Running...</span>
+                                                )}
+                                                {item.status === "pending" && (
+                                                    <span className="text-xs text-text-muted">Pending</span>
+                                                )}
+                                                {item.status === "error" && (
+                                                    <span className="text-xs text-score-critical font-medium">Failed</span>
+                                                )}
+                                            </div>
                                         </td>
                                     </tr>
                                 );

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useCallback } from "react";
 import AuditForm from "@/components/AuditForm";
 import AuditResults from "@/components/AuditResults";
 import BatchAuditResults from "@/components/BatchAuditResults";
@@ -14,18 +14,25 @@ export default function Home() {
   const [activeJobId, setActiveJobId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [version, setVersion] = useState("v2.3");
+  const [aiEnabled, setAiEnabled] = useState(false);
   const [accessRequired, setAccessRequired] = useState(false);
   const [isAuthenticated, setIsAuthenticated] = useState(true);
-  const [isAuthChecking, setIsAuthChecking] = useState(true);
+  const [serverStatus, setServerStatus] = useState<"checking" | "waking_up" | "unresponsive" | "ready">("checking");
   const [accessCodeInput, setAccessCodeInput] = useState("");
   const [authError, setAuthError] = useState<string | null>(null);
   const [isSubmittingAuth, setIsSubmittingAuth] = useState(false);
+  const [formUrl, setFormUrl] = useState("");
+  const [formMode, setFormMode] = useState<"url" | "text" | "batch">("url");
+  const [formKey, setFormKey] = useState(0);
+
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const wakeUpStartRef = useRef<number>(Date.now());
+  const wakeUpTimerRef = useRef<NodeJS.Timeout | null>(null);
 
   useEffect(() => {
-    // Cleanup polling on unmount
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
+      if (wakeUpTimerRef.current) clearInterval(wakeUpTimerRef.current);
     };
   }, []);
 
@@ -40,6 +47,65 @@ export default function Home() {
       window.removeEventListener("geo_auditor_unauthorized", handleUnauthorized);
     };
   }, []);
+
+  const checkServerAndAuth = useCallback(async () => {
+    try {
+      const data = await apiClient.getVersion();
+      if (wakeUpTimerRef.current) {
+        clearInterval(wakeUpTimerRef.current);
+        wakeUpTimerRef.current = null;
+      }
+      setServerStatus("ready");
+
+      if (data?.version) setVersion(data.version);
+      if (data?.ai_enabled !== undefined) setAiEnabled(Boolean(data.ai_enabled));
+
+      if (data?.access_required) {
+        setAccessRequired(true);
+        const storedCode = apiClient.getStoredAccessCode();
+        if (storedCode) {
+          const check = await apiClient.checkAuth(storedCode);
+          if (check.ok) {
+            setIsAuthenticated(true);
+          } else {
+            apiClient.clearStoredAccessCode();
+            setIsAuthenticated(false);
+          }
+        } else {
+          setIsAuthenticated(false);
+        }
+      } else {
+        setAccessRequired(false);
+        setIsAuthenticated(true);
+      }
+    } catch {
+      const elapsed = Date.now() - wakeUpStartRef.current;
+      if (elapsed >= 180000) {
+        if (wakeUpTimerRef.current) {
+          clearInterval(wakeUpTimerRef.current);
+          wakeUpTimerRef.current = null;
+        }
+        setServerStatus("unresponsive");
+      } else {
+        setServerStatus("waking_up");
+        if (!wakeUpTimerRef.current) {
+          wakeUpTimerRef.current = setInterval(() => {
+            checkServerAndAuth();
+          }, 5000);
+        }
+      }
+    }
+  }, []);
+
+  const handleRetryServer = () => {
+    wakeUpStartRef.current = Date.now();
+    setServerStatus("waking_up");
+    if (wakeUpTimerRef.current) {
+      clearInterval(wakeUpTimerRef.current);
+      wakeUpTimerRef.current = null;
+    }
+    checkServerAndAuth();
+  };
 
   useEffect(() => {
     // 1. Wipe any stored API keys on load
@@ -56,38 +122,9 @@ export default function Home() {
       // Ignore in restricted environments
     }
 
-    // 2. Fetch backend version as single source of truth
-    apiClient
-      .getVersion()
-      .then(async (data) => {
-        if (data?.version) setVersion(data.version);
-        if (data?.access_required) {
-          setAccessRequired(true);
-          const storedCode = apiClient.getStoredAccessCode();
-          if (storedCode) {
-            const check = await apiClient.checkAuth(storedCode);
-            if (check.ok) {
-              setIsAuthenticated(true);
-            } else {
-              apiClient.clearStoredAccessCode();
-              setIsAuthenticated(false);
-            }
-          } else {
-            setIsAuthenticated(false);
-          }
-        } else {
-          setAccessRequired(false);
-          setIsAuthenticated(true);
-        }
-      })
-      .catch(() => {
-        // Fallback default
-        setIsAuthenticated(true);
-      })
-      .finally(() => {
-        setIsAuthChecking(false);
-      });
-  }, []);
+    // 2. Fetch backend version / check server
+    checkServerAndAuth();
+  }, [checkServerAndAuth]);
 
   const handleAuthSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -144,6 +181,13 @@ export default function Home() {
     }
   };
 
+  const handleAnalyzeWithAI = (targetUrl: string) => {
+    setFormUrl(targetUrl);
+    setFormMode("url");
+    setFormKey((prev) => prev + 1);
+    handleAudit(targetUrl, null, undefined);
+  };
+
   const handleBatchAudit = async (urls: string[], targetQuery?: string) => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setIsLoading(true);
@@ -188,12 +232,48 @@ export default function Home() {
     }
   };
 
-  if (isAuthChecking) {
+  if (serverStatus === "checking") {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="w-12 h-12 relative">
           <div className="absolute inset-0 border-4 border-surface-border rounded-full" />
           <div className="absolute inset-0 border-4 border-primary rounded-full border-t-transparent animate-spin" />
+        </div>
+      </div>
+    );
+  }
+
+  if (serverStatus === "waking_up") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <div className="text-center max-w-md space-y-4">
+          <div className="w-12 h-12 mx-auto relative">
+            <div className="absolute inset-0 border-4 border-surface-border rounded-full" />
+            <div className="absolute inset-0 border-4 border-primary rounded-full border-t-transparent animate-spin" />
+          </div>
+          <p className="text-sm font-medium text-text-secondary">
+            Waking up the server… this can take up to a minute.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (serverStatus === "unresponsive") {
+    return (
+      <div className="min-h-screen bg-background flex flex-col items-center justify-center p-4">
+        <div className="w-full max-w-sm bg-surface border border-surface-border rounded-2xl p-8 shadow-2xl text-center space-y-5">
+          <div className="text-3xl">⚠️</div>
+          <p className="text-sm text-text-secondary">
+            The server is not responding. Please try again in a few minutes.
+          </p>
+          <button
+            type="button"
+            onClick={handleRetryServer}
+            className="w-full py-2.5 px-4 rounded-lg bg-primary hover:bg-primary-hover text-white font-medium text-sm transition-colors shadow-lg shadow-primary/20"
+          >
+            Retry
+          </button>
         </div>
       </div>
     );
@@ -282,6 +362,9 @@ export default function Home() {
           </div>
 
           <AuditForm
+            key={formKey}
+            initialUrl={formUrl}
+            initialMode={formMode}
             onSubmit={handleAudit}
             onBatchSubmit={handleBatchAudit}
             isLoading={isLoading}
@@ -423,6 +506,8 @@ export default function Home() {
             batchData={batchData}
             csvUrl={activeJobId ? apiClient.getBatchCsvUrl(activeJobId) : "#"}
             issuesCsvUrl={activeJobId ? apiClient.getBatchIssuesCsvUrl(activeJobId) : undefined}
+            aiEnabled={aiEnabled}
+            onAnalyzeWithAI={handleAnalyzeWithAI}
           />
         )}
       </main>
