@@ -107,12 +107,14 @@ def get_top_non_technical_actions(
         if dim in EXCLUDED_TECHNICAL_DIMENSIONS:
             continue
 
-        det_weight = float(getattr(det, "weight", 0.10) or 0.10)
+        raw_w = getattr(det, "weight", None)
+        det_weight = 0.10 if raw_w is None else float(raw_w)
         breakdowns = getattr(det, "breakdown", []) or []
 
         for b in breakdowns:
             name = getattr(b, "name", "")
-            raw_score = float(getattr(b, "raw_score", 100.0) or 100.0)
+            raw = getattr(b, "raw_score", None)
+            raw_score = 100.0 if raw is None else float(raw)
 
             # Check if name contains technical keywords
             name_lower = name.lower()

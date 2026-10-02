@@ -409,3 +409,71 @@ async def test_ai_plan_custom_query_and_cache():
         })
         assert res3.status_code == 200
         assert mock_serp.call_count == 2
+
+
+def test_top_actions_zero_raw_score_ranking_and_exclusion():
+    """
+    Test: un resultado con tres submétricas no técnicas, con puntuaciones 0, 40 y 100
+    en dimensiones del mismo peso. Top actions debe incluir la de 0 en primer lugar,
+    después la de 40, y no la de 100.
+    """
+    det1 = DetectorResult(
+        dimension="eeat_credibility",
+        score=0.0,
+        weight=0.10,
+        contribution=0.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Author Identity",
+                raw_score=0.0,
+                weight=1.0,
+                weighted_score=0.0,
+                explanation="No author info.",
+                recommendations=["Add author byline and bio."],
+            )
+        ],
+    )
+    det2 = DetectorResult(
+        dimension="aeo_structure",
+        score=40.0,
+        weight=0.10,
+        contribution=4.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Rule of 60 (Answer First)",
+                raw_score=40.0,
+                weight=1.0,
+                weighted_score=40.0,
+                explanation="Answer incomplete.",
+                recommendations=["Provide clear answer in first 60 words."],
+            )
+        ],
+    )
+    det3 = DetectorResult(
+        dimension="content_richness",
+        score=100.0,
+        weight=0.10,
+        contribution=10.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Content Length",
+                raw_score=100.0,
+                weight=1.0,
+                weighted_score=100.0,
+                explanation="Good length.",
+                recommendations=["Maintain depth."],
+            )
+        ],
+    )
+
+    actions = get_top_non_technical_actions([det1, det2, det3])
+    names = [a[0] for a in actions]
+
+    # Top actions debe incluir la de 0 en primer lugar, después la de 40, y no la de 100.
+    assert len(actions) == 2
+    assert names[0] == "Author Identity"
+    assert names[1] == "Answer First in Intro"
+    assert "Content Length" not in names
+    assert actions[0][2] == pytest.approx(10.0)
+    assert actions[1][2] == pytest.approx(6.0)
+
