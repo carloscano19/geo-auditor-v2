@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useMemo } from "react";
 import {
     type AuditResponse,
     type AIFixesResponse,
@@ -65,6 +65,51 @@ export function formatMarketInWords(market?: string | null): string {
     return market;
 }
 
+const EXCLUDED_TECHNICAL_DIMENSIONS = new Set([
+    "technical_infrastructure",
+    "metadata_schema",
+]);
+
+const EXCLUDED_SUBMETRIC_KEYWORDS = [
+    "https",
+    "render",
+    "crawl",
+    "bot",
+    "speed",
+    "schema",
+];
+
+const FRIENDLY_SUBMETRIC_NAMES: Record<string, string> = {
+    "Rule of 60 (Answer First)": "Answer First in Intro",
+    "Interrogative H2s": "Question-based Headings",
+    "Heading Hierarchy": "Heading Structure",
+    "Power Lead (Entity in Lead)": "Main Topic in Opening Sentence",
+    "Lexical Richness (MTLD)": "Vocabulary Variety",
+    "Autonomous Passages": "Self-contained Sections",
+    "Complete Sentences": "Complete Sentences",
+    "Content Depth": "Content Depth & Substance",
+    "Evidence Density": "Facts & Evidence Density",
+    "Numeric Specificity": "Specific Data & Figures",
+    "Attribution Signals": "Source Attributions",
+    "Author Signals": "Author Information",
+    "Freshness Signals": "Publication & Update Dates",
+    "Formatting Citability": "Scannable Formatting",
+    "Links Verifiability": "Source Links & Citations",
+    "Direct Answers": "Direct Answers",
+    "Query Relevance": "Search Query Relevance",
+    "Keyword Coverage": "Topic Coverage",
+    "Entity Identification": "Clear Key Entities",
+    "Trust Pages": "About & Editorial Policy",
+};
+
+interface TopAction {
+    friendlyName: string;
+    submetricName: string;
+    recommendation: string;
+    impact: number;
+    rawScore: number;
+}
+
 interface AuditResultsProps {
     results: AuditResponse;
     originalText?: string;
@@ -72,6 +117,9 @@ interface AuditResultsProps {
 }
 
 export default function AuditResults({ results, hideAiFixes = false }: AuditResultsProps) {
+    const [activeTab, setActiveTab] = useState<"overview" | "dimensions" | "ai_plan">("overview");
+    const [openDimensions, setOpenDimensions] = useState<Record<string, boolean>>({});
+
     const [isAiLoading, setIsAiLoading] = useState(false);
     const [isPlanLoading, setIsPlanLoading] = useState(false);
     const [isBriefDownloading, setIsBriefDownloading] = useState(false);
@@ -96,10 +144,64 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }).catch(() => {});
     }, []);
 
+    // Calculate Top 5 Actions
+    const topActions = useMemo<TopAction[]>(() => {
+        const candidates: TopAction[] = [];
+        if (!results.detector_results) return candidates;
+
+        for (const det of results.detector_results) {
+            if (EXCLUDED_TECHNICAL_DIMENSIONS.has(det.dimension)) continue;
+            const detWeight = det.weight != null ? det.weight : 0.10;
+            const breakdowns = det.breakdown || [];
+
+            for (const b of breakdowns) {
+                const rawScore = b.raw_score != null ? b.raw_score : 100.0;
+                const nameLower = (b.name || "").toLowerCase();
+                if (EXCLUDED_SUBMETRIC_KEYWORDS.some(kw => nameLower.includes(kw))) continue;
+                if (rawScore >= 70.0) continue;
+
+                const validRecs = (b.recommendations || []).map(r => r.trim()).filter(Boolean);
+                if (validRecs.length === 0) continue;
+
+                const impact = detWeight * (100.0 - rawScore);
+                const friendlyName = FRIENDLY_SUBMETRIC_NAMES[b.name] || b.name;
+                candidates.push({
+                    friendlyName,
+                    submetricName: b.name,
+                    recommendation: validRecs[0],
+                    impact,
+                    rawScore,
+                });
+            }
+        }
+
+        candidates.sort((a, b) => b.impact - a.impact);
+        return candidates.slice(0, 5);
+    }, [results]);
+
+    const handleToggleDimension = (dimKey: string) => {
+        setOpenDimensions(prev => ({
+            ...prev,
+            [dimKey]: !prev[dimKey],
+        }));
+    };
+
+    const handleExpandAllDimensions = () => {
+        const allOpen: Record<string, boolean> = {};
+        results.detector_results.forEach(d => {
+            allOpen[d.dimension] = true;
+        });
+        setOpenDimensions(allOpen);
+    };
+
+    const handleCollapseAllDimensions = () => {
+        setOpenDimensions({});
+    };
+
     const handleCheckAhrefs = async () => {
         if (!results.url) return;
         setIsAhrefsLoading(true);
-        setAhErrorNull: setAhrefsError(null);
+        setAhrefsError(null);
         try {
             const data = await apiClient.checkOffpage(results.url, results.language || "en");
             setAhrefsData(data);
@@ -318,14 +420,12 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     };
 
     const handleCopySummary = () => {
-        // Find top issues (score < 50)
         const criticalIssues = results.detector_results
             .filter(d => d.score < 50)
             .sort((a, b) => a.score - b.score)
             .slice(0, 3)
             .map(d => getDimensionDisplayName(d.dimension));
 
-        // Find quick wins from recommendations - Deduplicated
         const allRecs = results.detector_results
             .flatMap(d => d.breakdown)
             .flatMap(b => b.recommendations);
@@ -350,409 +450,713 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     };
 
     return (
-        <div className="space-y-8 animate-fade-in">
-            {/* Header with URL and Score */}
-            <div className="glass-card p-8">
-                <div className="flex flex-col lg:flex-row items-center gap-8">
-                    {/* Score Circle */}
-                    <div className="flex flex-col items-center">
-                        <ScoreDisplay
-                            score={results.total_score}
-                            label="Citation Score"
-                            sublabel="Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
-                        />
-                        {results.score_capped && (
-                            <div className="mt-3 px-3 py-2 rounded-md bg-red-950/60 border border-red-500/50 text-red-400 text-xs font-medium text-center max-w-xs">
-                                ⚠️ Score capped at 30: {results.cap_reason}
+        <div className="space-y-6 animate-fade-in">
+            {/* Tab Navigation Switcher */}
+            <div className="flex items-center gap-2 border-b border-slate-200 pb-3 no-print">
+                <button
+                    type="button"
+                    onClick={() => setActiveTab("overview")}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                        activeTab === "overview"
+                            ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
+                            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                    }`}
+                >
+                    <span>📊</span>
+                    <span>Overview</span>
+                </button>
+                <button
+                    type="button"
+                    onClick={() => setActiveTab("dimensions")}
+                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                        activeTab === "dimensions"
+                            ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
+                            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                    }`}
+                >
+                    <span>📑</span>
+                    <span>Dimensions</span>
+                    <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold bg-slate-200/80 text-slate-700">
+                        {results.detector_results.length}
+                    </span>
+                </button>
+                {!hideAiFixes && results.ai_context && (
+                    <button
+                        type="button"
+                        onClick={() => setActiveTab("ai_plan")}
+                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                            activeTab === "ai_plan"
+                                ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
+                                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                        }`}
+                    >
+                        <span>✨</span>
+                        <span>AI Plan</span>
+                        {(aiFixes || aiPlan) && (
+                            <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
+                        )}
+                    </button>
+                )}
+            </div>
+
+            {/* TAB 1: OVERVIEW */}
+            <div className={`space-y-6 ${activeTab === "overview" ? "block" : "hidden print:block"}`}>
+                {/* Score & Meta Card */}
+                <div className="glass-card p-6 sm:p-8">
+                    <div className="flex flex-col lg:flex-row items-center gap-8">
+                        {/* Score Circle */}
+                        <div className="flex flex-col items-center shrink-0">
+                            <ScoreDisplay
+                                score={results.total_score}
+                                label="Citation Score"
+                                sublabel="Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
+                            />
+                            {results.score_capped && (
+                                <div className="mt-3 px-3 py-2 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs font-medium text-center max-w-xs">
+                                    ⚠️ Score capped at 30: {results.cap_reason}
+                                </div>
+                            )}
+                        </div>
+
+                        {/* Metadata & Actions */}
+                        <div className="flex-1 text-center lg:text-left min-w-0">
+                            <div className="flex flex-col justify-between items-start gap-3">
+                                <div className="w-full">
+                                    <div className="flex items-center gap-2 justify-center lg:justify-start flex-wrap mb-1">
+                                        <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                                            Audit Overview
+                                        </h2>
+                                        <span className="text-xs px-2.5 py-0.5 rounded-full font-mono bg-slate-100 text-slate-600 border border-slate-200">
+                                            {results.scoring_version}
+                                        </span>
+                                    </div>
+                                    <p className="text-xs sm:text-sm text-slate-500 mb-4 break-all max-w-2xl font-mono">
+                                        {results.url || results.ai_context?.title || "Direct Text Submission"}
+                                    </p>
+
+                                    {/* Action Buttons */}
+                                    <div className="flex flex-wrap gap-2.5 justify-center lg:justify-start no-print">
+                                        <button
+                                            type="button"
+                                            onClick={handleCopySummary}
+                                            className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                                        >
+                                            <span>📋</span>
+                                            <span>Copy Summary for Slack</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={() => window.print()}
+                                            className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                                        >
+                                            <span>🖨️</span>
+                                            <span>Print PDF</span>
+                                        </button>
+                                        <button
+                                            type="button"
+                                            onClick={handleDownloadEditorBrief}
+                                            disabled={isBriefDownloading}
+                                            className="text-xs px-3.5 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                                        >
+                                            {isBriefDownloading ? (
+                                                <>
+                                                    <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
+                                                    <span>Generating .docx...</span>
+                                                </>
+                                            ) : (
+                                                <>
+                                                    <span>📄</span>
+                                                    <span>Download editor brief (.docx)</span>
+                                                </>
+                                            )}
+                                        </button>
+                                    </div>
+                                </div>
+                            </div>
+
+                            {/* Details meta footer */}
+                            <div className="flex flex-wrap gap-4 justify-center lg:justify-start text-xs text-slate-500 mt-6 pt-4 border-t border-slate-100 font-medium">
+                                <span className="flex items-center gap-1.5">
+                                    <span>⏱️</span> {(results.analysis_time_ms / 1000).toFixed(2)}s
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                    <span>🌐</span> {(results.language || "en").toUpperCase()}
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                    <span>📄</span> {results.content_type === "news" ? "News / Press" : results.content_type === "review" ? "Review" : results.content_type === "product" ? "Product" : "Guide / Blog"}
+                                </span>
+                                <span className="flex items-center gap-1.5">
+                                    <span>📅</span> {new Date(results.analyzed_at).toLocaleString("en-US", { dateStyle: "short", timeStyle: "short" })}
+                                </span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* Top 5 Actions Card */}
+                <div className="glass-card p-6">
+                    <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
+                        <div className="flex items-center gap-2.5">
+                            <div className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center text-sm font-bold shadow-2xs">
+                                ⚡
+                            </div>
+                            <div>
+                                <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                                    Top 5 Actions
+                                </h3>
+                                <p className="text-xs text-slate-500">
+                                    Highest-impact non-technical fixes to improve citability
+                                </p>
+                            </div>
+                        </div>
+                        <span className="text-[11px] font-mono text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">
+                            Impact = Weight × (100 − Score)
+                        </span>
+                    </div>
+
+                    {topActions.length === 0 ? (
+                        <div className="p-4 bg-emerald-50 border border-emerald-200 rounded-xl text-emerald-800 text-xs flex items-center gap-2">
+                            <span>✓</span>
+                            <span>All non-technical content scored 70 or higher. No critical editorial weaknesses found!</span>
+                        </div>
+                    ) : (
+                        <div className="space-y-3">
+                            {topActions.map((action, idx) => (
+                                <div
+                                    key={idx}
+                                    className="p-4 bg-slate-50/70 border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-start justify-between gap-3 transition-all hover:bg-slate-50"
+                                >
+                                    <div className="space-y-1.5 flex-1 min-w-0">
+                                        <div className="flex items-center gap-2 flex-wrap">
+                                            <span className="w-5 h-5 rounded-full bg-slate-900 text-white text-xs font-bold flex items-center justify-center shrink-0">
+                                                {idx + 1}
+                                            </span>
+                                            <span className="text-sm font-bold text-slate-900">
+                                                {action.friendlyName}
+                                            </span>
+                                            <span className="text-[11px] text-slate-400 font-mono">
+                                                ({action.submetricName})
+                                            </span>
+                                            <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
+                                                Score: {Math.round(action.rawScore)}/100
+                                            </span>
+                                        </div>
+                                        <p className="text-xs text-slate-700 pl-7 leading-relaxed">
+                                            {action.recommendation}
+                                        </p>
+                                    </div>
+                                    <div className="sm:text-right shrink-0 pl-7 sm:pl-0">
+                                        <span className="text-[11px] font-mono text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-md shadow-2xs">
+                                            Impact: {action.impact.toFixed(1)}
+                                        </span>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
+
+                {/* Off-page Signals (Ahrefs) Card */}
+                {results.url && (
+                    <div className="glass-card p-6">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
+                            <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-700 flex items-center justify-center text-sm font-bold shadow-2xs">
+                                    🔗
+                                </div>
+                                <div>
+                                    <h3 className="text-base font-bold text-slate-900 tracking-tight">
+                                        Off-page Signals (Ahrefs)
+                                    </h3>
+                                    <p className="text-xs text-slate-500">
+                                        External backlink, authority, and ranking indicators
+                                    </p>
+                                </div>
+                            </div>
+
+                            {ahrefsEnabled && (
+                                <button
+                                    type="button"
+                                    onClick={handleCheckAhrefs}
+                                    disabled={isAhrefsLoading}
+                                    className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium no-print"
+                                >
+                                    {isAhrefsLoading ? (
+                                        <>
+                                            <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-slate-700 border-t-transparent rounded-full" />
+                                            <span>Fetching Ahrefs...</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span>🔍</span>
+                                            <span>{ahrefsData ? "Refresh Ahrefs Data" : "Check Ahrefs Signals"}</span>
+                                        </>
+                                    )}
+                                </button>
+                            )}
+                        </div>
+
+                        {!ahrefsEnabled && (
+                            <p className="text-xs text-slate-500">
+                                Ahrefs integration is disabled. Set <code className="font-mono text-[11px] bg-slate-100 px-1 py-0.5 rounded text-slate-700">GEO_AUDITOR_AHREFS_API_KEY</code> to enable live authority and backlink metrics.
+                            </p>
+                        )}
+
+                        {ahrefsError && (
+                            <div className="p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700 mt-2 flex items-center justify-between gap-2">
+                                <span>⚠️ {ahrefsError}</span>
+                                <button
+                                    type="button"
+                                    onClick={handleCheckAhrefs}
+                                    disabled={isAhrefsLoading}
+                                    className="underline text-red-800 font-semibold cursor-pointer"
+                                >
+                                    Retry
+                                </button>
+                            </div>
+                        )}
+
+                        {ahrefsData && (
+                            <div className="space-y-4 mt-3">
+                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Domain Rating</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.domain_rating != null ? ahrefsData.domain_rating : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">URL Rating</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.url_rating != null ? ahrefsData.url_rating : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Referring Domains</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.referring_domains != null ? ahrefsData.referring_domains.toLocaleString() : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Backlinks</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.backlinks != null ? ahrefsData.backlinks.toLocaleString() : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Organic Keywords</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.organic_keywords != null ? ahrefsData.organic_keywords.toLocaleString() : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Top 3 Keywords</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.top3_keywords != null ? ahrefsData.top3_keywords.toLocaleString() : "—"}
+                                        </p>
+                                    </div>
+                                    <div className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 sm:col-span-2">
+                                        <p className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">Organic Traffic/Month</p>
+                                        <p className="text-xl font-bold font-mono text-slate-900 mt-0.5">
+                                            {ahrefsData.organic_traffic != null ? Math.round(ahrefsData.organic_traffic).toLocaleString() : "—"}
+                                        </p>
+                                    </div>
+                                </div>
+
+                                {/* Recommendations */}
+                                {ahrefsData.recommendations && ahrefsData.recommendations.length > 0 && (
+                                    <div className="pt-2">
+                                        <p className="text-xs font-bold text-slate-700 mb-2 uppercase tracking-wider">
+                                            Off-page Recommendations:
+                                        </p>
+                                        <ul className="space-y-1.5 text-xs text-slate-700">
+                                            {ahrefsData.recommendations.map((rec, idx) => (
+                                                <li key={idx} className="flex items-start gap-2 bg-slate-50 p-2.5 rounded-lg border border-slate-200/80 leading-relaxed">
+                                                    <span className="text-orange-500 font-bold">→</span>
+                                                    <span>{rec}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>
+                )}
 
-                    {/* Info */}
-                    <div className="flex-1 text-center lg:text-left">
-                        <div className="flex flex-col sm:flex-row justify-between items-start gap-4">
+                {/* Not Measured by this Tool Card */}
+                <div className="glass-card p-6">
+                    <div className="flex items-center gap-2.5 mb-2">
+                        <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center text-sm font-bold shadow-2xs">
+                            ℹ️
+                        </div>
+                        <h4 className="text-base font-bold text-slate-900 tracking-tight">
+                            Not measured by this tool
+                        </h4>
+                    </div>
+                    {ahrefsData && (
+                        <p className="text-xs text-emerald-700 font-medium mb-3 flex items-center gap-1.5">
+                            <span>✓</span> Partially covered above with Ahrefs data.
+                        </p>
+                    )}
+                    <p className="text-xs text-slate-500 mb-4 leading-relaxed">
+                        The Citation Score measures on-page architectural and content readiness. Leading AI engines (ChatGPT, Perplexity, Gemini) also consider external signals:
+                    </p>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
+                        <div className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                            <span className="text-lg">📊</span>
                             <div>
-                                <h2 className="text-2xl font-bold text-text-primary mb-2">
-                                    Analysis Result
-                                </h2>
-                                <p className="text-text-secondary mb-4 break-all">
-                                    {results.url}
-                                </p>
-                                <div className="flex flex-wrap gap-2">
-                                    <button
-                                        onClick={handleCopySummary}
-                                        className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md text-slate-300 transition-colors flex items-center gap-2"
-                                    >
-                                        📋 Copy Summary for Slack
-                                    </button>
-                                    <button
-                                        onClick={() => window.print()}
-                                        className="text-xs px-3 py-1.5 bg-slate-700 hover:bg-slate-600 rounded-md text-slate-300 transition-colors flex items-center gap-2"
-                                    >
-                                        🖨️ Print PDF
-                                    </button>
-                                    <button
-                                        onClick={handleDownloadEditorBrief}
-                                        disabled={isBriefDownloading}
-                                        className="text-xs px-3 py-1.5 bg-blue-700/80 hover:bg-blue-600 disabled:bg-blue-900/40 disabled:text-blue-300/40 rounded-md text-blue-100 transition-colors flex items-center gap-2 font-medium"
-                                    >
-                                        {isBriefDownloading ? (
-                                            <>
-                                                <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
-                                                Generating .docx...
-                                            </>
-                                        ) : (
-                                            <>
-                                                📄 Download editor brief (.docx)
-                                            </>
-                                        )}
-                                    </button>
-                                </div>
+                                <p className="font-semibold text-slate-900 text-xs">Organic ranking position</p>
+                                <p className="text-[11px] text-slate-500">Domain authority & traditional search ranking</p>
                             </div>
                         </div>
-                        <div className="flex flex-wrap gap-4 justify-center lg:justify-start text-sm text-text-muted mt-6 pt-4 border-t border-surface-border">
-                            <span>
-                                ⏱️ {(results.analysis_time_ms / 1000).toFixed(2)}s
-                            </span>
-                            <span>📊 Version: {results.scoring_version}</span>
-                            <span>🌐 Language: {(results.language || "en").toUpperCase()}</span>
-                            <span>📄 Type: {results.content_type === "news" ? "News / Press" : results.content_type === "review" ? "Review" : results.content_type === "product" ? "Product" : "Guide / Blog"}</span>
-                            <span>
-                                📅{" "}
-                                {new Date(results.analyzed_at).toLocaleString("en-US", {
-                                    dateStyle: "short",
-                                    timeStyle: "short",
-                                })}
-                            </span>
+                        <div className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                            <span className="text-lg">🏷️</span>
+                            <div>
+                                <p className="font-semibold text-slate-900 text-xs">Brand mentions on third-party sites</p>
+                                <p className="text-[11px] text-slate-500">Unlinked co-citations and web consensus</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                            <span className="text-lg">📱</span>
+                            <div>
+                                <p className="font-semibold text-slate-900 text-xs">Presence on YouTube / Reddit / social</p>
+                                <p className="text-[11px] text-slate-500">Community discussion and multimedia footprints</p>
+                            </div>
+                        </div>
+                        <div className="flex items-center gap-3 p-3.5 rounded-xl bg-slate-50 border border-slate-200">
+                            <span className="text-lg">🏛️</span>
+                            <div>
+                                <p className="font-semibold text-slate-900 text-xs">Publisher reputation</p>
+                                <p className="text-[11px] text-slate-500">Historical accuracy & verified entity graph status</p>
+                            </div>
                         </div>
                     </div>
                 </div>
             </div>
 
-            {/* Dimension Results */}
-            <div className="space-y-4">
-                <h3 className="text-lg font-semibold text-text-primary">
-                    Dimension Breakdown
-                </h3>
-                <div className="grid gap-4">
+            {/* TAB 2: DIMENSIONS */}
+            <div className={`space-y-4 ${activeTab === "dimensions" ? "block" : "hidden print:block"}`}>
+                <div className="flex items-center justify-between gap-3 mb-2 flex-wrap">
+                    <div>
+                        <h3 className="text-base sm:text-lg font-bold text-slate-900 tracking-tight">
+                            Citability Dimensions ({results.detector_results.length})
+                        </h3>
+                        <p className="text-xs text-slate-500">
+                            Click any dimension to expand submetrics, explanations, and evidence
+                        </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 no-print">
+                        <button
+                            type="button"
+                            onClick={handleExpandAllDimensions}
+                            className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer"
+                        >
+                            Expand All
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleCollapseAllDimensions}
+                            className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer"
+                        >
+                            Collapse All
+                        </button>
+                    </div>
+                </div>
+
+                <div className="space-y-3">
                     {results.detector_results.map((result, index) => (
-                        <ScoreBreakdown key={index} result={result} />
+                        <ScoreBreakdown
+                            key={index}
+                            result={result}
+                            isOpen={openDimensions[result.dimension]}
+                            onToggle={() => handleToggleDimension(result.dimension)}
+                        />
                     ))}
                 </div>
             </div>
 
-            {/* AI Suggested Fixes Section (shown only when ai_context is present and not hidden) */}
+            {/* TAB 3: AI PLAN */}
             {!hideAiFixes && results.ai_context && (
-                <div className="glass-card p-6 border-indigo-500/30 bg-slate-900/60 shadow-xl space-y-6">
-                    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 border-b border-surface-border pb-4">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <span className="text-xl">✨</span>
-                                <h3 className="text-lg font-bold text-text-primary">
-                                    AI Optimization & Plan
-                                </h3>
-                            </div>
-                            <p className="text-xs text-text-muted mt-1">
-                                Generate machine-optimized Schema.org JSON-LD, direct-answer leads, and comprehensive AEO improvement plans.
-                            </p>
-                        </div>
-                        <div className="flex items-center gap-2 shrink-0">
-                            <button
-                                onClick={handleGenerateAIFixes}
-                                disabled={isAiLoading || isPlanLoading}
-                                className="px-3.5 py-2 bg-indigo-600 hover:bg-indigo-500 disabled:bg-indigo-900/50 disabled:text-indigo-400/50 text-white rounded-lg text-xs sm:text-sm font-medium transition-all shadow-md flex items-center justify-center gap-2"
-                            >
-                                {isAiLoading ? (
-                                    <>
-                                        <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-                                        Generating fixes...
-                                    </>
-                                ) : (
-                                    <>
-                                        <span>⚡</span> Quick fixes
-                                    </>
-                                )}
-                            </button>
-                            <button
-                                onClick={() => handleGenerateAIPlan()}
-                                disabled={isAiLoading || isPlanLoading}
-                                className="px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-purple-900/50 disabled:to-indigo-900/50 disabled:text-purple-300/50 text-white rounded-lg text-xs sm:text-sm font-medium transition-all shadow-md flex items-center justify-center gap-2"
-                            >
-                                {isPlanLoading ? (
-                                    <>
-                                        <span className="animate-spin inline-block w-4 h-4 border-2 border-white border-t-transparent rounded-full" />
-                                        Generating plan...
-                                    </>
-                                ) : (
-                                    <>
-                                        <span>📋</span> Full improvement plan
-                                    </>
-                                )}
-                            </button>
-                        </div>
-                    </div>
-
-                    {/* Loading status banner */}
-                    {(isAiLoading || isPlanLoading) && (
-                        <div className="p-3 bg-indigo-950/40 border border-indigo-500/40 rounded-lg text-indigo-300 text-xs flex items-center gap-2 animate-pulse">
-                            <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-indigo-400 border-t-transparent rounded-full" />
-                            <span>Generating with AI… this can take up to a minute.</span>
-                        </div>
-                    )}
-
-                    {/* Error display */}
-                    {aiError && (
-                        <div className="p-3 bg-red-950/50 border border-red-500/40 rounded-lg text-red-300 text-xs">
-                            ⚠️ {aiError}
-                        </div>
-                    )}
-
-                    {/* Quick Fixes Display */}
-                    {aiFixes && (
-                        <div className="space-y-6 pt-2">
-                            <div className="flex items-center justify-between border-b border-surface-border/50 pb-2">
-                                <h4 className="text-sm font-bold text-indigo-300 uppercase tracking-wider flex items-center gap-1.5">
-                                    <span>⚡</span> Quick Fixes Result
-                                </h4>
-                            </div>
-
-                            {/* Warnings */}
-                            {aiFixes.warnings && aiFixes.warnings.length > 0 && (
-                                <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-lg space-y-1">
-                                    <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
-                                        <span>⚠️</span> Warnings & Actions Required:
-                                    </div>
-                                    <ul className="text-xs text-amber-200/90 list-disc list-inside space-y-0.5 pl-1">
-                                        {aiFixes.warnings.map((w, idx) => (
-                                            <li key={idx}>{w}</li>
-                                        ))}
-                                    </ul>
+                <div className={`space-y-6 ${activeTab === "ai_plan" ? "block" : "hidden print:block"}`}>
+                    {/* Header info card */}
+                    <div className="glass-card p-6 border-slate-200">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
+                            <div>
+                                <div className="flex items-center gap-2">
+                                    <span className="text-xl">✨</span>
+                                    <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                                        AI Suggested Fixes & Content Plan
+                                    </h3>
                                 </div>
-                            )}
-
-                            {/* Schema.org JSON-LD Fix */}
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <h4 className="text-sm font-semibold text-text-primary">
-                                        Structured Data (Schema.org JSON-LD)
-                                    </h4>
-                                    <button
-                                        onClick={handleCopyJsonLd}
-                                        className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
-                                    >
-                                        📋 Copy JSON-LD
-                                    </button>
-                                </div>
-                                <div className="relative">
-                                    <pre className="p-4 rounded-lg bg-slate-950 border border-surface-border text-xs text-emerald-400 font-mono whitespace-pre-wrap break-words overflow-x-hidden max-h-72 overflow-y-auto">
-                                        {JSON.stringify(aiFixes.json_ld, null, 2)}
-                                    </pre>
-                                </div>
-                                <p className="text-[11px] text-text-muted italic">
-                                    Paste inside &lt;script type=&quot;application/ld+json&quot;&gt; in the page head. Replace placeholder values.
+                                <p className="text-xs text-slate-500 mt-1 max-w-xl">
+                                    Generated with Anthropic Claude & Google Search intelligence. Suggestions are strictly non-hallucinated and tailored to your page content.
                                 </p>
                             </div>
 
-                            {/* Side-by-side Lead Paragraph Comparison */}
-                            <div className="space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <h4 className="text-sm font-semibold text-text-primary">
-                                        Lead Paragraph Optimization
-                                    </h4>
-                                    <button
-                                        onClick={handleCopyLeadParagraph}
-                                        className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
-                                    >
-                                        📋 Copy Suggested Lead
-                                    </button>
-                                </div>
-
-                                <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                    {/* Original */}
-                                    <div className="p-3.5 rounded-lg bg-surface/50 border border-surface-border">
-                                        <div className="text-[11px] font-semibold text-text-muted uppercase tracking-wider mb-2">
-                                            Original Lead Paragraph
-                                        </div>
-                                        <p className="text-xs text-text-secondary leading-relaxed">
-                                            {aiFixes.lead_paragraph.original || (
-                                                <span className="italic text-text-muted">No original lead paragraph identified.</span>
-                                            )}
-                                        </p>
-                                    </div>
-
-                                    {/* Suggested */}
-                                    <div className="p-3.5 rounded-lg bg-emerald-950/20 border border-emerald-500/30">
-                                        <div className="text-[11px] font-semibold text-emerald-400 uppercase tracking-wider mb-2 flex items-center gap-1">
-                                            <span>✨</span> Suggested Lead Paragraph (Direct Answer)
-                                        </div>
-                                        <p className="text-xs text-text-primary leading-relaxed">
-                                            {aiFixes.lead_paragraph.suggested}
-                                        </p>
-                                    </div>
-                                </div>
-
-                                {/* Rationale */}
-                                {aiFixes.lead_paragraph.rationale && (
-                                    <div className="p-3 rounded-lg bg-surface/30 border border-surface-border/60 text-xs text-text-muted">
-                                        <strong className="text-text-secondary">Rationale: </strong>
-                                        {aiFixes.lead_paragraph.rationale}
-                                    </div>
-                                )}
-                            </div>
-
-                            {/* Fixed Disclaimer */}
-                            <div className="pt-2 border-t border-surface-border/60 flex items-center justify-center text-center">
-                                <p className="text-[11px] text-text-muted">
-                                    ℹ️ AI-generated suggestions. Review before publishing. They do not affect the Citation Score.
-                                </p>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Improvement Plan Display */}
-                    {aiPlan && (
-                        <div className="space-y-8 pt-2">
-                            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 border-b border-surface-border/50 pb-2">
-                                <div>
-                                    <h4 className="text-sm font-bold text-purple-300 uppercase tracking-wider flex items-center gap-1.5">
-                                        <span>📋</span> Full Improvement Plan
-                                    </h4>
-                                    {aiPlan.serp_used && aiPlan.serp_query && (
-                                        <div className="space-y-1.5 mt-0.5">
-                                            <p className="text-xs text-text-muted">
-                                                Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
-                                                {" "}
-                                                <button
-                                                    onClick={() => {
-                                                        setIsEditingQuery(!isEditingQuery);
-                                                        if (!customQuery) setCustomQuery(aiPlan.serp_query || "");
-                                                    }}
-                                                    className="text-xs text-purple-400 hover:text-purple-300 underline font-medium ml-1 transition-colors"
-                                                >
-                                                    {isEditingQuery ? "Cancel" : "Change search"}
-                                                </button>
-                                            </p>
-                                            {isEditingQuery && (
-                                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
-                                                    <input
-                                                        type="text"
-                                                        value={customQuery}
-                                                        onChange={(e) => setCustomQuery(e.target.value)}
-                                                        placeholder="Custom Google search query..."
-                                                        className="text-xs px-2.5 py-1.5 rounded bg-slate-950 border border-surface-border text-text-primary focus:outline-none focus:border-purple-500 w-full sm:w-80"
-                                                    />
-                                                    <button
-                                                        onClick={() => handleGenerateAIPlan(customQuery)}
-                                                        disabled={isPlanLoading || !customQuery.trim()}
-                                                        className="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:bg-purple-900/50 text-white rounded font-medium transition-colors shrink-0 flex items-center justify-center gap-1.5"
-                                                    >
-                                                        {isPlanLoading ? (
-                                                            <>
-                                                                <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
-                                                                Regenerating...
-                                                            </>
-                                                        ) : (
-                                                            "Regenerate plan"
-                                                        )}
-                                                    </button>
-                                                </div>
-                                            )}
-                                        </div>
-                                    )}
-                                </div>
+                            <div className="flex flex-wrap gap-2.5 no-print">
                                 <button
-                                    onClick={handleCopyPlanMarkdown}
-                                    className="text-xs px-3 py-1.5 bg-purple-700/60 hover:bg-purple-600 text-purple-100 rounded-md flex items-center gap-1.5 transition-colors self-start sm:self-auto font-medium"
+                                    type="button"
+                                    onClick={handleGenerateAIFixes}
+                                    disabled={isAiLoading}
+                                    className="btn-primary text-xs px-4 py-2"
                                 >
-                                    📥 Copy plan as Markdown
+                                    {isAiLoading ? "Generating Fixes..." : "⚡ Quick Fixes"}
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleGenerateAIPlan()}
+                                    disabled={isPlanLoading}
+                                    className="px-4 py-2 rounded-xl text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
+                                >
+                                    {isPlanLoading ? "Building Plan..." : "🎯 Improvement Plan"}
                                 </button>
                             </div>
+                        </div>
 
-                            {/* Warnings */}
-                            {aiPlan.warnings && aiPlan.warnings.length > 0 && (
-                                <div className="p-3 bg-amber-950/40 border border-amber-500/40 rounded-lg space-y-1">
-                                    <div className="text-xs font-semibold text-amber-300 flex items-center gap-1.5">
-                                        <span>⚠️</span> Warnings & Actions Required:
+                        {aiError && (
+                            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
+                                ⚠️ {aiError}
+                            </div>
+                        )}
+                    </div>
+
+                    {/* Empty State when neither generated yet */}
+                    {!aiFixes && !aiPlan && !isAiLoading && !isPlanLoading && (
+                        <div className="glass-card p-10 text-center space-y-4">
+                            <div className="w-12 h-12 mx-auto rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-2xl font-bold shadow-2xs">
+                                ✨
+                            </div>
+                            <div className="max-w-md mx-auto space-y-2">
+                                <h4 className="text-base font-bold text-slate-900">
+                                    Generate AI Fixes & Action Plan
+                                </h4>
+                                <p className="text-xs text-slate-500 leading-relaxed">
+                                    Click <strong>Quick Fixes</strong> to get an optimized lead paragraph and Schema.org JSON-LD, or <strong>Improvement Plan</strong> for full section restructuring, tables, and Google PAA answers.
+                                </p>
+                            </div>
+                            <div className="flex justify-center gap-3 pt-2">
+                                <button
+                                    type="button"
+                                    onClick={handleGenerateAIFixes}
+                                    className="btn-primary text-xs px-4 py-2.5"
+                                >
+                                    Generate Quick Fixes
+                                </button>
+                                <button
+                                    type="button"
+                                    onClick={() => handleGenerateAIPlan()}
+                                    className="px-4 py-2.5 rounded-xl text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition-all cursor-pointer"
+                                >
+                                    Generate Full Plan
+                                </button>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* 1. Quick Fixes Output */}
+                    {aiFixes && (
+                        <div className="glass-card p-6 space-y-6">
+                            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
+                                <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                                    <span>⚡</span> Quick Fixes (Lead Paragraph & Schema.org)
+                                </h4>
+                                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md font-semibold">
+                                    Ready
+                                </span>
+                            </div>
+
+                            {/* Lead Paragraph Fix */}
+                            {aiFixes.lead_paragraph && (
+                                <div className="space-y-3">
+                                    <div className="flex items-center justify-between">
+                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            1. Lead Paragraph (First 60 Words / Rule of 60)
+                                        </h5>
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyLeadParagraph}
+                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
+                                        >
+                                            Copy Suggested Text
+                                        </button>
                                     </div>
-                                    <ul className="text-xs text-amber-200/90 list-disc list-inside space-y-0.5 pl-1">
-                                        {aiPlan.warnings.map((w, idx) => (
-                                            <li key={idx}>{w}</li>
-                                        ))}
-                                    </ul>
+
+                                    {aiFixes.lead_paragraph.rationale && (
+                                        <p className="text-xs text-slate-500 italic">
+                                            {aiFixes.lead_paragraph.rationale}
+                                        </p>
+                                    )}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                                Current Text
+                                            </span>
+                                            <p className="text-xs text-slate-700 leading-relaxed font-mono">
+                                                {aiFixes.lead_paragraph.original || "(Empty or undetected lead)"}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-xl space-y-1.5">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
+                                                Suggested Optimized Opening
+                                            </span>
+                                            <p className="text-xs text-slate-800 leading-relaxed font-mono font-medium">
+                                                {aiFixes.lead_paragraph.suggested}
+                                            </p>
+                                        </div>
+                                    </div>
                                 </div>
                             )}
 
-                            {/* Inconsistencies found on the page */}
+                            {/* Schema.org Fix */}
+                            {aiFixes.json_ld && (
+                                <div className="space-y-3 pt-4 border-t border-slate-100">
+                                    <div className="flex items-center justify-between">
+                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            2. Suggested Schema.org (JSON-LD)
+                                        </h5>
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyJsonLd}
+                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
+                                        >
+                                            Copy JSON-LD
+                                        </button>
+                                    </div>
+
+                                    {aiFixes.warnings && aiFixes.warnings.length > 0 && (
+                                        <ul className="space-y-1 text-xs text-slate-600">
+                                            {aiFixes.warnings.map((rec, idx) => (
+                                                <li key={idx} className="flex items-start gap-1.5">
+                                                    <span className="text-amber-600 font-bold">•</span>
+                                                    <span>{rec}</span>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+
+                                    <div className="p-4 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto max-h-72 font-mono text-xs leading-relaxed">
+                                        <pre>{JSON.stringify(aiFixes.json_ld, null, 2)}</pre>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* 2. Full Improvement Plan Output */}
+                    {aiPlan && (
+                        <div className="glass-card p-6 space-y-6">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
+                                <div>
+                                    <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">
+                                        <span>🎯</span> Content Improvement Plan
+                                    </h4>
+                                    {aiPlan.serp_used && aiPlan.serp_query && (
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            Google Search: <span className="font-semibold text-slate-800">&ldquo;{aiPlan.serp_query}&rdquo;</span> {formatMarketInWords(aiPlan.serp_market) ? `(${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} questions found
+                                        </p>
+                                    )}
+                                </div>
+
+                                <div className="flex items-center gap-2 no-print">
+                                    <button
+                                        type="button"
+                                        onClick={handleCopyPlanMarkdown}
+                                        className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer"
+                                    >
+                                        Copy Plan (Markdown)
+                                    </button>
+                                </div>
+                            </div>
+
+                            {/* Query override editor */}
+                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
+                                <div className="flex items-center justify-between">
+                                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                        Target Search Query
+                                    </label>
+                                    <button
+                                        type="button"
+                                        onClick={() => setIsEditingQuery(!isEditingQuery)}
+                                        className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
+                                    >
+                                        {isEditingQuery ? "Cancel" : "Change & Regenerate"}
+                                    </button>
+                                </div>
+                                {isEditingQuery ? (
+                                    <div className="flex gap-2">
+                                        <input
+                                            type="text"
+                                            value={customQuery}
+                                            onChange={(e) => setCustomQuery(e.target.value)}
+                                            placeholder="Enter target query to pull Google PAA data..."
+                                            className="input-field text-xs py-2"
+                                        />
+                                        <button
+                                            type="button"
+                                            onClick={() => handleGenerateAIPlan(customQuery)}
+                                            disabled={isPlanLoading || !customQuery.trim()}
+                                            className="btn-primary text-xs px-4 py-2 shrink-0"
+                                        >
+                                            {isPlanLoading ? "Running..." : "Regenerate"}
+                                        </button>
+                                    </div>
+                                ) : (
+                                    <p className="text-xs font-mono text-slate-700">
+                                        {aiPlan.serp_query || "Auto-detected from page title"}
+                                    </p>
+                                )}
+                            </div>
+
+                            {/* Inconsistencies */}
                             {aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0 && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>⚖️ Inconsistencies Found on the Page</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.inconsistencies.length})</span>
-                                        </h4>
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.
-                                        </p>
-                                    </div>
-                                    <div className="grid gap-3">
-                                        {aiPlan.inconsistencies.map((inc, idx) => (
-                                            <div key={idx} className="p-3.5 rounded-lg bg-amber-950/20 border border-amber-500/30 space-y-2 text-xs">
-                                                <div className="font-semibold text-amber-300 flex items-center gap-1.5">
-                                                    <span>🔍</span> {inc.issue}
-                                                </div>
-                                                <div className="flex flex-wrap items-center gap-2">
-                                                    <span className="text-[11px] text-text-muted uppercase tracking-wider font-medium">Conflicting values:</span>
-                                                    {inc.values.map((val, vIdx) => (
-                                                        <span key={vIdx} className="px-2 py-0.5 rounded bg-slate-800 text-rose-300 border border-rose-500/30 font-mono text-[11px]">
-                                                            &ldquo;{val}&rdquo;
-                                                        </span>
-                                                    ))}
-                                                </div>
-                                                <div className="p-2.5 rounded bg-slate-950/50 border border-surface-border/50 text-text-secondary">
-                                                    <strong className="text-text-primary">Recommendation: </strong>
-                                                    {inc.suggestion}
-                                                </div>
+                                    <h5 className="text-xs font-bold text-amber-800 uppercase tracking-wider">
+                                        ⚠️ Inconsistencies Found on Page
+                                    </h5>
+                                    <div className="space-y-2">
+                                        {aiPlan.inconsistencies.map((inc, i) => (
+                                            <div key={i} className="p-3.5 bg-amber-50/60 border border-amber-200 rounded-xl space-y-1 text-xs">
+                                                <p className="font-bold text-slate-900">{inc.issue}</p>
+                                                <p className="text-slate-600 font-mono">
+                                                    Conflicting values: {inc.values.map(v => `"${v}"`).join(" vs ")}
+                                                </p>
+                                                <p className="text-amber-900 font-medium">
+                                                    Recommendation: {inc.suggestion}
+                                                </p>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* 1. Questions your page should answer */}
+                            {/* Questions to Answer */}
                             {aiPlan.questions_to_answer && aiPlan.questions_to_answer.length > 0 && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>❓ Questions Your Page Should Answer</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.questions_to_answer.length})</span>
-                                        </h4>
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            Add these as an FAQ block. Short, direct answers are what AI engines quote.
-                                        </p>
-                                    </div>
-                                    <div className="grid gap-3">
-                                        {aiPlan.questions_to_answer.map((q, idx) => (
-                                            <div key={idx} className="p-3.5 rounded-lg bg-surface/50 border border-surface-border space-y-2">
-                                                <div className="flex items-start justify-between gap-2">
-                                                    <div className="text-xs font-semibold text-text-primary">
-                                                        {q.question}
-                                                    </div>
-                                                    <div className="flex items-center gap-1.5 shrink-0">
+                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                        ❓ Questions Your Page Should Answer (FAQ Block)
+                                    </h5>
+                                    <div className="space-y-3">
+                                        {aiPlan.questions_to_answer.map((q, i) => (
+                                            <div key={i} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
+                                                <div className="flex items-center justify-between gap-2 flex-wrap">
+                                                    <span className="font-bold text-sm text-slate-900">
+                                                        {i + 1}. {q.question}
+                                                    </span>
+                                                    <div className="flex items-center gap-1.5">
                                                         {q.origin === "google_paa" && (
-                                                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-950/60 border border-blue-500/40 text-blue-300">
-                                                                Real Google question
+                                                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
+                                                                Google Question
                                                             </span>
                                                         )}
-                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
-                                                            q.answer_source === "page" 
-                                                                ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
-                                                                : "bg-amber-950/60 border border-amber-500/40 text-amber-300"
-                                                        }`}>
-                                                            {q.answer_source === "page" ? "Info already on the page — rewrite it as a Q&A" : "Missing from the page — needs new content"}
+                                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
+                                                            {q.answer_source === "page" ? "Page Content" : "Missing / New"}
                                                         </span>
                                                     </div>
                                                 </div>
-                                                <p className="text-xs text-text-secondary leading-relaxed bg-slate-950/40 p-2.5 rounded border border-surface-border/40">
+                                                <p className="text-xs text-slate-700 leading-relaxed bg-white p-3 rounded-lg border border-slate-200/80">
                                                     {q.draft_answer}
                                                 </p>
                                             </div>
@@ -761,35 +1165,25 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 2. Suggested H2 Structure */}
+                            {/* Suggested H2 Structure */}
                             {aiPlan.suggested_h2_structure && aiPlan.suggested_h2_structure.length > 0 && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>📑 Suggested H2 Structure</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.suggested_h2_structure.length})</span>
-                                        </h4>
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            Use these headings to organise the page. &apos;New&apos; means the section has to be written.
-                                        </p>
-                                    </div>
-                                    <div className="divide-y divide-surface-border rounded-lg border border-surface-border overflow-hidden bg-surface/40">
-                                        {aiPlan.suggested_h2_structure.map((item, idx) => (
-                                            <div key={idx} className="p-3 flex items-start justify-between gap-3 text-xs">
-                                                <div className="space-y-1">
-                                                    <div className="font-semibold text-text-primary">
-                                                        {item.h2}
-                                                    </div>
-                                                    <div className="text-text-muted text-[11px]">
-                                                        {item.purpose}
-                                                    </div>
+                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                        📑 Suggested H2 Heading Structure
+                                    </h5>
+                                    <div className="space-y-2">
+                                        {aiPlan.suggested_h2_structure.map((h, i) => (
+                                            <div key={i} className="p-3 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-3">
+                                                <div>
+                                                    <p className="text-xs font-bold text-slate-900">
+                                                        H2: {h.h2}
+                                                    </p>
+                                                    <p className="text-[11px] text-slate-500">
+                                                        {h.purpose}
+                                                    </p>
                                                 </div>
-                                                <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded shrink-0 ${
-                                                    item.status === "existing"
-                                                        ? "bg-slate-800 text-slate-300 border border-slate-700"
-                                                        : "bg-purple-950/60 border border-purple-500/40 text-purple-300"
-                                                }`}>
-                                                    {item.status === "existing" ? "Exists — add the heading" : "New — write this section"}
+                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${h.status === "existing" ? "bg-slate-100 text-slate-600" : "bg-red-50 text-red-700 border border-red-200"}`}>
+                                                    {h.status === "existing" ? "Existing" : "New Section"}
                                                 </span>
                                             </div>
                                         ))}
@@ -797,43 +1191,38 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 3. Suggested Table */}
+                            {/* Suggested Table */}
                             {aiPlan.suggested_table && (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <div>
-                                            <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                                <span>📊 Suggested Table: {aiPlan.suggested_table.title}</span>
-                                            </h4>
-                                            <p className="text-xs text-text-muted mt-0.5">
-                                                Add this table to the page. All values come from the page itself.
-                                            </p>
-                                        </div>
-                                        {aiPlan.suggested_table.headers && aiPlan.suggested_table.rows && (
+                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            📊 Suggested Table: {aiPlan.suggested_table.title}
+                                        </h5>
+                                        {aiPlan.suggested_table.headers && (
                                             <button
+                                                type="button"
                                                 onClick={handleCopyTableHtml}
-                                                className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
+                                                className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
                                             >
-                                                📋 Copy HTML
+                                                Copy HTML
                                             </button>
                                         )}
                                     </div>
-
-                                    {aiPlan.suggested_table.headers && aiPlan.suggested_table.rows && aiPlan.suggested_table.rows.length > 0 ? (
-                                        <div className="rounded-lg border border-surface-border overflow-x-auto bg-slate-950/40">
-                                            <table className="w-full text-left text-xs border-collapse">
-                                                <thead>
-                                                    <tr className="bg-surface/80 border-b border-surface-border text-text-primary font-semibold">
-                                                        {aiPlan.suggested_table.headers.map((h, i) => (
-                                                            <th key={i} className="p-2.5">{h}</th>
+                                    {aiPlan.suggested_table.headers && aiPlan.suggested_table.rows ? (
+                                        <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                                            <table className="w-full text-left text-xs">
+                                                <thead className="bg-slate-50 border-b border-slate-200 text-slate-600 font-semibold">
+                                                    <tr>
+                                                        {aiPlan.suggested_table.headers.map((h, idx) => (
+                                                            <th key={idx} className="py-2.5 px-3">{h}</th>
                                                         ))}
                                                     </tr>
                                                 </thead>
-                                                <tbody className="divide-y divide-surface-border/50 text-text-secondary">
+                                                <tbody className="divide-y divide-slate-100">
                                                     {aiPlan.suggested_table.rows.map((row, rIdx) => (
-                                                        <tr key={rIdx} className="hover:bg-surface/30">
+                                                        <tr key={rIdx} className="hover:bg-slate-50/50">
                                                             {row.map((cell, cIdx) => (
-                                                                <td key={cIdx} className="p-2.5">{cell}</td>
+                                                                <td key={cIdx} className="py-2.5 px-3 text-slate-700">{cell}</td>
                                                             ))}
                                                         </tr>
                                                     ))}
@@ -841,89 +1230,67 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                             </table>
                                         </div>
                                     ) : (
-                                        <div className="p-3.5 rounded-lg bg-surface/40 border border-surface-border text-xs text-text-secondary">
-                                            <div className="font-semibold text-text-primary mb-1">Table Idea:</div>
-                                            <p>{aiPlan.suggested_table.table_idea || "Create a comparative table with verified structured data."}</p>
-                                        </div>
+                                        <p className="text-xs text-slate-600 italic bg-slate-50 p-3 rounded-lg border border-slate-200">
+                                            {aiPlan.suggested_table.table_idea}
+                                        </p>
                                     )}
                                 </div>
                             )}
 
-                            {/* 4. Data that would enrich the text */}
+                            {/* Data Opportunities */}
                             {aiPlan.data_opportunities && aiPlan.data_opportunities.length > 0 && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>💡 Data that Would Enrich the Text</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.data_opportunities.length})</span>
-                                        </h4>
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            Information worth adding. No figures are suggested: find them in the type of source shown.
-                                        </p>
-                                    </div>
-                                    <div className="grid gap-2.5">
-                                        {aiPlan.data_opportunities.map((item, idx) => (
-                                            <div key={idx} className="p-3 rounded-lg bg-surface/40 border border-surface-border flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
-                                                <span className="text-text-primary">{item.suggestion}</span>
-                                                <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-text-muted border border-surface-border shrink-0 self-start sm:self-auto">
-                                                    Source: {item.source_type}
-                                                </span>
+                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                        📈 Data Opportunities
+                                    </h5>
+                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                        {aiPlan.data_opportunities.map((d, i) => (
+                                            <div key={i} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
+                                                <p className="text-xs font-bold text-slate-900">{d.suggestion}</p>
+                                                <p className="text-[11px] text-slate-500 font-medium">
+                                                    Recommended Source: {d.source_type}
+                                                </p>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* 5. Sources to cite or link */}
+                            {/* Sources to Cite */}
                             {aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0 && (
                                 <div className="space-y-3">
-                                    <div className="flex items-center justify-between gap-2">
-                                        <div>
-                                            <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                                <span>🔗 Sources to Cite or Link</span>
-                                                <span className="text-xs font-normal text-text-muted">({aiPlan.sources_to_cite.length})</span>
-                                            </h4>
-                                            <p className="text-xs text-text-muted mt-0.5">
-                                                Real pages that Google ranks or cites for this topic. Link or cite the relevant ones.
-                                            </p>
-                                        </div>
+                                    <div className="flex items-center justify-between">
+                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            🌐 Sources to Cite or Link
+                                        </h5>
                                         <button
+                                            type="button"
                                             onClick={handleCopySources}
-                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
+                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
                                         >
-                                            {copiedSources ? "✓ Copied" : "📋 Copy list"}
+                                            {copiedSources ? "Copied!" : "Copy Sources"}
                                         </button>
                                     </div>
-                                    <div className="grid gap-3">
-                                        {aiPlan.sources_to_cite.map((src, idx) => (
-                                            <div key={idx} className="p-3.5 rounded-lg bg-surface/40 border border-surface-border space-y-2 text-xs">
-                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div className="space-y-2">
+                                        {aiPlan.sources_to_cite.map((s, i) => (
+                                            <div key={i} className="p-3 bg-white border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                                <div>
                                                     <a
-                                                        href={src.url}
+                                                        href={s.url}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        className="font-semibold text-blue-400 hover:text-blue-300 hover:underline flex items-center gap-1.5"
+                                                        className="text-xs font-bold text-red-600 hover:underline"
                                                     >
-                                                        <span>🌐</span> {src.title || src.domain}
+                                                        {s.title}
                                                     </a>
-                                                    <div className="flex items-center gap-2 shrink-0">
-                                                        <span className="text-[11px] px-2 py-0.5 rounded bg-slate-800 text-text-muted border border-surface-border font-mono">
-                                                            {src.domain}
-                                                        </span>
-                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
-                                                            src.found_in === "AI Overview"
-                                                                ? "bg-purple-950/60 border border-purple-500/40 text-purple-300"
-                                                                : "bg-blue-950/60 border border-blue-500/40 text-blue-300"
-                                                        }`}>
-                                                            {src.found_in}
-                                                        </span>
-                                                    </div>
+                                                    <p className="text-[11px] text-slate-500">
+                                                        {s.domain} · Found in: {s.found_in}
+                                                    </p>
                                                 </div>
-                                                {src.why && (
-                                                    <div className="p-2.5 rounded bg-slate-950/40 border border-surface-border/40 text-text-secondary">
-                                                        <strong className="text-text-primary">Why: </strong>
-                                                        {src.why}
-                                                    </div>
+                                                {s.why && (
+                                                    <span className="text-[11px] text-slate-600 italic sm:text-right max-w-xs">
+                                                        {s.why}
+                                                    </span>
                                                 )}
                                             </div>
                                         ))}
@@ -931,251 +1298,56 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* 6. Paragraphs to add */}
+                            {/* Paragraphs to Add */}
                             {aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0 && (
                                 <div className="space-y-3">
-                                    <div>
-                                        <h4 className="text-sm font-semibold text-text-primary flex items-center gap-2">
-                                            <span>✍️ Paragraphs to Add</span>
-                                            <span className="text-xs font-normal text-text-muted">({aiPlan.paragraphs_to_add.length})</span>
-                                        </h4>
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            Ready-to-paste paragraphs, written only with facts from the page.
-                                        </p>
-                                    </div>
-                                    <div className="grid gap-3">
-                                        {aiPlan.paragraphs_to_add.map((p, idx) => (
-                                            <div key={idx} className="p-3.5 rounded-lg bg-surface/50 border border-surface-border space-y-2">
+                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                        📝 Ready-to-Paste Paragraphs
+                                    </h5>
+                                    <div className="space-y-3">
+                                        {aiPlan.paragraphs_to_add.map((p, i) => (
+                                            <div key={i} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
                                                 <div className="flex items-center justify-between gap-2">
-                                                    <div className="text-xs font-semibold text-purple-300">
-                                                        🎯 {p.target_issue}
-                                                    </div>
-                                                    <button
-                                                        onClick={() => {
-                                                            navigator.clipboard.writeText(p.suggested_text);
-                                                            alert("Paragraph copied to clipboard!");
-                                                        }}
-                                                        className="text-[11px] px-2 py-0.5 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors"
-                                                    >
-                                                        📋 Copy
-                                                    </button>
+                                                    <span className="text-xs font-bold text-slate-900">
+                                                        Addressing: &ldquo;{p.target_issue}&rdquo;
+                                                    </span>
+                                                    <span className="text-[10px] text-slate-400 font-mono">
+                                                        {p.placement}
+                                                    </span>
                                                 </div>
-                                                <p className="text-xs text-text-primary leading-relaxed bg-slate-950/40 p-2.5 rounded border border-surface-border/40">
+                                                <p className="text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200 leading-relaxed font-mono">
                                                     {p.suggested_text}
                                                 </p>
-                                                <div className="text-[11px] text-text-muted italic">
-                                                    Placement: {p.placement}
-                                                </div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* 7. Combined Schema */}
+                            {/* Combined Schema.org */}
                             {aiPlan.combined_schema && (
-                                <div className="space-y-2">
+                                <div className="space-y-3 pt-4 border-t border-slate-100">
                                     <div className="flex items-center justify-between">
-                                        <div>
-                                            <h4 className="text-sm font-semibold text-text-primary">
-                                                Combined Schema.org (@graph with Article, FAQPage &amp; Organization)
-                                            </h4>
-                                            <p className="text-xs text-text-muted mt-0.5">
-                                                For the developer: paste in the page &lt;head&gt;.
-                                            </p>
-                                        </div>
+                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                            🏷️ Combined Schema.org (JSON-LD)
+                                        </h5>
                                         <button
+                                            type="button"
                                             onClick={handleCopyCombinedSchema}
-                                            className="text-xs px-2.5 py-1 bg-surface-border hover:bg-slate-700 text-text-secondary rounded flex items-center gap-1 transition-colors self-start sm:self-auto"
+                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
                                         >
-                                            📋 Copy Combined Schema
+                                            Copy Combined Schema
                                         </button>
                                     </div>
-                                    <div className="relative">
-                                        <pre className="p-4 rounded-lg bg-slate-950 border border-surface-border text-xs text-emerald-400 font-mono whitespace-pre-wrap break-words overflow-x-hidden max-h-72 overflow-y-auto">
-                                            {JSON.stringify(aiPlan.combined_schema, null, 2)}
-                                        </pre>
+                                    <div className="p-4 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto max-h-72 font-mono text-xs leading-relaxed">
+                                        <pre>{JSON.stringify(aiPlan.combined_schema, null, 2)}</pre>
                                     </div>
                                 </div>
                             )}
-
-                            {/* Fixed Disclaimer */}
-                            <div className="pt-2 border-t border-surface-border/60 flex items-center justify-center text-center">
-                                <p className="text-[11px] text-text-muted">
-                                    ℹ️ AI-generated suggestions. Review before publishing. They do not affect the Citation Score.
-                                </p>
-                            </div>
                         </div>
                     )}
                 </div>
             )}
-
-            {/* Ahrefs Off-page Signals Card */}
-            {ahrefsEnabled && (
-                <div className="glass-card p-6 border-slate-700/60 bg-slate-900/40">
-                    <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-4">
-                        <div>
-                            <div className="flex items-center gap-2">
-                                <span className="text-lg">🌐</span>
-                                <h4 className="text-base font-semibold text-text-primary">
-                                    Off-page signals (Ahrefs)
-                                </h4>
-                            </div>
-                            <p className="text-xs text-text-muted mt-1">
-                                Data from Ahrefs. Not included in the Citation Score.
-                            </p>
-                        </div>
-                        {!ahrefsData && (
-                            <button
-                                onClick={handleCheckAhrefs}
-                                disabled={isAhrefsLoading || !results.url}
-                                className="px-4 py-2 bg-gradient-to-r from-blue-600 to-indigo-600 hover:from-blue-500 hover:to-indigo-500 disabled:opacity-50 text-white rounded-lg text-xs font-medium transition-all shadow-md flex items-center justify-center gap-2 shrink-0"
-                            >
-                                {isAhrefsLoading ? (
-                                    <>
-                                        <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
-                                        Checking Ahrefs...
-                                    </>
-                                ) : (
-                                    "Check with Ahrefs"
-                                )}
-                            </button>
-                        )}
-                    </div>
-
-                    {/* Friendly Error */}
-                    {ahrefsError && (
-                        <div className="p-3 mb-4 rounded-lg bg-red-950/40 border border-red-800/50 text-xs text-red-300 flex items-start gap-2">
-                            <span>⚠️</span>
-                            <div>
-                                <p className="font-semibold">Unable to fetch off-page signals</p>
-                                <p className="text-red-400/90 mt-0.5">{ahrefsError}</p>
-                                <button
-                                    onClick={handleCheckAhrefs}
-                                    disabled={isAhrefsLoading}
-                                    className="mt-2 text-xs text-red-200 underline hover:text-white"
-                                >
-                                    Try again
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* Ahrefs Metrics Grid */}
-                    {ahrefsData && (
-                        <div className="space-y-4">
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">Domain Rating</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.domain_rating != null ? ahrefsData.domain_rating : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">URL Rating</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.url_rating != null ? ahrefsData.url_rating : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">Referring domains</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.referring_domains != null ? ahrefsData.referring_domains.toLocaleString() : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">Backlinks</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.backlinks != null ? ahrefsData.backlinks.toLocaleString() : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">Organic keywords</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.organic_keywords != null ? ahrefsData.organic_keywords.toLocaleString() : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border">
-                                    <p className="text-[11px] text-text-muted">Top 3 keywords</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.top3_keywords != null ? ahrefsData.top3_keywords.toLocaleString() : "n/a"}
-                                    </p>
-                                </div>
-                                <div className="p-3 rounded-lg bg-surface/60 border border-surface-border sm:col-span-2">
-                                    <p className="text-[11px] text-text-muted">Organic traffic/month</p>
-                                    <p className="text-lg font-bold text-text-primary mt-0.5">
-                                        {ahrefsData.organic_traffic != null ? Math.round(ahrefsData.organic_traffic).toLocaleString() : "n/a"}
-                                    </p>
-                                </div>
-                            </div>
-
-                            {/* Recommendations */}
-                            {ahrefsData.recommendations && ahrefsData.recommendations.length > 0 && (
-                                <div className="pt-2">
-                                    <p className="text-xs font-semibold text-text-primary mb-2">
-                                        Recommendations:
-                                    </p>
-                                    <ul className="space-y-1.5 list-disc list-inside text-xs text-text-secondary">
-                                        {ahrefsData.recommendations.map((rec, idx) => (
-                                            <li key={idx} className="leading-relaxed">
-                                                {rec}
-                                            </li>
-                                        ))}
-                                    </ul>
-                                </div>
-                            )}
-                        </div>
-                    )}
-                </div>
-            )}
-
-            {/* Off-page Signals Info Card */}
-            <div className="glass-card p-6 border-slate-700/60 bg-slate-900/40">
-                <div className="flex items-center gap-2 mb-2">
-                    <span className="text-lg">ℹ️</span>
-                    <h4 className="text-base font-semibold text-text-primary">
-                        Not measured by this tool
-                    </h4>
-                </div>
-                {ahrefsData && (
-                    <p className="text-xs text-indigo-400 font-medium mb-3 flex items-center gap-1.5">
-                        <span>✓</span> Partially covered above with Ahrefs data.
-                    </p>
-                )}
-                <p className="text-xs text-text-muted mb-4">
-                    The Citation Score measures on-page and architectural readiness. Leading AI engines (ChatGPT, Perplexity, Gemini) also consider external off-page signals:
-                </p>
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-sm">
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
-                        <span className="text-base">📊</span>
-                        <div>
-                            <p className="font-medium text-text-secondary text-xs">Organic ranking position</p>
-                            <p className="text-[11px] text-text-muted">Domain authority & traditional search ranking</p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
-                        <span className="text-base">🏷️</span>
-                        <div>
-                            <p className="font-medium text-text-secondary text-xs">Brand mentions on third-party sites</p>
-                            <p className="text-[11px] text-text-muted">Unlinked co-citations and web consensus</p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
-                        <span className="text-base">📱</span>
-                        <div>
-                            <p className="font-medium text-text-secondary text-xs">Presence on YouTube / Reddit / social</p>
-                            <p className="text-[11px] text-text-muted">Community discussion and multimedia footprints</p>
-                        </div>
-                    </div>
-                    <div className="flex items-center gap-3 p-3 rounded-lg bg-surface/60 border border-surface-border">
-                        <span className="text-base">🏛️</span>
-                        <div>
-                            <p className="font-medium text-text-secondary text-xs">Publisher reputation</p>
-                            <p className="text-[11px] text-text-muted">Historical accuracy & verified entity graph status</p>
-                        </div>
-                    </div>
-                </div>
-            </div>
         </div>
     );
 }

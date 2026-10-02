@@ -5,8 +5,9 @@
 @tailwind utilities;
 
 :root {
-  --background: #0a0a0a;
-  --foreground: #fafafa;
+  --background: #f1f5f9;
+  --foreground: #0f172a;
+  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
 }
 
 * {
@@ -15,77 +16,81 @@
   padding: 0;
 }
 
+html, body {
+  min-height: 100%;
+}
+
 html {
   scroll-behavior: smooth;
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: 'Inter', system-ui, sans-serif;
+  background: #f1f5f9;
+  color: #0f172a;
+  font-family: var(--font-sans);
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom scrollbar for dark mode */
+/* Custom scrollbar matching LLM-dashboard */
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: #111111;
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #333333;
-  border-radius: 4px;
+  background: #cbd5e1;
+  border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #444444;
+  background: #94a3b8;
 }
 
 /* Utility classes for GEO-AUDITOR */
 @layer components {
   .glass-card {
-    @apply bg-surface/80 backdrop-blur-xl border border-surface-border rounded-xl;
+    @apply bg-white border border-slate-200/90 rounded-2xl shadow-sm shadow-slate-200/50 transition-all;
   }
 
   .score-badge {
-    @apply inline-flex items-center justify-center px-3 py-1 rounded-full text-sm font-medium;
+    @apply inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
   }
 
   .score-badge-excellent {
-    @apply bg-score-excellent/20 text-score-excellent;
+    @apply bg-emerald-50 border border-emerald-200 text-emerald-700;
   }
 
   .score-badge-good {
-    @apply bg-score-good/20 text-score-good;
+    @apply bg-lime-50 border border-lime-200 text-lime-700;
   }
 
   .score-badge-warning {
-    @apply bg-score-warning/20 text-score-warning;
+    @apply bg-amber-50 border border-amber-200 text-amber-800;
   }
 
   .score-badge-poor {
-    @apply bg-score-poor/20 text-score-poor;
+    @apply bg-orange-50 border border-orange-200 text-orange-700;
   }
 
   .score-badge-critical {
-    @apply bg-score-critical/20 text-score-critical;
+    @apply bg-red-50 border border-red-200 text-red-700;
   }
 
   .btn-primary {
-    @apply bg-primary hover:bg-primary-hover text-white font-medium px-6 py-3 rounded-lg transition-all duration-200 ease-out transform hover:scale-[1.02] active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-primary/50;
+    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium bg-red-600 hover:bg-red-500 active:bg-red-700 text-white shadow-sm shadow-red-600/20 transition-all disabled:opacity-50 disabled:pointer-events-none cursor-pointer;
   }
 
   .input-field {
-    @apply w-full bg-surface border border-surface-border rounded-lg px-4 py-3 text-text-primary placeholder:text-text-muted focus:outline-none focus:ring-2 focus:ring-primary/50 focus:border-primary transition-all duration-200;
+    @apply w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 focus:bg-white transition-all;
   }
 
   .card-hover {
-    @apply transition-all duration-300 hover:border-primary/50 hover:shadow-lg hover:shadow-primary/5;
+    @apply transition-all duration-200 hover:border-slate-300 hover:shadow-md;
   }
 }
 
@@ -149,17 +154,22 @@ body {
 }
 
 @media print {
-
-  /* Hide sidebar and interactive elements */
+  /* Hide sidebar, header, and interactive elements */
   aside,
+  header,
   button,
   input,
   select,
+  textarea,
   .no-print {
     display: none !important;
   }
 
   /* Reset layout for printing */
+  .lg\:pl-72 {
+    padding-left: 0 !important;
+  }
+
   .split-screen {
     display: block !important;
     height: auto !important;
@@ -170,20 +180,20 @@ body {
     width: 100% !important;
     padding: 0 !important;
     margin: 0 !important;
+    max-width: 100% !important;
     overflow: visible !important;
   }
 
-  /* Text color reset — exclude SVG elements so stroke colors survive */
-  body,
-  p,
-  h1,
-  h2,
-  h3,
-  h4,
-  span:not(svg span),
-  div:not(svg div) {
-    color: #000 !important;
+  /* Force display all tab contents and all accordion details */
+  .print\:block,
+  .accordion-content {
+    display: block !important;
+    visibility: visible !important;
+  }
+
+  body {
     background: #fff !important;
+    color: #0f172a !important;
   }
 
   /* Preserve SVG score ring colors exactly as rendered on screen */
@@ -201,23 +211,17 @@ body {
   .score-circle {
     print-color-adjust: exact;
     -webkit-print-color-adjust: exact;
-    /* Disable the CSS animation so the ring renders fully drawn in print */
     transition: none !important;
     animation: none !important;
-  }
-
-  /* Dimension Breakdown section starts on the first page — no forced page break */
-  .space-y-8 > div:nth-child(2) {
-    break-before: auto;
-    page-break-before: auto;
   }
 
   /* Ensure breakdown cards are visible but clean */
   .glass-card {
     background: #fff !important;
-    border: 1px solid #ddd !important;
+    border: 1px solid #e2e8f0 !important;
     box-shadow: none !important;
     break-inside: avoid;
+    margin-bottom: 1.5rem !important;
   }
 
   /* Expand dimension details */

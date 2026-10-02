@@ -10,44 +10,50 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // Dark mode first palette (Vercel/Stripe inspired)
-        background: "#0a0a0a",
-        foreground: "#fafafa",
-        // Primary accent
+        // LLM Dashboard light theme palette
+        background: "#f1f5f9",
+        foreground: "#0f172a",
+        // Primary brand red accent
         primary: {
-          DEFAULT: "#0070f3",
-          hover: "#0060df",
-          light: "#3291ff",
+          DEFAULT: "#dc2626", // red-600
+          hover: "#ef4444",   // red-500
+          light: "#fee2e2",   // red-100
+          dark: "#b91c1c",    // red-700
         },
-        // Score colors
+        // Score colors (calibrated for light background)
         score: {
-          excellent: "#22c55e",
-          good: "#84cc16",
-          warning: "#eab308",
-          poor: "#f97316",
-          critical: "#ef4444",
+          excellent: "#16a34a", // green-600
+          good: "#65a30d",      // lime-600
+          warning: "#ca8a04",   // amber-600
+          poor: "#ea580c",      // orange-600
+          critical: "#dc2626",  // red-600
         },
         // Surface colors
         surface: {
-          DEFAULT: "#111111",
-          hover: "#1a1a1a",
-          border: "#262626",
-          elevated: "#171717",
+          DEFAULT: "#ffffff",
+          muted: "#f8fafc",
+          hover: "#f1f5f9",
+          border: "#e2e8f0",
+          elevated: "#ffffff",
         },
         // Text colors
         text: {
-          primary: "#fafafa",
-          secondary: "#a1a1aa",
-          muted: "#71717a",
+          primary: "#0f172a",
+          secondary: "#334155",
+          muted: "#64748b",
         },
       },
       fontFamily: {
-        sans: ["Inter", "system-ui", "sans-serif"],
-        mono: ["JetBrains Mono", "monospace"],
+        sans: ["-apple-system", "BlinkMacSystemFont", "Inter", "Segoe UI", "Roboto", "sans-serif"],
+        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "JetBrains Mono", "monospace"],
+      },
+      boxShadow: {
+        xs: "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
+        card: "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05)",
       },
       animation: {
         "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
-        "fade-in": "fadeIn 0.5s ease-out",
+        "fade-in": "fadeIn 0.3s ease-out",
         "slide-up": "slideUp 0.3s ease-out",
       },
       keyframes: {
@@ -56,7 +62,7 @@ const config: Config = {
           "100%": { opacity: "1" },
         },
         slideUp: {
-          "0%": { opacity: "0", transform: "translateY(10px)" },
+          "0%": { opacity: "0", transform: "translateY(8px)" },
           "100%": { opacity: "1", transform: "translateY(0)" },
         },
       },

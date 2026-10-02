@@ -18,6 +18,7 @@ interface BatchAuditResultsProps {
     issuesCsvUrl?: string;
     aiEnabled?: boolean;
     onAnalyzeWithAI?: (url: string) => void;
+    onRetryFailed?: (urls: string[]) => void;
 }
 
 export default function BatchAuditResults({
@@ -25,6 +26,7 @@ export default function BatchAuditResults({
     issuesCsvUrl,
     aiEnabled = false,
     onAnalyzeWithAI,
+    onRetryFailed,
 }: BatchAuditResultsProps) {
     const [selectedItem, setSelectedItem] = useState<BatchItemResult | null>(null);
     const [sortDirection, setSortDirection] = useState<"desc" | "asc">("desc");
@@ -37,7 +39,7 @@ export default function BatchAuditResults({
             setIsDownloadingCsv(true);
             await apiClient.downloadBatchCsv(batchData.job_id);
         } catch (err) {
-            console.error('Failed to download batch CSV:', err);
+            console.error("Failed to download batch CSV:", err);
         } finally {
             setIsDownloadingCsv(false);
         }
@@ -49,7 +51,7 @@ export default function BatchAuditResults({
             setIsDownloadingIssues(true);
             await apiClient.downloadBatchIssuesCsv(batchData.job_id);
         } catch (err) {
-            console.error('Failed to download issues CSV:', err);
+            console.error("Failed to download issues CSV:", err);
         } finally {
             setIsDownloadingIssues(false);
         }
@@ -58,6 +60,10 @@ export default function BatchAuditResults({
     const siteWideIssues = batchData.site_wide_issues || [];
     const topicIssues = batchData.issues_by_topic || [];
     const results = [...(batchData.results || [])];
+
+    // Calculate failed URLs for retry button
+    const failedItems = results.filter(r => r.status === "error");
+    const failedUrls = failedItems.map(r => r.url);
 
     // Calculate max impact across all issues for the proportional bar
     const allIssues = [...siteWideIssues, ...topicIssues];
@@ -85,6 +91,12 @@ export default function BatchAuditResults({
         }
     };
 
+    const getScoreBadgeClass = (score: number) => {
+        if (score >= 80) return "bg-emerald-50 text-emerald-700 border-emerald-200";
+        if (score >= 50) return "bg-amber-50 text-amber-800 border-amber-200";
+        return "bg-red-50 text-red-700 border-red-200";
+    };
+
     const renderIssueCard = (issue: TopicIssue, idx: number, isSiteWide: boolean = false) => {
         const displaySubmetric = issue.submetric === "Entity Depth (E-E-A-T)"
             ? "Author/Publisher Schema"
@@ -95,40 +107,40 @@ export default function BatchAuditResults({
         return (
             <div
                 key={idx}
-                className="p-4 rounded-lg bg-surface/70 border border-surface-border hover:border-surface-border/80 transition-all space-y-3"
+                className="p-4 rounded-xl bg-slate-50/70 border border-slate-200 hover:border-slate-300 transition-all space-y-3"
             >
                 <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                     <div className="flex items-center gap-2 flex-wrap">
-                        <span className="font-semibold text-text-primary text-base">
+                        <span className="font-semibold text-slate-900 text-sm">
                             {displaySubmetric}
                         </span>
                         {isSiteWide && issue.domain && (
-                            <span className="text-xs px-2 py-0.5 bg-surface-border/50 text-text-secondary rounded-md font-mono">
+                            <span className="text-[11px] px-2 py-0.5 bg-slate-200 text-slate-700 rounded-md font-mono">
                                 {issue.domain}
                             </span>
                         )}
-                        <span className="text-xs px-2 py-0.5 bg-primary/10 text-primary rounded-md font-mono">
+                        <span className="text-[11px] px-2 py-0.5 bg-red-50 text-red-700 border border-red-200 rounded-md font-mono">
                             {dimLabel}
                         </span>
                         {isSiteWide && (
-                            <span className="text-[10px] px-2 py-0.5 bg-score-warning/15 text-score-warning rounded-md font-medium uppercase tracking-wider">
+                            <span className="text-[10px] px-2 py-0.5 bg-amber-50 text-amber-800 border border-amber-200 rounded-md font-semibold uppercase tracking-wider">
                                 Site-wide
                             </span>
                         )}
                     </div>
                     <div className="flex items-center gap-4 text-xs">
-                        <span className="text-score-poor font-medium">
+                        <span className="text-slate-600 font-medium">
                             {isSiteWide
-                                ? `${issue.affected_count} of ${issue.total_domain_pages ?? batchData.total} page${(issue.total_domain_pages ?? batchData.total) === 1 ? "" : "s"}${issue.domain ? ` on ${issue.domain}` : ""}`
+                                ? `${issue.affected_count} of ${issue.total_domain_pages ?? batchData.total} page${(issue.total_domain_pages ?? batchData.total) === 1 ? "" : "s"}`
                                 : `${issue.affected_count} page${issue.affected_count === 1 ? "" : "s"} affected`}
                         </span>
                         <div className="flex items-center gap-2" title={`Impact score: ${issue.impact.toFixed(2)}`}>
-                            <span className="text-text-muted font-mono">
+                            <span className="text-slate-400 font-mono text-[11px]">
                                 Impact: {issue.impact.toFixed(2)}
                             </span>
-                            <div className="w-16 h-1.5 bg-surface-border/60 rounded-full overflow-hidden">
+                            <div className="w-16 h-1.5 bg-slate-200 rounded-full overflow-hidden">
                                 <div
-                                    className="h-full bg-score-poor rounded-full transition-all duration-300"
+                                    className="h-full bg-red-500 rounded-full transition-all duration-300"
                                     style={{ width: `${barWidth}%` }}
                                 />
                             </div>
@@ -136,19 +148,19 @@ export default function BatchAuditResults({
                     </div>
                 </div>
 
-                {/* Top recommendation and breakdown */}
+                {/* Top recommendation */}
                 {issue.top_recommendation && (
-                    <div className="text-sm text-text-secondary bg-background/50 p-2.5 rounded border border-surface-border/40 space-y-1.5">
+                    <div className="text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200/80 space-y-1.5 leading-relaxed">
                         <div className="flex items-start gap-2">
-                            <span className="text-score-warning text-xs mt-0.5">💡</span>
+                            <span className="text-amber-500 text-xs mt-0.5 font-bold">💡</span>
                             <span>{issue.top_recommendation}</span>
                         </div>
                         {issue.recommendation_breakdown && issue.recommendation_breakdown.length > 1 && (
-                            <div className="pl-5 space-y-1 text-xs text-text-muted">
+                            <div className="pl-5 space-y-1 text-[11px] text-slate-500">
                                 {issue.recommendation_breakdown.slice(1).map((item, rIdx) => (
                                     <div key={rIdx} className="italic">
                                         Also: {item.recommendation}{" "}
-                                        <span className="not-italic text-text-muted/80">
+                                        <span className="not-italic text-slate-400">
                                             ({item.page_count} page{item.page_count === 1 ? "" : "s"})
                                         </span>
                                     </div>
@@ -170,10 +182,10 @@ export default function BatchAuditResults({
                                 onClick={() => handleUrlClick(u)}
                                 disabled={!isClickable}
                                 title={u}
-                                className={`text-[11px] px-2.5 py-0.5 rounded transition-all max-w-xs truncate flex items-center gap-1 ${
+                                className={`text-[11px] px-2.5 py-0.5 rounded-lg transition-all max-w-xs truncate flex items-center gap-1 ${
                                     isClickable
-                                        ? "bg-surface-border/40 text-text-secondary hover:bg-primary/20 hover:text-primary cursor-pointer border border-transparent hover:border-primary/30"
-                                        : "bg-surface-border/20 text-text-muted cursor-default"
+                                        ? "bg-white text-slate-700 hover:text-red-600 hover:border-red-200 cursor-pointer border border-slate-200 shadow-2xs"
+                                        : "bg-slate-100 text-slate-400 cursor-default border border-transparent"
                                 }`}
                             >
                                 <span className="opacity-70">🔗</span>
@@ -187,57 +199,81 @@ export default function BatchAuditResults({
     };
 
     return (
-        <div className="space-y-8 animate-fade-in">
-            {/* Header with summary stats & CSV download buttons */}
+        <div className="space-y-6 animate-fade-in">
+            {/* Header card with summary stats & export actions */}
             <div className="glass-card p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
-                    <h2 className="text-2xl font-bold text-text-primary mb-1">
-                        Batch Audit Summary
-                    </h2>
-                    <p className="text-sm text-text-secondary">
-                        {batchData.completed} of {batchData.total} URLs audited • {batchData.status === "done" ? "Completed" : "In Progress"}
+                    <div className="flex items-center gap-2 mb-1">
+                        <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
+                            Batch Audit Summary
+                        </h2>
+                        <span className={`inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-semibold border ${
+                            batchData.status === "done"
+                                ? "bg-emerald-50 text-emerald-700 border-emerald-200"
+                                : "bg-amber-50 text-amber-800 border-amber-200"
+                        }`}>
+                            <span className={`w-1.5 h-1.5 rounded-full ${
+                                batchData.status === "done" ? "bg-emerald-500" : "bg-amber-500 animate-pulse"
+                            }`} />
+                            {batchData.status === "done" ? "Completed" : "In Progress"}
+                        </span>
+                    </div>
+                    <p className="text-xs sm:text-sm text-slate-500">
+                        {batchData.completed} of {batchData.total} URLs audited
                     </p>
                 </div>
-                <div className="flex items-center gap-3 flex-wrap">
+
+                <div className="flex items-center gap-2.5 flex-wrap">
+                    {failedUrls.length > 0 && onRetryFailed && (
+                        <button
+                            type="button"
+                            onClick={() => onRetryFailed(failedUrls)}
+                            className="px-3.5 py-2 bg-red-50 hover:bg-red-100 border border-red-200 text-red-700 rounded-xl text-xs font-semibold flex items-center gap-1.5 shadow-2xs transition-colors cursor-pointer"
+                        >
+                            <span>🔄</span> Retry Failed ({failedUrls.length})
+                        </button>
+                    )}
+
                     <button
                         type="button"
                         onClick={handleDownloadCsv}
                         disabled={isDownloadingCsv}
-                        className="btn-secondary text-sm flex items-center gap-2 px-4 py-2 disabled:opacity-50"
+                        className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
                     >
-                        <span>📥</span> {isDownloadingCsv ? "Downloading..." : "Export CSV"}
+                        <span>📥</span> {isDownloadingCsv ? "Exporting..." : "Export CSV"}
                     </button>
+
                     {(issuesCsvUrl || allIssues.length > 0) && (
                         <button
                             type="button"
                             onClick={handleDownloadIssuesCsv}
                             disabled={isDownloadingIssues}
-                            className="btn-secondary text-sm flex items-center gap-2 px-4 py-2 disabled:opacity-50"
+                            className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
                         >
-                            <span>📋</span> {isDownloadingIssues ? "Downloading..." : "Export Issues"}
+                            <span>📋</span> {isDownloadingIssues ? "Exporting..." : "Export Issues"}
                         </button>
                     )}
                 </div>
             </div>
 
-            {/* Section 1: Site-wide Issues (Above Issues by Topic) */}
+            {/* Section 1: Site-wide Issues */}
             {siteWideIssues.length > 0 && (
-                <div className="glass-card p-6 border-l-4 border-l-score-warning">
-                    <div className="flex items-center justify-between mb-4">
+                <div className="glass-card p-6 border-l-4 border-l-amber-500">
+                    <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                         <div>
-                            <h3 className="text-lg font-bold text-text-primary flex items-center gap-2">
+                            <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                                 <span>🌐</span> Site-wide Issues
                             </h3>
-                            <p className="text-xs text-text-muted mt-0.5">
-                                Issues tied to the whole domain rather than a single page (e.g. missing About Us or Team pages).
+                            <p className="text-xs text-slate-500 mt-0.5">
+                                Issues tied to the whole domain (e.g. missing About Us or Team pages).
                             </p>
                         </div>
-                        <span className="text-xs px-2.5 py-1 bg-score-warning/15 text-score-warning rounded-full font-mono font-medium">
+                        <span className="text-xs px-2.5 py-1 bg-amber-50 text-amber-800 border border-amber-200 rounded-md font-mono font-semibold">
                             {siteWideIssues.length} site-wide issue{siteWideIssues.length === 1 ? "" : "s"}
                         </span>
                     </div>
 
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                         {siteWideIssues.map((issue, idx) => renderIssueCard(issue, idx, true))}
                     </div>
                 </div>
@@ -245,26 +281,26 @@ export default function BatchAuditResults({
 
             {/* Section 2: Issues by Topic */}
             <div className="glass-card p-6">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div>
-                        <h3 className="text-lg font-bold text-text-primary flex items-center gap-2">
+                        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                             <span>🚨</span> Issues by Topic
                         </h3>
-                        <p className="text-xs text-text-muted mt-0.5">
+                        <p className="text-xs text-slate-500 mt-0.5">
                             Page-level submetrics scoring &lt; 70 grouped across all pages, ranked by impact (weight × affected pages).
                         </p>
                     </div>
-                    <span className="text-xs px-2.5 py-1 bg-surface-border/50 text-text-secondary rounded-full font-mono">
+                    <span className="text-xs px-2.5 py-1 bg-slate-100 text-slate-700 border border-slate-200 rounded-md font-mono font-semibold">
                         {topicIssues.length} issue{topicIssues.length === 1 ? "" : "s"} detected
                     </span>
                 </div>
 
                 {topicIssues.length === 0 ? (
-                    <div className="p-6 text-center text-text-muted bg-surface/50 rounded-lg">
+                    <div className="p-6 text-center text-xs text-slate-500 bg-slate-50 rounded-xl border border-slate-200">
                         ✨ No common page-level issues found under 70 points across the audited URLs!
                     </div>
                 ) : (
-                    <div className="space-y-4">
+                    <div className="space-y-3">
                         {topicIssues.map((issue, idx) => renderIssueCard(issue, idx, false))}
                     </div>
                 )}
@@ -272,30 +308,31 @@ export default function BatchAuditResults({
 
             {/* Section 3: URLs Overview Table */}
             <div className="glass-card p-6">
-                <div className="flex items-center justify-between mb-4">
+                <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div>
-                        <h3 className="text-lg font-bold text-text-primary flex items-center gap-2">
+                        <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
                             <span>📄</span> Audited Pages
                         </h3>
-                        <p className="text-xs text-text-muted mt-0.5">
-                            Click any row or affected URL chip to inspect the individual audit report.
+                        <p className="text-xs text-slate-500 mt-0.5">
+                            Click any row or affected URL chip to view individual audit details below.
                         </p>
                     </div>
                     <button
+                        type="button"
                         onClick={toggleSort}
-                        className="text-xs px-3 py-1.5 bg-surface hover:bg-surface-border/50 border border-surface-border rounded-md text-text-secondary flex items-center gap-1.5 transition-colors"
+                        className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs font-medium"
                     >
                         <span>Sort Score:</span>
-                        <span className="font-semibold text-primary">
+                        <span className="font-bold text-red-600 font-mono">
                             {sortDirection === "desc" ? "High to Low ↓" : "Low to High ↑"}
                         </span>
                     </button>
                 </div>
 
-                <div className="overflow-x-auto">
-                    <table className="w-full text-left text-sm">
-                        <thead>
-                            <tr className="border-b border-surface-border text-xs uppercase text-text-muted">
+                <div className="overflow-x-auto border border-slate-200 rounded-xl">
+                    <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-50 border-b border-slate-200 text-slate-500 uppercase tracking-wider text-[10px]">
+                            <tr>
                                 <th className="py-3 px-3">URL</th>
                                 <th className="py-3 px-3">Score</th>
                                 <th className="py-3 px-3">Type</th>
@@ -303,7 +340,7 @@ export default function BatchAuditResults({
                                 <th className="py-3 px-3 text-right">Status</th>
                             </tr>
                         </thead>
-                        <tbody className="divide-y divide-surface-border/50">
+                        <tbody className="divide-y divide-slate-100">
                             {results.map((item, idx) => {
                                 const isClickable = item.status === "done" && !!item.result;
                                 const isSelected = selectedItem?.url === item.url;
@@ -311,48 +348,47 @@ export default function BatchAuditResults({
                                     <tr
                                         key={idx}
                                         onClick={() => isClickable && setSelectedItem(isSelected ? null : item)}
-                                        className={`transition-colors ${isClickable
-                                            ? "cursor-pointer hover:bg-surface/80"
-                                            : "opacity-60 cursor-not-allowed"
-                                            } ${isSelected ? "bg-primary/10" : ""}`}
+                                        className={`transition-colors ${
+                                            isClickable
+                                                ? "cursor-pointer hover:bg-slate-50/70"
+                                                : "opacity-60 cursor-not-allowed"
+                                        } ${isSelected ? "bg-red-50/50" : ""}`}
                                     >
                                         <td className="py-3.5 px-3 max-w-sm">
-                                            <div className="font-medium text-text-primary truncate" title={item.url}>
+                                            <div className="font-medium text-slate-900 truncate" title={item.url}>
                                                 {item.url}
                                             </div>
                                             {item.error && (
-                                                <div className="text-xs text-score-critical mt-0.5 truncate" title={item.error}>
+                                                <div className="text-[11px] text-red-600 mt-0.5 truncate" title={item.error}>
                                                     ⚠️ {item.error}
                                                 </div>
                                             )}
                                         </td>
                                         <td className="py-3.5 px-3">
                                             {item.result ? (
-                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold ${item.result.total_score >= 80
-                                                    ? "bg-score-excellent/15 text-score-excellent"
-                                                    : item.result.total_score >= 50
-                                                        ? "bg-score-good/15 text-score-good"
-                                                        : "bg-score-poor/15 text-score-poor"
-                                                    }`}>
+                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-xs font-bold font-mono border ${getScoreBadgeClass(item.result.total_score)}`}>
                                                     {item.result.total_score.toFixed(0)}/100
                                                 </span>
                                             ) : (
-                                                <span className="text-xs text-text-muted">—</span>
+                                                <span className="text-xs text-slate-400">—</span>
                                             )}
                                         </td>
-                                        <td className="py-3.5 px-3 text-xs text-text-secondary">
+                                        <td className="py-3.5 px-3 text-slate-600">
                                             {item.result?.content_type
                                                 ? getContentTypeDisplayName(item.result.content_type)
                                                 : "—"}
                                         </td>
-                                        <td className="py-3.5 px-3 text-xs text-text-secondary uppercase font-mono">
+                                        <td className="py-3.5 px-3 text-slate-600 uppercase font-mono">
                                             {item.result?.language ? item.result.language.toUpperCase() : "—"}
                                         </td>
                                         <td className="py-3.5 px-3 text-right">
                                             <div className="flex items-center justify-end gap-2.5">
                                                 {item.status === "done" && (
                                                     <>
-                                                        <span className="text-xs text-score-excellent font-medium">Done</span>
+                                                        <span className="inline-flex items-center gap-1 text-[11px] text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded">
+                                                            <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+                                                            Done
+                                                        </span>
                                                         {aiEnabled && onAnalyzeWithAI && (
                                                             <button
                                                                 type="button"
@@ -360,7 +396,7 @@ export default function BatchAuditResults({
                                                                     e.stopPropagation();
                                                                     onAnalyzeWithAI(item.url);
                                                                 }}
-                                                                className="text-xs px-2.5 py-1 bg-surface hover:bg-surface-border border border-surface-border text-purple-300 hover:text-purple-200 rounded transition-colors flex items-center gap-1 font-medium shadow-sm"
+                                                                className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 text-red-700 rounded-lg transition-colors flex items-center gap-1 font-medium shadow-2xs cursor-pointer"
                                                                 title="Analyze with AI"
                                                             >
                                                                 <span>✨</span> Analyze with AI
@@ -369,13 +405,19 @@ export default function BatchAuditResults({
                                                     </>
                                                 )}
                                                 {item.status === "running" && (
-                                                    <span className="text-xs text-primary font-medium animate-pulse">Running...</span>
+                                                    <span className="inline-flex items-center gap-1 text-[11px] text-amber-700 font-semibold bg-amber-50 border border-amber-200 px-2 py-0.5 rounded animate-pulse">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-amber-500" />
+                                                        Running...
+                                                    </span>
                                                 )}
                                                 {item.status === "pending" && (
-                                                    <span className="text-xs text-text-muted">Pending</span>
+                                                    <span className="text-[11px] text-slate-400 font-medium">Pending</span>
                                                 )}
                                                 {item.status === "error" && (
-                                                    <span className="text-xs text-score-critical font-medium">Failed</span>
+                                                    <span className="inline-flex items-center gap-1 text-[11px] text-red-700 font-semibold bg-red-50 border border-red-200 px-2 py-0.5 rounded">
+                                                        <span className="w-1.5 h-1.5 rounded-full bg-red-500" />
+                                                        Failed
+                                                    </span>
                                                 )}
                                             </div>
                                         </td>
@@ -389,14 +431,18 @@ export default function BatchAuditResults({
 
             {/* Section 4: Selected Full Audit Report Expanded View */}
             {selectedItem?.result && (
-                <div id="individual-audit-report" className="pt-4 border-t border-surface-border">
-                    <div className="flex items-center justify-between mb-4">
-                        <h3 className="text-xl font-bold text-text-primary">
-                            Individual Report: {selectedItem.url}
-                        </h3>
+                <div id="individual-audit-report" className="pt-4 border-t border-slate-200 space-y-4">
+                    <div className="flex items-center justify-between">
+                        <div className="flex items-center gap-2">
+                            <span className="text-lg">🔎</span>
+                            <h3 className="text-lg font-bold text-slate-900 tracking-tight">
+                                Individual Report: {selectedItem.url}
+                            </h3>
+                        </div>
                         <button
+                            type="button"
                             onClick={() => setSelectedItem(null)}
-                            className="btn-secondary text-xs px-3 py-1.5"
+                            className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
                         >
                             ✕ Close Report
                         </button>

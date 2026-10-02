@@ -13,13 +13,13 @@ export default function ScoreDisplay({
     sublabel,
     size = "lg",
 }: ScoreDisplayProps) {
-    // Calculate score color
+    // Calculate score color matching LLM-dashboard system
     const getScoreColor = (score: number) => {
-        if (score >= 80) return { stroke: "#22c55e", text: "text-score-excellent" };
-        if (score >= 60) return { stroke: "#84cc16", text: "text-score-good" };
-        if (score >= 40) return { stroke: "#eab308", text: "text-score-warning" };
-        if (score >= 20) return { stroke: "#f97316", text: "text-score-poor" };
-        return { stroke: "#ef4444", text: "text-score-critical" };
+        if (score >= 80) return { stroke: "#16a34a", text: "text-emerald-600" };
+        if (score >= 60) return { stroke: "#65a30d", text: "text-lime-600" };
+        if (score >= 40) return { stroke: "#ca8a04", text: "text-amber-600" };
+        if (score >= 20) return { stroke: "#ea580c", text: "text-orange-600" };
+        return { stroke: "#dc2626", text: "text-red-600" };
     };
 
     const { stroke, text } = getScoreColor(score);
@@ -50,7 +50,7 @@ export default function ScoreDisplay({
                         cy={config.size / 2}
                         r={radius}
                         fill="none"
-                        stroke="#262626"
+                        stroke="#e2e8f0"
                         strokeWidth={config.strokeWidth}
                     />
                     {/* Progress circle */}
