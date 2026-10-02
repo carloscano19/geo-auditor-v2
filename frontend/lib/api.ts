@@ -143,6 +143,17 @@ export interface AIPlanRequest {
     query?: string;
 }
 
+export interface LinkingPageItem {
+    url_from: string;
+    domain: string;
+    domain_rating: number | null;
+    url_rating: number | null;
+    anchor: string | null;
+    dofollow: boolean;
+    spam: boolean;
+    first_seen: string | null;
+}
+
 export interface AhrefsOffpageResponse {
     domain_rating: number | null;
     url_rating: number | null;
@@ -154,6 +165,7 @@ export interface AhrefsOffpageResponse {
     organic_traffic: number | null;
     checked_at: string;
     recommendations: string[];
+    linking_pages?: LinkingPageItem[] | null;
 }
 
 export interface BriefExportRequest {

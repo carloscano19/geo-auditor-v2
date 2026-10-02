@@ -1538,6 +1538,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
             top3_keywords=cached_data.get("top3_keywords"),
             url_rating=cached_data.get("url_rating"),
             domain_rating=cached_data.get("domain_rating"),
+            linking_pages=cached_data.get("linking_pages"),
             language=request.language or "en",
         )
         return AhrefsOffpageResponse(
@@ -1573,7 +1574,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
         "top3_keywords",
         "organic_traffic",
     ]
-    if not any(signals.get(k) is not None for k in metric_keys):
+    if not any(signals.get(k) is not None for k in metric_keys) and not signals.get("linking_pages"):
         raise HTTPException(status_code=502, detail="Ahrefs returned no data. Try again later.")
 
     # Increment daily count and cache only when response contains valid data
@@ -1587,6 +1588,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
         top3_keywords=signals.get("top3_keywords"),
         url_rating=signals.get("url_rating"),
         domain_rating=signals.get("domain_rating"),
+        linking_pages=signals.get("linking_pages"),
         language=request.language or "en",
     )
 

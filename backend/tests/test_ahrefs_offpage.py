@@ -272,6 +272,31 @@ async def test_ahrefs_client_parsing_and_most_recent_url_rating():
                     {"date": "2026-09-15", "url_rating": 18.0},
                 ]
             }
+        elif "all-backlinks" in endpoint:
+            return {
+                "backlinks": [
+                    {
+                        "url_from": "https://source.com/page1",
+                        "name_source": "source.com",
+                        "domain_rating_source": 75.0,
+                        "url_rating_source": 25.0,
+                        "anchor": "Great reference",
+                        "is_dofollow": True,
+                        "is_spam": False,
+                        "first_seen_link": "2026-05-12T14:30:00Z",
+                    },
+                    {
+                        "url_from": "https://spammy.xyz/link",
+                        "name_source": "spammy.xyz",
+                        "domain_rating_source": 5.0,
+                        "url_rating_source": 1.0,
+                        "anchor": "click here",
+                        "is_dofollow": False,
+                        "is_spam": True,
+                        "first_seen_link": "2026-08-01",
+                    },
+                ]
+            }
         return None
 
     with patch.object(client, "_get_endpoint", side_effect=mock_endpoint):
@@ -286,6 +311,25 @@ async def test_ahrefs_client_parsing_and_most_recent_url_rating():
         assert res["domain_rating"] == 64.0
         # Check most recent point by date: 2026-10-01 -> 22.5
         assert res["url_rating"] == 22.5
+
+        # Check linking_pages parsing
+        lp = res["linking_pages"]
+        assert isinstance(lp, list)
+        assert len(lp) == 2
+        assert lp[0]["url_from"] == "https://source.com/page1"
+        assert lp[0]["domain"] == "source.com"
+        assert lp[0]["domain_rating"] == 75.0
+        assert lp[0]["url_rating"] == 25.0
+        assert lp[0]["anchor"] == "Great reference"
+        assert lp[0]["dofollow"] is True
+        assert lp[0]["spam"] is False
+        assert lp[0]["first_seen"] == "2026-05-12"
+
+        assert lp[1]["domain"] == "spammy.xyz"
+        assert lp[1]["domain_rating"] == 5.0
+        assert lp[1]["dofollow"] is False
+        assert lp[1]["spam"] is True
+        assert lp[1]["first_seen"] == "2026-08-01"
 
 
 @pytest.mark.asyncio
@@ -303,6 +347,9 @@ async def test_ahrefs_client_partial_failure_returns_null_and_rest():
         elif "url-rating-history" in endpoint:
             # Fails: returns None
             return None
+        elif "all-backlinks" in endpoint:
+            # Fails: returns None
+            return None
         return None
 
     with patch.object(client, "_get_endpoint", side_effect=mock_endpoint):
@@ -313,11 +360,12 @@ async def test_ahrefs_client_partial_failure_returns_null_and_rest():
         assert res["referring_domains"] == 12
         assert res["domain_rating"] == 55.0
 
-        # metrics and UR failed -> None
+        # metrics, UR and all-backlinks failed -> None
         assert res["organic_keywords"] is None
         assert res["top3_keywords"] is None
         assert res["organic_traffic"] is None
         assert res["url_rating"] is None
+        assert res["linking_pages"] is None
 
 
 # 4. Recommendation rules and edge cases
@@ -369,7 +417,37 @@ def test_recommendation_rules():
         url_rating=None,
         domain_rating=None,
     )
-    assert recs_none == []
+    # Case K: linking_pages low authority / spam rule
+    # More than half: 2 out of 3 are low DR or spam -> triggered
+    lp_triggered = [
+        {"domain": "a.com", "domain_rating": 8.0, "spam": False},
+        {"domain": "b.com", "domain_rating": 50.0, "spam": True},
+        {"domain": "c.com", "domain_rating": 60.0, "spam": False},
+    ]
+    recs_lp = generate_ahrefs_recommendations(linking_pages=lp_triggered, language="en")
+    assert any("Most sites linking to this page have little authority" in r for r in recs_lp)
+
+    # Exactly half: 2 out of 4 -> NOT triggered (> half required)
+    lp_half = [
+        {"domain": "a.com", "domain_rating": 5.0, "spam": False},
+        {"domain": "b.com", "domain_rating": 5.0, "spam": False},
+        {"domain": "c.com", "domain_rating": 50.0, "spam": False},
+        {"domain": "d.com", "domain_rating": 60.0, "spam": False},
+    ]
+    recs_lp_half = generate_ahrefs_recommendations(linking_pages=lp_half, language="en")
+    assert not any("little authority" in r for r in recs_lp_half)
+
+    # Boundary DR == 10: not considered low DR (< 10 is low)
+    lp_dr10 = [
+        {"domain": "a.com", "domain_rating": 10.0, "spam": False},
+        {"domain": "b.com", "domain_rating": 10.0, "spam": False},
+    ]
+    recs_lp_dr10 = generate_ahrefs_recommendations(linking_pages=lp_dr10, language="en")
+    assert not any("little authority" in r for r in recs_lp_dr10)
+
+    # Empty list or None -> NOT triggered
+    assert generate_ahrefs_recommendations(linking_pages=[], language="en") == []
+    assert generate_ahrefs_recommendations(linking_pages=None, language="en") == []
 
 
 def test_recommendation_rules_spanish():
@@ -378,11 +456,16 @@ def test_recommendation_rules_spanish():
         organic_keywords=0,
         url_rating=6.0,
         domain_rating=55.0,
+        linking_pages=[
+            {"domain": "a.com", "domain_rating": 5.0, "spam": False},
+            {"domain": "b.com", "domain_rating": 50.0, "spam": True},
+        ],
         language="es"
     )
     assert any("Ningún otro sitio web enlaza a esta página" in r for r in recs_es)
     assert any("Esta página no posiciona en el top 100 de Google" in r for r in recs_es)
     assert any("El dominio es fuerte (DR 55) pero esta página tiene poca autoridad propia (UR 6)" in r for r in recs_es)
+    assert any("La mayoría de los sitios que enlazan a esta página tienen poca autoridad" in r for r in recs_es)
 
 
 # 5. Cache test: 2 calls to same URL = 4 calls to Ahrefs, not 8
@@ -435,6 +518,28 @@ def test_docx_includes_ahrefs_section_when_provided():
         organic_traffic=12500.0,
         checked_at="2026-10-02T12:00:00Z",
         recommendations=["Strengthen the content for its main query to get cited."],
+        linking_pages=[
+            {
+                "url_from": "https://industry-leader.com/guide",
+                "domain": "industry-leader.com",
+                "domain_rating": 82.0,
+                "url_rating": 30.0,
+                "anchor": "authoritative resource",
+                "dofollow": True,
+                "spam": False,
+                "first_seen": "2026-04-10",
+            },
+            {
+                "url_from": "https://toxic-site.info/spam-post",
+                "domain": "toxic-site.info",
+                "domain_rating": 2.0,
+                "url_rating": 1.0,
+                "anchor": "click",
+                "dofollow": False,
+                "spam": True,
+                "first_seen": "2026-07-20",
+            },
+        ],
     )
 
     docx_bytes = generate_editor_brief_docx(
@@ -448,6 +553,7 @@ def test_docx_includes_ahrefs_section_when_provided():
     assert "Data from Ahrefs. Not included in the Citation Score." in doc_text
     assert "Off-page recommendations:" in doc_text
     assert "Strengthen the content for its main query to get cited." in doc_text
+    assert "Who links to this page" in doc_text
 
     # Check table contents
     table_texts = [cell.text for t in doc.tables for row in t.rows for cell in row.cells]
@@ -455,6 +561,15 @@ def test_docx_includes_ahrefs_section_when_provided():
     assert "72" in table_texts
     assert "Backlinks" in table_texts
     assert "3,200" in table_texts
+
+    # Check backlinks table contents
+    assert "industry-leader.com" in table_texts
+    assert "toxic-site.info" in table_texts
+    assert "82" in table_texts
+    assert "authoritative resource" in table_texts
+    assert "Dofollow" in table_texts
+    assert "Nofollow [Spam]" in table_texts
+    assert "2026-04-10" in table_texts
 
 
 def test_docx_omits_ahrefs_section_when_none():

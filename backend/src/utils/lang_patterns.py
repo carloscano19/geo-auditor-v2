@@ -678,6 +678,7 @@ def generate_ahrefs_recommendations(
     top3_keywords: Optional[int] = None,
     url_rating: Optional[float] = None,
     domain_rating: Optional[float] = None,
+    linking_pages: Optional[List[Dict[str, Any]]] = None,
     language: str = "en",
 ) -> List[str]:
     """
@@ -742,6 +743,25 @@ def generate_ahrefs_recommendations(
             else:
                 recs.append(
                     f"The domain is strong (DR {dr_str}) but this page has little authority of its own (UR {ur_str}). Link to it from your most visited pages."
+                )
+
+    # Rule 6: Low authority / spam backlinks
+    if linking_pages is not None and len(linking_pages) > 0:
+        low_auth_or_spam_count = 0
+        for item in linking_pages:
+            # item can be dict or Pydantic model (with getattr fallback)
+            is_spam = getattr(item, "spam", None) if not isinstance(item, dict) else item.get("spam")
+            dr = getattr(item, "domain_rating", None) if not isinstance(item, dict) else item.get("domain_rating")
+            if bool(is_spam) or (dr is not None and dr < 10.0) or dr is None:
+                low_auth_or_spam_count += 1
+        if low_auth_or_spam_count > len(linking_pages) / 2.0:
+            if lang == "es":
+                recs.append(
+                    "La mayoría de los sitios que enlazan a esta página tienen poca autoridad. Enfócate en conseguir enlaces de sitios relevantes y establecidos."
+                )
+            else:
+                recs.append(
+                    "Most sites linking to this page have little authority. Focus on earning links from relevant, established sites."
                 )
 
     return recs

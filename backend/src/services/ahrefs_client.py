@@ -174,11 +174,12 @@ class AhrefsClient:
 
     async def fetch_offpage_signals(self, url: str) -> Dict[str, Any]:
         """
-        Fetch off-page signals for a URL using 4 parallel GET requests:
+        Fetch off-page signals for a URL using 5 parallel GET requests:
         1. /site-explorer/backlinks-stats?target=<url>&mode=exact&date=...
         2. /site-explorer/metrics?target=<url>&mode=exact&date=...
         3. /site-explorer/domain-rating?target=<dominio>&date=...
         4. /site-explorer/url-rating-history?target=<url>&date_from=<hoy-30d>&history_grouping=monthly
+        5. /site-explorer/all-backlinks?target=<url>&mode=exact&history=live&aggregation=1_per_domain&order_by=domain_rating_source:desc&limit=20&select=...
 
         If any single request fails, its fields are returned as None/null without failing the rest.
         """
@@ -220,12 +221,26 @@ class AhrefsClient:
                 {"target": url, "date_from": thirty_days_ago_str, "history_grouping": "monthly"},
                 headers,
             )
-
-            res_backlinks, res_metrics, res_dr, res_ur_hist = await asyncio.gather(
-                req_backlinks, req_metrics, req_dr, req_ur_hist, return_exceptions=True
+            req_all_backlinks = self._get_endpoint(
+                client,
+                "/site-explorer/all-backlinks",
+                {
+                    "target": url,
+                    "mode": "exact",
+                    "history": "live",
+                    "aggregation": "1_per_domain",
+                    "order_by": "domain_rating_source:desc",
+                    "limit": 20,
+                    "select": "url_from,name_source,domain_rating_source,url_rating_source,anchor,is_dofollow,is_spam,first_seen_link",
+                },
+                headers,
             )
 
-        for r in (res_backlinks, res_metrics, res_dr, res_ur_hist):
+            res_backlinks, res_metrics, res_dr, res_ur_hist, res_all_backlinks = await asyncio.gather(
+                req_backlinks, req_metrics, req_dr, req_ur_hist, req_all_backlinks, return_exceptions=True
+            )
+
+        for r in (res_backlinks, res_metrics, res_dr, res_ur_hist, res_all_backlinks):
             if isinstance(r, AhrefsAuthError):
                 raise r
 
@@ -312,6 +327,62 @@ class AhrefsClient:
                     except (ValueError, TypeError, KeyError):
                         pass
 
+        # 5. Parse all-backlinks (linking_pages)
+        linking_pages: Optional[list] = None
+        if isinstance(res_all_backlinks, dict):
+            backlinks_list = res_all_backlinks.get("backlinks")
+            if isinstance(backlinks_list, list):
+                linking_pages = []
+                for item in backlinks_list:
+                    if not isinstance(item, dict):
+                        continue
+                    url_from = str(item.get("url_from") or "")
+                    domain_name = str(item.get("name_source") or "")
+                    if not domain_name and url_from:
+                        domain_name = extract_domain_from_url(url_from)
+
+                    dr_val: Optional[float] = None
+                    if item.get("domain_rating_source") is not None:
+                        try:
+                            dr_val = float(item["domain_rating_source"])
+                        except (ValueError, TypeError):
+                            dr_val = None
+
+                    ur_val: Optional[float] = None
+                    if item.get("url_rating_source") is not None:
+                        try:
+                            ur_val = float(item["url_rating_source"])
+                        except (ValueError, TypeError):
+                            ur_val = None
+
+                    anchor_val: Optional[str] = None
+                    if item.get("anchor") is not None:
+                        anchor_val = str(item["anchor"])
+
+                    dofollow_val = bool(item.get("is_dofollow", True))
+                    spam_val = bool(item.get("is_spam", False))
+
+                    first_seen_raw = item.get("first_seen_link")
+                    first_seen_val: Optional[str] = None
+                    if first_seen_raw:
+                        first_seen_str = str(first_seen_raw).strip()
+                        # Extract only date YYYY-MM-DD
+                        if len(first_seen_str) >= 10 and first_seen_str[4] == "-" and first_seen_str[7] == "-":
+                            first_seen_val = first_seen_str[:10]
+                        else:
+                            first_seen_val = first_seen_str
+
+                    linking_pages.append({
+                        "url_from": url_from,
+                        "domain": domain_name,
+                        "domain_rating": dr_val,
+                        "url_rating": ur_val,
+                        "anchor": anchor_val,
+                        "dofollow": dofollow_val,
+                        "spam": spam_val,
+                        "first_seen": first_seen_val,
+                    })
+
         return {
             "domain_rating": domain_rating,
             "url_rating": url_rating,
@@ -322,4 +393,5 @@ class AhrefsClient:
             "top3_keywords": top3_keywords,
             "organic_traffic": organic_traffic,
             "checked_at": datetime.now(timezone.utc).isoformat(),
+            "linking_pages": linking_pages,
         }

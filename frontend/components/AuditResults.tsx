@@ -1124,6 +1124,99 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </ul>
                                 </div>
                             )}
+
+                            {/* Who links to this page Table */}
+                            <div className="pt-3 border-t border-slate-700/50">
+                                <div className="flex items-center justify-between mb-2.5">
+                                    <h5 className="text-xs font-semibold text-text-primary flex items-center gap-1.5">
+                                        <span>🔗</span> Who links to this page
+                                    </h5>
+                                    {ahrefsData.linking_pages && ahrefsData.linking_pages.length > 0 && (
+                                        <span className="text-[11px] text-text-muted">
+                                            Top {ahrefsData.linking_pages.length} domains by DR
+                                        </span>
+                                    )}
+                                </div>
+
+                                {ahrefsData.linking_pages === null || ahrefsData.linking_pages === undefined ? (
+                                    <p className="text-xs text-text-muted italic py-1">
+                                        Link list unavailable.
+                                    </p>
+                                ) : ahrefsData.linking_pages.length === 0 ? (
+                                    <p className="text-xs text-text-muted italic py-1">
+                                        No live links found.
+                                    </p>
+                                ) : (
+                                    <div className="overflow-x-auto rounded-lg border border-surface-border">
+                                        <table className="w-full text-left text-xs">
+                                            <thead className="bg-surface/80 text-text-muted border-b border-surface-border uppercase text-[10px] tracking-wider">
+                                                <tr>
+                                                    <th className="py-2 px-3 font-semibold">Domain</th>
+                                                    <th className="py-2 px-2.5 font-semibold text-center">DR</th>
+                                                    <th className="py-2 px-3 font-semibold">Linking page</th>
+                                                    <th className="py-2 px-3 font-semibold">Anchor</th>
+                                                    <th className="py-2 px-2.5 font-semibold text-center">Type</th>
+                                                    <th className="py-2 px-3 font-semibold">First seen</th>
+                                                </tr>
+                                            </thead>
+                                            <tbody className="divide-y divide-surface-border/50 bg-slate-950/30">
+                                                {ahrefsData.linking_pages.map((link, lIdx) => {
+                                                    const displayUrl = link.url_from.length > 50
+                                                        ? `${link.url_from.substring(0, 47)}...`
+                                                        : link.url_from;
+                                                    return (
+                                                        <tr key={lIdx} className="hover:bg-surface/30 transition-colors">
+                                                            <td className="py-2 px-3 font-medium text-text-primary whitespace-nowrap">
+                                                                {link.domain || "—"}
+                                                            </td>
+                                                            <td className="py-2 px-2.5 text-center font-mono font-semibold text-text-primary whitespace-nowrap">
+                                                                {link.domain_rating != null ? Math.round(link.domain_rating) : "—"}
+                                                            </td>
+                                                            <td className="py-2 px-3 max-w-[200px] truncate">
+                                                                {link.url_from ? (
+                                                                    <a
+                                                                        href={link.url_from}
+                                                                        target="_blank"
+                                                                        rel="noopener noreferrer"
+                                                                        className="text-purple-400 hover:text-purple-300 underline font-mono text-[11px]"
+                                                                        title={link.url_from}
+                                                                    >
+                                                                        {displayUrl}
+                                                                    </a>
+                                                                ) : (
+                                                                    <span className="text-text-muted">—</span>
+                                                                )}
+                                                            </td>
+                                                            <td className="py-2 px-3 text-text-secondary max-w-[160px] truncate" title={link.anchor || ""}>
+                                                                {link.anchor ? link.anchor : <span className="text-text-muted italic">(no text)</span>}
+                                                            </td>
+                                                            <td className="py-2 px-2.5 text-center whitespace-nowrap">
+                                                                <div className="flex items-center justify-center gap-1.5">
+                                                                    <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                                                                        link.dofollow
+                                                                            ? "bg-emerald-950/60 text-emerald-400 border border-emerald-800/40"
+                                                                            : "bg-slate-800 text-text-muted border border-surface-border"
+                                                                    }`}>
+                                                                        {link.dofollow ? "Dofollow" : "Nofollow"}
+                                                                    </span>
+                                                                    {link.spam && (
+                                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-semibold bg-red-950/80 text-red-300 border border-red-700/60">
+                                                                            Spam
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                            <td className="py-2 px-3 text-text-muted whitespace-nowrap font-mono text-[11px]">
+                                                                {link.first_seen || "—"}
+                                                            </td>
+                                                        </tr>
+                                                    );
+                                                })}
+                                            </tbody>
+                                        </table>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>

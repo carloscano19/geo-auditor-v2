@@ -383,6 +383,83 @@ def generate_editor_brief_docx(
                 r_b.font.size = Pt(9.5)
                 r_b.font.color.rgb = RGBColor(55, 65, 81)
 
+        # Backlinks table (Who links to this page)
+        if ahrefs_offpage.linking_pages is not None:
+            p_bl_title = doc.add_paragraph()
+            p_bl_title.paragraph_format.space_before = Pt(10)
+            p_bl_title.paragraph_format.space_after = Pt(4)
+            r_bl_title = p_bl_title.add_run("Who links to this page")
+            r_bl_title.bold = True
+            r_bl_title.font.size = Pt(11)
+            r_bl_title.font.color.rgb = RGBColor(31, 41, 55)
+
+            if len(ahrefs_offpage.linking_pages) == 0:
+                p_empty = doc.add_paragraph()
+                p_empty.paragraph_format.space_after = Pt(6)
+                r_empty = p_empty.add_run("No live links found.")
+                r_empty.font.size = Pt(9.5)
+                r_empty.font.italic = True
+                r_empty.font.color.rgb = RGBColor(107, 114, 128)
+            else:
+                table_bl = doc.add_table(rows=1, cols=6)
+                table_bl.alignment = WD_TABLE_ALIGNMENT.CENTER
+                table_bl.autofit = True
+
+                bl_headers = ["Domain", "DR", "Linking page", "Anchor", "Type", "First seen"]
+                hdr_cells = table_bl.rows[0].cells
+                for idx, h_text in enumerate(bl_headers):
+                    hdr_cells[idx].text = h_text
+                    set_cell_background(hdr_cells[idx], "F9FAFB")
+                    set_cell_margins(hdr_cells[idx], 100, 100, 120, 120)
+                    for p in hdr_cells[idx].paragraphs:
+                        for r in p.runs:
+                            r.bold = True
+                            r.font.size = Pt(9)
+                            r.font.color.rgb = RGBColor(55, 65, 81)
+
+                for link_item in ahrefs_offpage.linking_pages[:20]:
+                    row_cells = table_bl.add_row().cells
+
+                    # Domain
+                    domain_val = getattr(link_item, "domain", "") or ""
+                    row_cells[0].text = domain_val
+
+                    # DR
+                    dr_val = getattr(link_item, "domain_rating", None)
+                    row_cells[1].text = str(int(dr_val)) if dr_val is not None else "-"
+
+                    # Linking page (truncate if too long)
+                    url_from_val = getattr(link_item, "url_from", "") or ""
+                    row_cells[2].text = url_from_val
+
+                    # Anchor
+                    anchor_val = getattr(link_item, "anchor", None) or "(no text)"
+                    row_cells[3].text = anchor_val
+
+                    # Type (Dofollow / Nofollow) + Spam badge if applicable
+                    is_dofollow = getattr(link_item, "dofollow", True)
+                    is_spam = getattr(link_item, "spam", False)
+                    type_str = "Dofollow" if is_dofollow else "Nofollow"
+                    if is_spam:
+                        type_str += " [Spam]"
+                    row_cells[4].text = type_str
+
+                    # First seen
+                    first_seen_val = getattr(link_item, "first_seen", None) or "-"
+                    row_cells[5].text = first_seen_val
+
+                    for idx_c, c in enumerate(row_cells):
+                        set_cell_margins(c, 80, 80, 120, 120)
+                        for p in c.paragraphs:
+                            for r in p.runs:
+                                r.font.size = Pt(8.5)
+                                r.font.color.rgb = RGBColor(55, 65, 81)
+                                if idx_c == 4 and is_spam and "[Spam]" in r.text:
+                                    r.font.color.rgb = RGBColor(220, 38, 38)
+                                    r.bold = True
+
+                doc.add_paragraph().paragraph_format.space_after = Pt(4)
+
     # 3. Suggested opening paragraph (if Quick fixes present)
     if ai_fixes and ai_fixes.lead_paragraph:
         lp = ai_fixes.lead_paragraph
