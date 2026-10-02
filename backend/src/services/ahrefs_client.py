@@ -29,6 +29,11 @@ ahrefs_cache: OrderedDict[str, Tuple[Dict[str, Any], float]] = OrderedDict()
 ahrefs_daily_usage: Dict[str, int] = {}
 
 
+class AhrefsAuthError(Exception):
+    """Raised when Ahrefs rejects the API key (HTTP 401 or 403)."""
+    pass
+
+
 def reset_ahrefs_cache() -> None:
     """Clear the in-memory cache for tests."""
     ahrefs_cache.clear()
@@ -141,6 +146,9 @@ class AhrefsClient:
                     headers=headers,
                     timeout=AHREFS_TIMEOUT,
                 )
+                if resp.status_code in (401, 403):
+                    logger.warning("Ahrefs rejected API key (status %d) on endpoint %s", resp.status_code, endpoint)
+                    raise AhrefsAuthError("Ahrefs rejected the API key")
                 if resp.status_code >= 500:
                     if attempt == 0:
                         await asyncio.sleep(0.5)
@@ -151,6 +159,8 @@ class AhrefsClient:
                     return resp.json()
                 logger.warning("Ahrefs request to %s returned status %d", endpoint, resp.status_code)
                 return None
+            except AhrefsAuthError:
+                raise
             except httpx.HTTPError as exc:
                 if attempt == 0:
                     await asyncio.sleep(0.5)
@@ -214,6 +224,10 @@ class AhrefsClient:
             res_backlinks, res_metrics, res_dr, res_ur_hist = await asyncio.gather(
                 req_backlinks, req_metrics, req_dr, req_ur_hist, return_exceptions=True
             )
+
+        for r in (res_backlinks, res_metrics, res_dr, res_ur_hist):
+            if isinstance(r, AhrefsAuthError):
+                raise r
 
         # 1. Parse backlinks-stats
         backlinks: Optional[int] = None

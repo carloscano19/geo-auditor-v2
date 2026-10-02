@@ -86,6 +86,7 @@ from src.utils.docx_brief import (
 )
 from src.services.ahrefs_client import (
     AhrefsClient,
+    AhrefsAuthError,
     get_cached_ahrefs_data,
     put_cached_ahrefs_data,
     get_ahrefs_daily_count,
@@ -1549,20 +1550,34 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
     if daily_count >= s.ahrefs_daily_limit:
         raise HTTPException(status_code=429, detail="Daily Ahrefs limit reached, try again tomorrow")
 
-    # Increment daily count (each analysis of a non-cached URL counts as 1)
-    increment_ahrefs_daily_count()
-
     # 3. Call Ahrefs client
     client = AhrefsClient(api_key=s.ahrefs_api_key)
     try:
         signals = await client.fetch_offpage_signals(url)
+    except AhrefsAuthError:
+        raise HTTPException(status_code=503, detail="Ahrefs rejected the API key. Check GEO_AUDITOR_AHREFS_API_KEY.")
     except ValueError:
         raise HTTPException(status_code=503, detail="Ahrefs is not configured")
     except Exception as e:
         logger.error(f"Failed to fetch Ahrefs off-page signals: {type(e).__name__}")
         raise HTTPException(status_code=502, detail="Failed to fetch Ahrefs data")
 
-    # Store raw signals in 7-day cache
+    # Check if all metrics are null (failed requests)
+    metric_keys = [
+        "domain_rating",
+        "url_rating",
+        "referring_domains",
+        "backlinks",
+        "referring_domains_all_time",
+        "organic_keywords",
+        "top3_keywords",
+        "organic_traffic",
+    ]
+    if not any(signals.get(k) is not None for k in metric_keys):
+        raise HTTPException(status_code=502, detail="Ahrefs returned no data. Try again later.")
+
+    # Increment daily count and cache only when response contains valid data
+    increment_ahrefs_daily_count()
     put_cached_ahrefs_data(url, signals)
 
     # Generate rule-based recommendations

@@ -162,6 +162,80 @@ def test_offpage_endpoint_429_when_daily_limit_exceeded():
             assert "Daily Ahrefs limit reached" in res3.json()["detail"]
 
 
+def test_offpage_endpoint_503_on_ahrefs_auth_error():
+    client = TestClient(app)
+    with patch("main.get_settings") as mock_settings:
+        mock_settings.return_value = Settings(
+            ahrefs_api_key="invalid-ahrefs-key",
+            access_code=""
+        )
+
+        with patch("src.services.ahrefs_client.AhrefsClient._get_endpoint") as mock_get:
+            from src.services.ahrefs_client import AhrefsAuthError
+            mock_get.side_effect = AhrefsAuthError("Ahrefs rejected the API key")
+
+            res = client.post("/api/offpage", json={"url": "https://example.com/test-auth"})
+            assert res.status_code == 503
+            assert res.json()["detail"] == "Ahrefs rejected the API key. Check GEO_AUDITOR_AHREFS_API_KEY."
+            assert "invalid-ahrefs-key" not in res.text
+
+            # Ensure nothing was cached and daily counter was not incremented
+            assert get_ahrefs_daily_count() == 0
+            from src.services.ahrefs_client import get_cached_ahrefs_data
+            assert get_cached_ahrefs_data("https://example.com/test-auth") is None
+
+
+def test_offpage_endpoint_502_when_all_requests_fail():
+    client = TestClient(app)
+    with patch("main.get_settings") as mock_settings:
+        mock_settings.return_value = Settings(
+            ahrefs_api_key="test-key",
+            access_code=""
+        )
+
+        with patch("src.services.ahrefs_client.AhrefsClient._get_endpoint") as mock_get:
+            # All 4 return None (e.g. 500 status codes from Ahrefs)
+            mock_get.return_value = None
+
+            res = client.post("/api/offpage", json={"url": "https://example.com/test-fail"})
+            assert res.status_code == 502
+            assert res.json()["detail"] == "Ahrefs returned no data. Try again later."
+
+            # Ensure nothing was cached and daily counter was not incremented
+            assert get_ahrefs_daily_count() == 0
+            from src.services.ahrefs_client import get_cached_ahrefs_data
+            assert get_cached_ahrefs_data("https://example.com/test-fail") is None
+
+
+def test_offpage_endpoint_partial_response_cached_and_counted():
+    client = TestClient(app)
+    with patch("main.get_settings") as mock_settings:
+        mock_settings.return_value = Settings(
+            ahrefs_api_key="test-key",
+            access_code=""
+        )
+
+        async def mock_endpoint(cl, endpoint, params, headers):
+            if "domain-rating" in endpoint:
+                return {"domain_rating": {"domain_rating": 60.0}}
+            # Other 3 endpoints fail (return None)
+            return None
+
+        with patch("src.services.ahrefs_client.AhrefsClient._get_endpoint", side_effect=mock_endpoint):
+            res = client.post("/api/offpage", json={"url": "https://example.com/test-partial"})
+            assert res.status_code == 200
+            data = res.json()
+            assert data["domain_rating"] == 60.0
+            assert data["backlinks"] is None
+
+            # Cached and daily counter incremented
+            assert get_ahrefs_daily_count() == 1
+            from src.services.ahrefs_client import get_cached_ahrefs_data
+            cached = get_cached_ahrefs_data("https://example.com/test-partial")
+            assert cached is not None
+            assert cached["domain_rating"] == 60.0
+
+
 # 3. Parsing of 4 responses and partial failure handling
 @pytest.mark.asyncio
 async def test_ahrefs_client_parsing_and_most_recent_url_rating():
