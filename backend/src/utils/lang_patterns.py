@@ -639,4 +639,23 @@ MISSING_INFO_ANSWER_PHRASES: Dict[str, List[str]] = {
     ],
 }
 
+# Forbidden keywords in questions_to_answer (financial/stock/revenue queries)
+DISCARD_QUESTION_KEYWORDS: Dict[str, List[str]] = {
+    "en": [
+        "stock price",
+        "share price",
+        "revenue",
+        "returns",
+        "should i invest",
+    ],
+    "es": [
+        "precio de la acción",
+        "precio de la accion",
+        "cotización",
+        "cotizacion",
+        "ingresos",
+        "rentabilidad",
+    ],
+}
+
 

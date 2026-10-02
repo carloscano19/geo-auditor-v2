@@ -67,6 +67,9 @@ interface AuditResultsProps {
 export default function AuditResults({ results, hideAiFixes = false }: AuditResultsProps) {
     const [isAiLoading, setIsAiLoading] = useState(false);
     const [isPlanLoading, setIsPlanLoading] = useState(false);
+    const [isBriefDownloading, setIsBriefDownloading] = useState(false);
+    const [customQuery, setCustomQuery] = useState("");
+    const [isEditingQuery, setIsEditingQuery] = useState(false);
     const [aiFixes, setAiFixes] = useState<AIFixesResponse | null>(null);
     const [aiPlan, setAiPlan] = useState<AIPlanResponse | null>(null);
     const [aiError, setAiError] = useState<string | null>(null);
@@ -87,18 +90,38 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }
     };
 
-    const handleGenerateAIPlan = async () => {
+    const handleGenerateAIPlan = async (overrideQuery?: string) => {
         if (!results.ai_context) return;
         setIsPlanLoading(true);
         setAiError(null);
         try {
-            const data = await apiClient.generateAIPlan(results.ai_context);
+            const data = await apiClient.generateAIPlan(results.ai_context, overrideQuery);
             setAiPlan(data);
+            if (data.serp_query) {
+                setCustomQuery(data.serp_query);
+            }
+            setIsEditingQuery(false);
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Failed to generate AI plan";
             setAiError(errorMsg);
         } finally {
             setIsPlanLoading(false);
+        }
+    };
+
+    const handleDownloadEditorBrief = async () => {
+        setIsBriefDownloading(true);
+        try {
+            await apiClient.downloadEditorBrief({
+                audit_result: results,
+                ai_fixes: aiFixes,
+                ai_plan: aiPlan,
+            });
+        } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : "Failed to download editor brief";
+            alert(`Error downloading brief: ${errorMsg}`);
+        } finally {
+            setIsBriefDownloading(false);
         }
     };
 
@@ -179,7 +202,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push(`## Questions Your Page Should Answer`);
             lines.push(`*Add these as an FAQ block. Short, direct answers are what AI engines quote.*\n`);
             aiPlan.questions_to_answer.forEach((q, i) => {
-                const srcBadge = q.answer_source === "page" ? "[Answer is on the page — add it as FAQ]" : "[Not answered — add new information]";
+                const srcBadge = q.answer_source === "page" ? "[Info already on the page — rewrite it as a Q&A]" : "[Missing from the page — needs new content]";
                 const paaBadge = q.origin === "google_paa" ? " [Real Google question]" : "";
                 lines.push(`### ${i + 1}. ${q.question} ${srcBadge}${paaBadge}`);
                 lines.push(`${q.draft_answer}\n`);
@@ -331,6 +354,22 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     >
                                         🖨️ Print PDF
                                     </button>
+                                    <button
+                                        onClick={handleDownloadEditorBrief}
+                                        disabled={isBriefDownloading}
+                                        className="text-xs px-3 py-1.5 bg-blue-700/80 hover:bg-blue-600 disabled:bg-blue-900/40 disabled:text-blue-300/40 rounded-md text-blue-100 transition-colors flex items-center gap-2 font-medium"
+                                    >
+                                        {isBriefDownloading ? (
+                                            <>
+                                                <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                                                Generating .docx...
+                                            </>
+                                        ) : (
+                                            <>
+                                                📄 Download editor brief (.docx)
+                                            </>
+                                        )}
+                                    </button>
                                 </div>
                             </div>
                         </div>
@@ -398,7 +437,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 )}
                             </button>
                             <button
-                                onClick={handleGenerateAIPlan}
+                                onClick={() => handleGenerateAIPlan()}
                                 disabled={isAiLoading || isPlanLoading}
                                 className="px-3.5 py-2 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 disabled:from-purple-900/50 disabled:to-indigo-900/50 disabled:text-purple-300/50 text-white rounded-lg text-xs sm:text-sm font-medium transition-all shadow-md flex items-center justify-center gap-2"
                             >
@@ -542,9 +581,46 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                         <span>📋</span> Full Improvement Plan
                                     </h4>
                                     {aiPlan.serp_used && aiPlan.serp_query && (
-                                        <p className="text-xs text-text-muted mt-0.5">
-                                            Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
-                                        </p>
+                                        <div className="space-y-1.5 mt-0.5">
+                                            <p className="text-xs text-text-muted">
+                                                Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
+                                                {" "}
+                                                <button
+                                                    onClick={() => {
+                                                        setIsEditingQuery(!isEditingQuery);
+                                                        if (!customQuery) setCustomQuery(aiPlan.serp_query || "");
+                                                    }}
+                                                    className="text-xs text-purple-400 hover:text-purple-300 underline font-medium ml-1 transition-colors"
+                                                >
+                                                    {isEditingQuery ? "Cancel" : "Change search"}
+                                                </button>
+                                            </p>
+                                            {isEditingQuery && (
+                                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                                                    <input
+                                                        type="text"
+                                                        value={customQuery}
+                                                        onChange={(e) => setCustomQuery(e.target.value)}
+                                                        placeholder="Custom Google search query..."
+                                                        className="text-xs px-2.5 py-1.5 rounded bg-slate-950 border border-surface-border text-text-primary focus:outline-none focus:border-purple-500 w-full sm:w-80"
+                                                    />
+                                                    <button
+                                                        onClick={() => handleGenerateAIPlan(customQuery)}
+                                                        disabled={isPlanLoading || !customQuery.trim()}
+                                                        className="text-xs px-3 py-1.5 bg-purple-600 hover:bg-purple-500 disabled:bg-purple-900/50 text-white rounded font-medium transition-colors shrink-0 flex items-center justify-center gap-1.5"
+                                                    >
+                                                        {isPlanLoading ? (
+                                                            <>
+                                                                <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                                                                Regenerating...
+                                                            </>
+                                                        ) : (
+                                                            "Regenerate plan"
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
                                 <button
@@ -635,7 +711,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                                 ? "bg-emerald-950/60 border border-emerald-500/40 text-emerald-400"
                                                                 : "bg-amber-950/60 border border-amber-500/40 text-amber-300"
                                                         }`}>
-                                                            {q.answer_source === "page" ? "Answer is on the page — add it as FAQ" : "Not answered — add new information"}
+                                                            {q.answer_source === "page" ? "Info already on the page — rewrite it as a Q&A" : "Missing from the page — needs new content"}
                                                         </span>
                                                     </div>
                                                 </div>

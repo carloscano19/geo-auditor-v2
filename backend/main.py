@@ -51,6 +51,7 @@ from src.models.schemas import (
     PlanNewParagraph,
     PlanInconsistency,
     PlanSourceToCite,
+    BriefExportRequest,
 )
 from src.services.llm_client import (
     LLMClient,
@@ -74,6 +75,11 @@ from src.utils.batch_aggregator import (
 from src.utils.lang_patterns import (
     TECHNICAL_DATA_OPP_PHRASES,
     MISSING_INFO_ANSWER_PHRASES,
+    DISCARD_QUESTION_KEYWORDS,
+)
+from src.utils.docx_brief import (
+    generate_editor_brief_docx,
+    sanitize_domain_for_filename,
 )
 
 CONTENT_TYPE_DISPLAY_NAMES: Dict[str, str] = {
@@ -803,6 +809,7 @@ Rules:
 - Do NOT invent facts or statistics not present in the text.
 - Language of the suggested paragraph must match the page language ({ctx.language}).
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
+- Logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.
 """
 
     llm = LLMClient()
@@ -929,8 +936,8 @@ async def generate_ai_plan(request: AIPlanRequest):
 
     ctx = request.ai_context
 
-    # 1. Check in-memory 24h cache
-    cache_key_raw = f"plan::{ctx.url or ''}::{ctx.main_text or ''}::{request.target_query or ctx.target_query or ''}::{current_settings.serp_enabled}"
+    # 1. Check in-memory 24h cache (includes request.query to differentiate regenerated plans)
+    cache_key_raw = f"plan::{ctx.url or ''}::{ctx.main_text or ''}::{request.target_query or ctx.target_query or ''}::{request.query or ''}::{current_settings.serp_enabled}"
     cache_key = hashlib.sha256(cache_key_raw.encode("utf-8")).hexdigest()
     now_ts = datetime.now(timezone.utc).timestamp()
 
@@ -953,7 +960,10 @@ async def generate_ai_plan(request: AIPlanRequest):
 
     if current_settings.serp_enabled:
         try:
-            serp_query = await resolve_serp_query(ctx, llm, request.target_query)
+            if request.query and request.query.strip():
+                serp_query = request.query.strip()
+            else:
+                serp_query = await resolve_serp_query(ctx, llm, request.target_query)
             _, _, default_market = get_market_for_language(ctx.language or "en")
             serp_market = default_market
             serp_client = SerpClient()
@@ -1040,7 +1050,9 @@ async def generate_ai_plan(request: AIPlanRequest):
         "3. If suggesting new data opportunities, describe the metric and the type of source to consult (e.g. 'official statistics', 'annual report'), but DO NOT make up URLs or numbers.\n"
         "4. In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.\n"
         "5. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text.\n"
-        "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links)."
+        "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).\n"
+        "7. Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations (e.g. 'stock price', 'cotización', 'revenue', 'rentabilidad', 'should I invest').\n"
+        "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric."
     )
 
     google_context_text = ""
@@ -1143,6 +1155,8 @@ Requirements:
 - paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
 - inconsistencies: 0 to 3 internal contradictions found on the page (different figures, dates, or names for the same thing). The conflicting values MUST appear literally in the page text snippet. If none are found, return an empty array [].
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
+- Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
+- Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
 - Language: Strictly {lang_instruction}.
 """
 
@@ -1197,6 +1211,17 @@ Requirements:
                     if any(phrase in draft_lower for phrase in MISSING_INFO_ANSWER_PHRASES.get(lk, [])):
                         src = "needs_info"
                         break
+
+            # Discard questions about stock prices, share prices, revenue, returns, or investing
+            q_raw_text = str(q.get("question") or "")
+            q_lower = q_raw_text.lower()
+            is_forbidden_q = False
+            for lk in ["en", "es"]:
+                if any(kw in q_lower for kw in DISCARD_QUESTION_KEYWORDS.get(lk, [])):
+                    is_forbidden_q = True
+                    break
+            if is_forbidden_q:
+                continue
 
             # Numeric validation
             if not all_numbers_in_page(draft_ans, page_norm):
@@ -1443,6 +1468,35 @@ Requirements:
     put_ai_plan_cache(cache_key, response_data, now_ts + 86400)
 
     return AIPlanResponse(**response_data)
+
+
+@app.post("/api/export/brief")
+async def export_editor_brief(request: BriefExportRequest):
+    """
+    Generate and download an Editor Brief as a Word (.docx) document.
+    Protected by access code like all /api/* routes.
+    """
+    try:
+        docx_bytes = generate_editor_brief_docx(
+            audit_result=request.audit_result,
+            ai_fixes=request.ai_fixes,
+            ai_plan=request.ai_plan,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate editor brief .docx: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to generate editor brief document")
+
+    domain = sanitize_domain_for_filename(request.audit_result.url)
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"geo-brief-{domain}-{date_str}.docx"
+
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
 
 
 

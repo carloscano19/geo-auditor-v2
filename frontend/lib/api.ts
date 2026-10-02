@@ -137,6 +137,18 @@ export interface AIPlanResponse {
     serp_paa_found?: number;
 }
 
+export interface AIPlanRequest {
+    ai_context: AIContext;
+    target_query?: string;
+    query?: string;
+}
+
+export interface BriefExportRequest {
+    audit_result: AuditResponse;
+    ai_fixes?: AIFixesResponse | null;
+    ai_plan?: AIPlanResponse | null;
+}
+
 export interface AuditResponse {
     url: string;
     total_score: number;
@@ -528,15 +540,58 @@ class ApiClient {
     /**
      * Generate comprehensive AI improvement plan
      */
-    async generateAIPlan(aiContext: AIContext): Promise<AIPlanResponse> {
+    async generateAIPlan(aiContext: AIContext, query?: string): Promise<AIPlanResponse> {
+        const bodyPayload: Record<string, unknown> = { ai_context: aiContext };
+        if (query && query.trim()) {
+            bodyPayload.query = query.trim();
+        }
         const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/plan`, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
-            body: JSON.stringify({ ai_context: aiContext }),
+            body: JSON.stringify(bodyPayload),
         });
         return this.parseResponse<AIPlanResponse>(response, 'Failed to generate AI plan');
+    }
+
+    /**
+     * Download Editor Brief as a Word (.docx) document
+     */
+    async downloadEditorBrief(request: BriefExportRequest): Promise<void> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/export/brief`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(request),
+        });
+
+        if (!response.ok) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err?.detail || 'Failed to download editor brief');
+            }
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition');
+        let filename = 'geo-brief.docx';
+        if (disposition && disposition.includes('filename=')) {
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            if (match && match[1]) filename = match[1];
+        }
+
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(blobUrl);
     }
 }
 

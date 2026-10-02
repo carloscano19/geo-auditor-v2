@@ -236,6 +236,13 @@ class AIPlanResponse(BaseModel):
 class AIPlanRequest(BaseModel):
     ai_context: AIContext
     target_query: Optional[str] = None
+    query: Optional[str] = None
+
+
+class BriefExportRequest(BaseModel):
+    audit_result: 'AuditResponse'
+    ai_fixes: Optional[AIFixesResponse] = None
+    ai_plan: Optional[AIPlanResponse] = None
 
 
 class AuditResponse(BaseModel):
@@ -325,4 +332,7 @@ class BatchJobResponse(BaseModel):
     site_wide_issues: list[TopicIssue] = Field(default_factory=list)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     completed_at: Optional[datetime] = None
+
+
+BriefExportRequest.model_rebuild()
 
