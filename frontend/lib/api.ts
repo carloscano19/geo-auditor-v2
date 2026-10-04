@@ -522,7 +522,7 @@ class ApiClient {
     /**
      * Get backend version (single source of truth, exempt from access code)
      */
-    async getVersion(): Promise<{
+    async getVersion(signal?: AbortSignal): Promise<{
         version: string;
         ai_enabled?: boolean;
         serp_enabled?: boolean;
@@ -531,7 +531,7 @@ class ApiClient {
     }> {
         let response: Response;
         try {
-            response = await fetch(`${this.baseUrl}/api/version`);
+            response = await fetch(`${this.baseUrl}/api/version`, { signal });
         } catch {
             throw new Error(SERVER_BUSY_MESSAGE);
         }

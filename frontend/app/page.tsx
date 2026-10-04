@@ -94,12 +94,14 @@ export default function Home() {
 
   const pollIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const wakeUpStartRef = useRef<number>(Date.now());
-  const wakeUpTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const fiveSecondTimerRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
   useEffect(() => {
     return () => {
       if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
-      if (wakeUpTimerRef.current) clearInterval(wakeUpTimerRef.current);
+      if (fiveSecondTimerRef.current) clearTimeout(fiveSecondTimerRef.current);
+      if (abortControllerRef.current) abortControllerRef.current.abort();
     };
   }, []);
 
@@ -116,11 +118,30 @@ export default function Home() {
   }, []);
 
   const checkServerAndAuth = useCallback(async () => {
+    // If not responded in 5 seconds, switch to waking_up state
+    if (!fiveSecondTimerRef.current) {
+      fiveSecondTimerRef.current = setTimeout(() => {
+        setServerStatus((prev) => (prev === "checking" ? "waking_up" : prev));
+      }, 5000);
+    }
+
+    const controller = new AbortController();
+    abortControllerRef.current = controller;
+    const timeoutId = setTimeout(() => {
+      controller.abort();
+    }, 15000);
+
     try {
-      const data = await apiClient.getVersion();
-      if (wakeUpTimerRef.current) {
-        clearInterval(wakeUpTimerRef.current);
-        wakeUpTimerRef.current = null;
+      const data = await apiClient.getVersion(controller.signal);
+      clearTimeout(timeoutId);
+
+      if (fiveSecondTimerRef.current) {
+        clearTimeout(fiveSecondTimerRef.current);
+        fiveSecondTimerRef.current = null;
+      }
+      if (pollIntervalRef.current) {
+        clearInterval(pollIntervalRef.current);
+        pollIntervalRef.current = null;
       }
       setServerStatus("ready");
 
@@ -148,17 +169,22 @@ export default function Home() {
         setIsAuthenticated(true);
       }
     } catch {
+      clearTimeout(timeoutId);
       const elapsed = Date.now() - wakeUpStartRef.current;
       if (elapsed >= 180000) {
-        if (wakeUpTimerRef.current) {
-          clearInterval(wakeUpTimerRef.current);
-          wakeUpTimerRef.current = null;
+        if (fiveSecondTimerRef.current) {
+          clearTimeout(fiveSecondTimerRef.current);
+          fiveSecondTimerRef.current = null;
+        }
+        if (pollIntervalRef.current) {
+          clearInterval(pollIntervalRef.current);
+          pollIntervalRef.current = null;
         }
         setServerStatus("unresponsive");
       } else {
         setServerStatus("waking_up");
-        if (!wakeUpTimerRef.current) {
-          wakeUpTimerRef.current = setInterval(() => {
+        if (!pollIntervalRef.current) {
+          pollIntervalRef.current = setInterval(() => {
             checkServerAndAuth();
           }, 5000);
         }
@@ -168,10 +194,14 @@ export default function Home() {
 
   const handleRetryServer = () => {
     wakeUpStartRef.current = Date.now();
-    setServerStatus("waking_up");
-    if (wakeUpTimerRef.current) {
-      clearInterval(wakeUpTimerRef.current);
-      wakeUpTimerRef.current = null;
+    setServerStatus("checking");
+    if (fiveSecondTimerRef.current) {
+      clearTimeout(fiveSecondTimerRef.current);
+      fiveSecondTimerRef.current = null;
+    }
+    if (pollIntervalRef.current) {
+      clearInterval(pollIntervalRef.current);
+      pollIntervalRef.current = null;
     }
     checkServerAndAuth();
   };
@@ -329,10 +359,10 @@ export default function Home() {
           <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center space-y-4">
             <div className="w-10 h-10 border-3 border-slate-200 border-t-red-600 rounded-full animate-spin mx-auto mb-2" />
             <h2 className="text-base font-bold text-slate-900">
-              Waking up the server…
+              Waking up the server… this can take up to a minute.
             </h2>
             <p className="text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">
-              Render free tier sleeps when inactive. This can take up to a minute to start.
+              Render free tier sleeps when inactive. Reconnecting automatically…
             </p>
           </div>
         </div>
@@ -599,45 +629,45 @@ export default function Home() {
             </div>
 
             {/* Right Status Badges */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex items-center flex-wrap gap-1.5 sm:gap-2 justify-end">
               {/* AI Connected Badge */}
               <div
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border shadow-2xs ${
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
                   aiEnabled
                     ? "bg-emerald-50 border-emerald-200 text-emerald-800"
                     : "bg-slate-100 border-slate-200 text-slate-500"
                 }`}
-                title={aiEnabled ? "AI Connected (Claude & fixes enabled)" : "AI Disconnected (No API key)"}
+                title={aiEnabled ? "AI Connected (AI model & fixes enabled)" : "AI Disconnected (No API key)"}
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${aiEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
-                <span className="hidden xs:inline">AI Connected</span>
-                <span className="xs:hidden">AI</span>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${aiEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+                <span className="hidden sm:inline">AI Connected</span>
+                <span className="sm:hidden">AI</span>
               </div>
 
               {/* Google Data Badge */}
               <div
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border shadow-2xs ${
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
                   serpEnabled
                     ? "bg-emerald-50 border-emerald-200 text-emerald-800"
                     : "bg-slate-100 border-slate-200 text-slate-500"
                 }`}
                 title={serpEnabled ? "Google Data Connected (Live SERP/PAA enabled)" : "Google Data Disabled"}
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${serpEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
-                <span className="hidden xs:inline">Google data</span>
-                <span className="xs:hidden">Google</span>
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${serpEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+                <span className="hidden sm:inline">Google data</span>
+                <span className="sm:hidden">Google</span>
               </div>
 
               {/* Ahrefs Badge */}
               <div
-                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border shadow-2xs ${
+                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
                   ahrefsEnabled
                     ? "bg-emerald-50 border-emerald-200 text-emerald-800"
                     : "bg-slate-100 border-slate-200 text-slate-500"
                 }`}
                 title={ahrefsEnabled ? "Ahrefs API Connected (Off-page metrics enabled)" : "Ahrefs API Disabled"}
               >
-                <span className={`w-1.5 h-1.5 rounded-full ${ahrefsEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
+                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ahrefsEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
                 <span>Ahrefs</span>
               </div>
             </div>
@@ -669,10 +699,6 @@ export default function Home() {
               key={formKey}
               initialUrl={formUrl}
               initialMode={formMode}
-              onModeChange={(newMode) => {
-                setActiveModule(newMode);
-                setFormMode(newMode);
-              }}
               onSubmit={handleAudit}
               onBatchSubmit={handleBatchAudit}
               isLoading={isLoading}

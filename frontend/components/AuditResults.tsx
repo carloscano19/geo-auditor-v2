@@ -530,7 +530,10 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                             {results.scoring_version}
                                         </span>
                                     </div>
-                                    <p className="text-xs sm:text-sm text-slate-500 mb-4 break-all max-w-2xl font-mono">
+                                    <p
+                                        title={results.url || results.ai_context?.title || "Direct Text Submission"}
+                                        className="text-xs sm:text-sm text-slate-500 mb-4 truncate max-w-2xl"
+                                    >
                                         {results.url || results.ai_context?.title || "Direct Text Submission"}
                                     </p>
 
@@ -609,9 +612,6 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </p>
                             </div>
                         </div>
-                        <span className="text-[11px] font-mono text-slate-500 bg-slate-100 border border-slate-200 px-2 py-0.5 rounded-md">
-                            Impact = Weight × (100 − Score)
-                        </span>
                     </div>
 
                     {topActions.length === 0 ? (
@@ -634,9 +634,6 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                             <span className="text-sm font-bold text-slate-900">
                                                 {action.friendlyName}
                                             </span>
-                                            <span className="text-[11px] text-slate-400 font-mono">
-                                                ({action.submetricName})
-                                            </span>
                                             <span className="text-[11px] font-bold font-mono px-2 py-0.5 rounded bg-red-50 text-red-700 border border-red-200">
                                                 Score: {Math.round(action.rawScore)}/100
                                             </span>
@@ -646,7 +643,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                         </p>
                                     </div>
                                     <div className="sm:text-right shrink-0 pl-7 sm:pl-0">
-                                        <span className="text-[11px] font-mono text-slate-500 bg-white border border-slate-200 px-2 py-1 rounded-md shadow-2xs">
+                                        <span className="text-slate-400 font-mono text-xs">
                                             Impact: {action.impact.toFixed(1)}
                                         </span>
                                     </div>
@@ -887,11 +884,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 <div className="flex items-center gap-2">
                                     <span className="text-xl">✨</span>
                                     <h3 className="text-lg font-bold text-slate-900 tracking-tight">
-                                        AI Suggested Fixes & Content Plan
+                                        AI Suggested Fixes &amp; Content Plan
                                     </h3>
                                 </div>
                                 <p className="text-xs text-slate-500 mt-1 max-w-xl">
-                                    Generated with Anthropic Claude & Google Search intelligence. Suggestions are strictly non-hallucinated and tailored to your page content.
+                                    Generated with the Chiliz AI model and live Google data. Figures and links are checked against the page and Google results. Review before publishing.
                                 </p>
                             </div>
 
@@ -902,7 +899,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     disabled={isAiLoading}
                                     className="btn-primary text-xs px-4 py-2"
                                 >
-                                    {isAiLoading ? "Generating Fixes..." : "⚡ Quick Fixes"}
+                                    {isAiLoading ? "Generating Fixes..." : "Quick fixes"}
                                 </button>
                                 <button
                                     type="button"
@@ -910,7 +907,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     disabled={isPlanLoading}
                                     className="px-4 py-2 rounded-xl text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
                                 >
-                                    {isPlanLoading ? "Building Plan..." : "🎯 Improvement Plan"}
+                                    {isPlanLoading ? "Building Plan..." : "Full improvement plan"}
                                 </button>
                             </div>
                         </div>
@@ -930,27 +927,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             </div>
                             <div className="max-w-md mx-auto space-y-2">
                                 <h4 className="text-base font-bold text-slate-900">
-                                    Generate AI Fixes & Action Plan
+                                    Generate AI Fixes &amp; Action Plan
                                 </h4>
                                 <p className="text-xs text-slate-500 leading-relaxed">
-                                    Click <strong>Quick Fixes</strong> to get an optimized lead paragraph and Schema.org JSON-LD, or <strong>Improvement Plan</strong> for full section restructuring, tables, and Google PAA answers.
+                                    Click <strong>Quick fixes</strong> to get an optimized lead paragraph and Schema.org JSON-LD, or <strong>Full improvement plan</strong> for full section restructuring, tables, and Google PAA answers.
                                 </p>
-                            </div>
-                            <div className="flex justify-center gap-3 pt-2">
-                                <button
-                                    type="button"
-                                    onClick={handleGenerateAIFixes}
-                                    className="btn-primary text-xs px-4 py-2.5"
-                                >
-                                    Generate Quick Fixes
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => handleGenerateAIPlan()}
-                                    className="px-4 py-2.5 rounded-xl text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition-all cursor-pointer"
-                                >
-                                    Generate Full Plan
-                                </button>
                             </div>
                         </div>
                     )}
@@ -1051,112 +1032,153 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                                 <div>
                                     <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                                        <span>🎯</span> Content Improvement Plan
+                                        <span>📋</span> Full Improvement Plan
                                     </h4>
                                     {aiPlan.serp_used && aiPlan.serp_query && (
-                                        <p className="text-xs text-slate-500 mt-0.5">
-                                            Google Search: <span className="font-semibold text-slate-800">&ldquo;{aiPlan.serp_query}&rdquo;</span> {formatMarketInWords(aiPlan.serp_market) ? `(${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} questions found
-                                        </p>
+                                        <div className="space-y-1.5 mt-1">
+                                            <p className="text-xs text-slate-500">
+                                                Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
+                                                {" "}
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setIsEditingQuery(!isEditingQuery);
+                                                        if (!customQuery) setCustomQuery(aiPlan.serp_query || "");
+                                                    }}
+                                                    className="text-xs text-red-600 hover:text-red-700 underline font-medium ml-1 transition-colors cursor-pointer"
+                                                >
+                                                    {isEditingQuery ? "Cancel" : "Change search"}
+                                                </button>
+                                            </p>
+                                            {isEditingQuery && (
+                                                <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 pt-1">
+                                                    <input
+                                                        type="text"
+                                                        value={customQuery}
+                                                        onChange={(e) => setCustomQuery(e.target.value)}
+                                                        placeholder="Custom Google search query..."
+                                                        className="input-field text-xs py-1.5 w-full sm:w-80"
+                                                    />
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => handleGenerateAIPlan(customQuery)}
+                                                        disabled={isPlanLoading || !customQuery.trim()}
+                                                        className="btn-primary text-xs px-3.5 py-1.5 shrink-0"
+                                                    >
+                                                        {isPlanLoading ? (
+                                                            <>
+                                                                <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                                                                Regenerating...
+                                                            </>
+                                                        ) : (
+                                                            "Regenerate plan"
+                                                        )}
+                                                    </button>
+                                                </div>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
 
-                                <div className="flex items-center gap-2 no-print">
+                                <div className="flex items-center gap-2 no-print shrink-0 self-start sm:self-auto">
                                     <button
                                         type="button"
                                         onClick={handleCopyPlanMarkdown}
-                                        className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer"
+                                        className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1.5"
                                     >
-                                        Copy Plan (Markdown)
+                                        <span>📥</span>
+                                        <span>Copy plan as Markdown</span>
                                     </button>
                                 </div>
                             </div>
 
-                            {/* Query override editor */}
-                            <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-2">
-                                <div className="flex items-center justify-between">
-                                    <label className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                        Target Search Query
-                                    </label>
-                                    <button
-                                        type="button"
-                                        onClick={() => setIsEditingQuery(!isEditingQuery)}
-                                        className="text-xs text-slate-500 hover:text-slate-800 underline cursor-pointer"
-                                    >
-                                        {isEditingQuery ? "Cancel" : "Change & Regenerate"}
-                                    </button>
-                                </div>
-                                {isEditingQuery ? (
-                                    <div className="flex gap-2">
-                                        <input
-                                            type="text"
-                                            value={customQuery}
-                                            onChange={(e) => setCustomQuery(e.target.value)}
-                                            placeholder="Enter target query to pull Google PAA data..."
-                                            className="input-field text-xs py-2"
-                                        />
-                                        <button
-                                            type="button"
-                                            onClick={() => handleGenerateAIPlan(customQuery)}
-                                            disabled={isPlanLoading || !customQuery.trim()}
-                                            className="btn-primary text-xs px-4 py-2 shrink-0"
-                                        >
-                                            {isPlanLoading ? "Running..." : "Regenerate"}
-                                        </button>
+                            {/* Warnings */}
+                            {aiPlan.warnings && aiPlan.warnings.length > 0 && (
+                                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1">
+                                    <div className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
+                                        <span>⚠️</span> Warnings &amp; Actions Required:
                                     </div>
-                                ) : (
-                                    <p className="text-xs font-mono text-slate-700">
-                                        {aiPlan.serp_query || "Auto-detected from page title"}
-                                    </p>
-                                )}
-                            </div>
+                                    <ul className="text-xs text-amber-800 list-disc list-inside space-y-0.5 pl-1">
+                                        {aiPlan.warnings.map((w, idx) => (
+                                            <li key={idx}>{w}</li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
 
-                            {/* Inconsistencies */}
+                            {/* Inconsistencies found on the page */}
                             {aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0 && (
                                 <div className="space-y-3">
-                                    <h5 className="text-xs font-bold text-amber-800 uppercase tracking-wider">
-                                        ⚠️ Inconsistencies Found on Page
-                                    </h5>
-                                    <div className="space-y-2">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                            <span>⚖️ Inconsistencies found on the page</span>
+                                            <span className="text-xs font-normal text-slate-400">({aiPlan.inconsistencies.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-3">
                                         {aiPlan.inconsistencies.map((inc, i) => (
-                                            <div key={i} className="p-3.5 bg-amber-50/60 border border-amber-200 rounded-xl space-y-1 text-xs">
-                                                <p className="font-bold text-slate-900">{inc.issue}</p>
-                                                <p className="text-slate-600 font-mono">
-                                                    Conflicting values: {inc.values.map(v => `"${v}"`).join(" vs ")}
-                                                </p>
-                                                <p className="text-amber-900 font-medium">
-                                                    Recommendation: {inc.suggestion}
-                                                </p>
+                                            <div key={i} className="p-3.5 rounded-xl bg-amber-50/60 border border-amber-200 space-y-2 text-xs">
+                                                <div className="font-semibold text-amber-900 flex items-center gap-1.5">
+                                                    <span>🔍</span> {inc.issue}
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-[11px] text-slate-500 uppercase tracking-wider font-medium">Conflicting values:</span>
+                                                    {inc.values.map((val, vIdx) => (
+                                                        <span key={vIdx} className="px-2 py-0.5 rounded bg-white text-rose-700 border border-rose-200 font-mono text-[11px]">
+                                                            &ldquo;{val}&rdquo;
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                                <div className="p-2.5 rounded-lg bg-white/80 border border-slate-200 text-slate-700">
+                                                    <strong className="text-slate-900">Recommendation: </strong>
+                                                    {inc.suggestion}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* Questions to Answer */}
+                            {/* Questions your page should answer */}
                             {aiPlan.questions_to_answer && aiPlan.questions_to_answer.length > 0 && (
                                 <div className="space-y-3">
-                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                        ❓ Questions Your Page Should Answer (FAQ Block)
-                                    </h5>
-                                    <div className="space-y-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                            <span>❓ Questions your page should answer</span>
+                                            <span className="text-xs font-normal text-slate-400">({aiPlan.questions_to_answer.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            Add these as an FAQ block. Short, direct answers are what AI engines quote.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-3">
                                         {aiPlan.questions_to_answer.map((q, i) => (
-                                            <div key={i} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-2">
-                                                <div className="flex items-center justify-between gap-2 flex-wrap">
-                                                    <span className="font-bold text-sm text-slate-900">
-                                                        {i + 1}. {q.question}
-                                                    </span>
-                                                    <div className="flex items-center gap-1.5">
+                                            <div key={i} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
+                                                <div className="flex items-start justify-between gap-2 flex-wrap">
+                                                    <div className="text-xs font-semibold text-slate-900">
+                                                        {q.question}
+                                                    </div>
+                                                    <div className="flex items-center gap-1.5 shrink-0">
                                                         {q.origin === "google_paa" && (
-                                                            <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-blue-50 text-blue-700 border border-blue-200">
-                                                                Google Question
+                                                            <span className="text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded bg-blue-50 border border-blue-200 text-blue-700">
+                                                                Real Google question
                                                             </span>
                                                         )}
-                                                        <span className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-200 text-slate-700">
-                                                            {q.answer_source === "page" ? "Page Content" : "Missing / New"}
+                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
+                                                            q.answer_source === "page"
+                                                                ? "bg-emerald-50 border border-emerald-200 text-emerald-700"
+                                                                : "bg-amber-50 border border-amber-200 text-amber-800"
+                                                        }`}>
+                                                            {q.answer_source === "page"
+                                                                ? "Info already on the page — rewrite it as a Q&A"
+                                                                : "Missing from the page — needs new content"}
                                                         </span>
                                                     </div>
                                                 </div>
-                                                <p className="text-xs text-slate-700 leading-relaxed bg-white p-3 rounded-lg border border-slate-200/80">
+                                                <p className="text-xs text-slate-700 leading-relaxed bg-white p-2.5 rounded-lg border border-slate-200">
                                                     {q.draft_answer}
                                                 </p>
                                             </div>
@@ -1165,25 +1187,35 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* Suggested H2 Structure */}
+                            {/* Suggested H2 structure */}
                             {aiPlan.suggested_h2_structure && aiPlan.suggested_h2_structure.length > 0 && (
                                 <div className="space-y-3">
-                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                        📑 Suggested H2 Heading Structure
-                                    </h5>
-                                    <div className="space-y-2">
-                                        {aiPlan.suggested_h2_structure.map((h, i) => (
-                                            <div key={i} className="p-3 bg-white border border-slate-200 rounded-xl flex items-center justify-between gap-3">
-                                                <div>
-                                                    <p className="text-xs font-bold text-slate-900">
-                                                        H2: {h.h2}
-                                                    </p>
-                                                    <p className="text-[11px] text-slate-500">
-                                                        {h.purpose}
-                                                    </p>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                            <span>📑 Suggested H2 structure</span>
+                                            <span className="text-xs font-normal text-slate-400">({aiPlan.suggested_h2_structure.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            Use these headings to organise the page. &apos;New&apos; means the section has to be written.
+                                        </p>
+                                    </div>
+                                    <div className="divide-y divide-slate-200 rounded-xl border border-slate-200 overflow-hidden bg-white">
+                                        {aiPlan.suggested_h2_structure.map((item, idx) => (
+                                            <div key={idx} className="p-3.5 flex items-start justify-between gap-3 text-xs">
+                                                <div className="space-y-1">
+                                                    <div className="font-semibold text-slate-900">
+                                                        {item.h2}
+                                                    </div>
+                                                    <div className="text-slate-500 text-[11px]">
+                                                        {item.purpose}
+                                                    </div>
                                                 </div>
-                                                <span className={`text-[10px] font-bold px-2 py-0.5 rounded shrink-0 ${h.status === "existing" ? "bg-slate-100 text-slate-600" : "bg-red-50 text-red-700 border border-red-200"}`}>
-                                                    {h.status === "existing" ? "Existing" : "New Section"}
+                                                <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded shrink-0 ${
+                                                    item.status === "existing"
+                                                        ? "bg-slate-100 text-slate-700 border border-slate-200"
+                                                        : "bg-red-50 border border-red-200 text-red-700"
+                                                }`}>
+                                                    {item.status === "existing" ? "Exists — add the heading" : "New — write this section"}
                                                 </span>
                                             </div>
                                         ))}
@@ -1191,20 +1223,25 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* Suggested Table */}
+                            {/* Suggested table */}
                             {aiPlan.suggested_table && (
                                 <div className="space-y-3">
                                     <div className="flex items-center justify-between">
-                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            📊 Suggested Table: {aiPlan.suggested_table.title}
-                                        </h5>
-                                        {aiPlan.suggested_table.headers && (
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                                <span>📊 Suggested table: {aiPlan.suggested_table.title}</span>
+                                            </h4>
+                                            <p className="text-xs text-slate-500 mt-0.5">
+                                                Add this table to the page. All values come from the page itself.
+                                            </p>
+                                        </div>
+                                        {aiPlan.suggested_table.headers && aiPlan.suggested_table.rows && (
                                             <button
                                                 type="button"
                                                 onClick={handleCopyTableHtml}
-                                                className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
+                                                className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1"
                                             >
-                                                Copy HTML
+                                                📋 Copy HTML
                                             </button>
                                         )}
                                     </div>
@@ -1237,60 +1274,82 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* Data Opportunities */}
+                            {/* Data that would enrich the text */}
                             {aiPlan.data_opportunities && aiPlan.data_opportunities.length > 0 && (
                                 <div className="space-y-3">
-                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                        📈 Data Opportunities
-                                    </h5>
-                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                                        {aiPlan.data_opportunities.map((d, i) => (
-                                            <div key={i} className="p-3 bg-slate-50 border border-slate-200 rounded-xl space-y-1">
-                                                <p className="text-xs font-bold text-slate-900">{d.suggestion}</p>
-                                                <p className="text-[11px] text-slate-500 font-medium">
-                                                    Recommended Source: {d.source_type}
-                                                </p>
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                            <span>💡 Data that would enrich the text</span>
+                                            <span className="text-xs font-normal text-slate-400">({aiPlan.data_opportunities.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            Information worth adding. No figures are suggested: find them in the type of source shown.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-2.5">
+                                        {aiPlan.data_opportunities.map((item, idx) => (
+                                            <div key={idx} className="p-3 rounded-xl bg-slate-50 border border-slate-200 flex flex-col sm:flex-row sm:items-center justify-between gap-2 text-xs">
+                                                <span className="text-slate-800">{item.suggestion}</span>
+                                                <span className="text-[11px] px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200 shrink-0 self-start sm:self-auto font-mono">
+                                                    Source: {item.source_type}
+                                                </span>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* Sources to Cite */}
+                            {/* Sources to cite or link */}
                             {aiPlan.sources_to_cite && aiPlan.sources_to_cite.length > 0 && (
                                 <div className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            🌐 Sources to Cite or Link
-                                        </h5>
+                                    <div className="flex items-center justify-between gap-2">
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                                <span>🔗 Sources to cite or link</span>
+                                                <span className="text-xs font-normal text-slate-400">({aiPlan.sources_to_cite.length})</span>
+                                            </h4>
+                                            <p className="text-xs text-slate-500 mt-0.5">
+                                                Real pages that Google ranks or cites for this topic. Link or cite the relevant ones.
+                                            </p>
+                                        </div>
                                         <button
                                             type="button"
                                             onClick={handleCopySources}
-                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
+                                            className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1 shrink-0"
                                         >
-                                            {copiedSources ? "Copied!" : "Copy Sources"}
+                                            {copiedSources ? "✓ Copied" : "📋 Copy list"}
                                         </button>
                                     </div>
-                                    <div className="space-y-2">
-                                        {aiPlan.sources_to_cite.map((s, i) => (
-                                            <div key={i} className="p-3 bg-white border border-slate-200 rounded-xl flex flex-col sm:flex-row sm:items-center justify-between gap-2">
-                                                <div>
+                                    <div className="grid gap-3">
+                                        {aiPlan.sources_to_cite.map((src, idx) => (
+                                            <div key={idx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2 text-xs">
+                                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
                                                     <a
-                                                        href={s.url}
+                                                        href={src.url}
                                                         target="_blank"
                                                         rel="noopener noreferrer"
-                                                        className="text-xs font-bold text-red-600 hover:underline"
+                                                        className="font-semibold text-red-600 hover:text-red-700 hover:underline flex items-center gap-1.5"
                                                     >
-                                                        {s.title}
+                                                        <span>🌐</span> {src.title || src.domain}
                                                     </a>
-                                                    <p className="text-[11px] text-slate-500">
-                                                        {s.domain} · Found in: {s.found_in}
-                                                    </p>
+                                                    <div className="flex items-center gap-2 shrink-0">
+                                                        <span className="text-[11px] px-2 py-0.5 rounded bg-white text-slate-600 border border-slate-200 font-mono">
+                                                            {src.domain}
+                                                        </span>
+                                                        <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded ${
+                                                            src.found_in === "AI Overview"
+                                                                ? "bg-purple-50 border border-purple-200 text-purple-700"
+                                                                : "bg-blue-50 border border-blue-200 text-blue-700"
+                                                        }`}>
+                                                            {src.found_in}
+                                                        </span>
+                                                    </div>
                                                 </div>
-                                                {s.why && (
-                                                    <span className="text-[11px] text-slate-600 italic sm:text-right max-w-xs">
-                                                        {s.why}
-                                                    </span>
+                                                {src.why && (
+                                                    <div className="p-2.5 rounded-lg bg-white border border-slate-200 text-slate-600">
+                                                        <strong className="text-slate-900">Why: </strong>
+                                                        {src.why}
+                                                    </div>
                                                 )}
                                             </div>
                                         ))}
@@ -1298,48 +1357,69 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                 </div>
                             )}
 
-                            {/* Paragraphs to Add */}
+                            {/* Paragraphs to add */}
                             {aiPlan.paragraphs_to_add && aiPlan.paragraphs_to_add.length > 0 && (
                                 <div className="space-y-3">
-                                    <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                        📝 Ready-to-Paste Paragraphs
-                                    </h5>
-                                    <div className="space-y-3">
-                                        {aiPlan.paragraphs_to_add.map((p, i) => (
-                                            <div key={i} className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-slate-900 flex items-center gap-2">
+                                            <span>✍️ Paragraphs to add</span>
+                                            <span className="text-xs font-normal text-slate-400">({aiPlan.paragraphs_to_add.length})</span>
+                                        </h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            Ready-to-paste paragraphs, written only with facts from the page.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-3">
+                                        {aiPlan.paragraphs_to_add.map((p, idx) => (
+                                            <div key={idx} className="p-3.5 rounded-xl bg-slate-50 border border-slate-200 space-y-2">
                                                 <div className="flex items-center justify-between gap-2">
-                                                    <span className="text-xs font-bold text-slate-900">
-                                                        Addressing: &ldquo;{p.target_issue}&rdquo;
-                                                    </span>
-                                                    <span className="text-[10px] text-slate-400 font-mono">
-                                                        {p.placement}
-                                                    </span>
+                                                    <div className="text-xs font-semibold text-slate-900">
+                                                        🎯 {p.target_issue}
+                                                    </div>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => {
+                                                            navigator.clipboard.writeText(p.suggested_text);
+                                                            alert("Paragraph copied to clipboard!");
+                                                        }}
+                                                        className="text-[11px] px-2 py-0.5 bg-white hover:bg-slate-50 border border-slate-200 rounded text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1"
+                                                    >
+                                                        📋 Copy
+                                                    </button>
                                                 </div>
-                                                <p className="text-xs text-slate-700 bg-white p-3 rounded-lg border border-slate-200 leading-relaxed font-mono">
+                                                <p className="text-xs text-slate-800 leading-relaxed bg-white p-2.5 rounded-lg border border-slate-200">
                                                     {p.suggested_text}
                                                 </p>
+                                                <div className="text-[11px] text-slate-500 italic">
+                                                    Placement: {p.placement}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
                                 </div>
                             )}
 
-                            {/* Combined Schema.org */}
+                            {/* Combined schema */}
                             {aiPlan.combined_schema && (
-                                <div className="space-y-3 pt-4 border-t border-slate-100">
+                                <div className="space-y-2">
                                     <div className="flex items-center justify-between">
-                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            🏷️ Combined Schema.org (JSON-LD)
-                                        </h5>
+                                        <div>
+                                            <h4 className="text-sm font-semibold text-slate-900">
+                                                Combined schema
+                                            </h4>
+                                            <p className="text-xs text-slate-500 mt-0.5">
+                                                For the developer: paste in the page &lt;head&gt;.
+                                            </p>
+                                        </div>
                                         <button
                                             type="button"
                                             onClick={handleCopyCombinedSchema}
-                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
+                                            className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1"
                                         >
-                                            Copy Combined Schema
+                                            📋 Copy Schema
                                         </button>
                                     </div>
-                                    <div className="p-4 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto max-h-72 font-mono text-xs leading-relaxed">
+                                    <div className="p-4 bg-slate-900 text-emerald-400 rounded-xl overflow-x-auto max-h-72 font-mono text-xs leading-relaxed">
                                         <pre>{JSON.stringify(aiPlan.combined_schema, null, 2)}</pre>
                                     </div>
                                 </div>

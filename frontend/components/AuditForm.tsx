@@ -9,7 +9,6 @@ interface AuditFormProps {
     batchProgress?: { completed: number; total: number } | null;
     initialUrl?: string;
     initialMode?: "url" | "text" | "batch";
-    onModeChange?: (mode: "url" | "text" | "batch") => void;
 }
 
 export default function AuditForm({
@@ -19,7 +18,6 @@ export default function AuditForm({
     batchProgress,
     initialUrl = "",
     initialMode = "url",
-    onModeChange,
 }: AuditFormProps) {
     const [mode, setMode] = useState<"url" | "text" | "batch">(initialMode);
     const [url, setUrl] = useState(initialUrl);
@@ -40,11 +38,6 @@ export default function AuditForm({
             setMode(initialMode);
         }
     }, [initialMode]);
-
-    const handleModeSwitch = (newMode: "url" | "text" | "batch") => {
-        setMode(newMode);
-        if (onModeChange) onModeChange(newMode);
-    };
 
     const handleSubmit = (e: FormEvent) => {
         e.preventDefault();
@@ -86,43 +79,6 @@ export default function AuditForm({
 
     return (
         <form onSubmit={handleSubmit} className="space-y-5">
-            {/* Mode selection pills */}
-            <div className="flex p-1 bg-slate-100 rounded-xl border border-slate-200/80">
-                <button
-                    type="button"
-                    onClick={() => handleModeSwitch("url")}
-                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                        mode === "url"
-                            ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
-                            : "text-slate-500 hover:text-slate-800"
-                    }`}
-                >
-                    URL Audit
-                </button>
-                <button
-                    type="button"
-                    onClick={() => handleModeSwitch("text")}
-                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                        mode === "text"
-                            ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
-                            : "text-slate-500 hover:text-slate-800"
-                    }`}
-                >
-                    Paste Text
-                </button>
-                <button
-                    type="button"
-                    onClick={() => handleModeSwitch("batch")}
-                    className={`flex-1 py-1.5 text-xs font-semibold rounded-lg transition-all cursor-pointer ${
-                        mode === "batch"
-                            ? "bg-white text-slate-900 shadow-2xs border border-slate-200"
-                            : "text-slate-500 hover:text-slate-800"
-                    }`}
-                >
-                    Batch Audit
-                </button>
-            </div>
-
             {mode === "url" ? (
                 /* URL Input */
                 <div className="space-y-1.5">
