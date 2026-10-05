@@ -777,8 +777,11 @@ def generate_ahrefs_recommendations(
 
 def strip_page_meta_references(text: str) -> str:
     """
-    Remove sentences that refer to 'the page', 'this page', 'the page's',
-    'la página', or 'esta página' from final publishable web copy.
+    Remove sentences containing analysis/audit meta-references from final publishable web copy:
+    - English: 'the page states', 'the page says', 'the page mentions', 'the page does not',
+      'the page's disclaimer', 'this page', 'per the page', 'according to the page', 'on the page'
+    - Spanish: 'la página indica', 'la página dice', 'según la página', 'esta página'
+    Preserves legitimate topical sentences like 'Fans can visit the page of each club.'
     """
     if not text:
         return ""
@@ -786,7 +789,21 @@ def strip_page_meta_references(text: str) -> str:
     raw_sentences = re.split(r"(?<=[.!?])\s+", text.strip())
 
     forbidden_pattern = re.compile(
-        r"\b(the\s+page('s)?|this\s+page|la\s+p[aá]gina|esta\s+p[aá]gina)\b",
+        r"\b("
+        r"the\s+page\s+states|"
+        r"the\s+page\s+says|"
+        r"the\s+page\s+mentions|"
+        r"the\s+page\s+does\s+not|"
+        r"the\s+page['’]?s\s+disclaimer|"
+        r"this\s+page|"
+        r"per\s+the\s+page|"
+        r"according\s+to\s+the\s+page|"
+        r"on\s+the\s+page|"
+        r"la\s+p[aá]gina\s+indica|"
+        r"la\s+p[aá]gina\s+dice|"
+        r"seg[uú]n\s+la\s+p[aá]gina|"
+        r"esta\s+p[aá]gina"
+        r")\b",
         re.IGNORECASE
     )
 

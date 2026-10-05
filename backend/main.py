@@ -1510,12 +1510,12 @@ async def export_editor_brief(request: BriefExportRequest):
             ahrefs_offpage=request.ahrefs_offpage,
         )
     except Exception as e:
-        logger.error(f"Failed to generate editor brief .docx: {traceback.format_exc()}")
-        raise HTTPException(status_code=500, detail="Failed to generate editor brief document")
+        logger.error(f"Failed to generate improvement report .docx: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to generate improvement report document")
 
     domain = sanitize_domain_for_filename(request.audit_result.url)
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-    filename = f"geo-brief-{domain}-{date_str}.docx"
+    filename = f"geo-report-{domain}-{date_str}.docx"
 
     return Response(
         content=docx_bytes,

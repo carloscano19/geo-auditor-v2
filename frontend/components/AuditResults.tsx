@@ -311,8 +311,8 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                 ahrefs_offpage: ahrefsData,
             });
         } catch (err: unknown) {
-            const errorMsg = err instanceof Error ? err.message : "Failed to download editor brief";
-            alert(`Error downloading brief: ${errorMsg}`);
+            const errorMsg = err instanceof Error ? err.message : "Failed to download improvement report";
+            alert(`Error downloading report: ${errorMsg}`);
         } finally {
             setIsBriefDownloading(false);
         }
@@ -540,7 +540,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                         ) : (
                             <>
                                 <span>📄</span>
-                                <span>Download editor brief (.docx)</span>
+                                <span>Download improvement report (.docx)</span>
                             </>
                         )}
                     </button>

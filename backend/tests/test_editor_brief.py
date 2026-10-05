@@ -237,7 +237,7 @@ def test_generate_editor_brief_docx_validity():
     doc = docx.Document(io.BytesIO(docx_bytes))
     all_text = " ".join([p.text for p in doc.paragraphs])
     
-    assert "Content brief" in all_text
+    assert "Content improvement report" in all_text
     assert "Citation Score: 65/100" in all_text
     assert "Top actions" in all_text
     assert "Suggested opening paragraph" in all_text
@@ -247,6 +247,8 @@ def test_generate_editor_brief_docx_validity():
     assert "Suggested table: SEO Comparison" in all_text
     assert "Data that would enrich the text" in all_text
     assert "Sources to cite or link" in all_text
+    assert "Found in: Organic top 10" in all_text
+    assert "Why: Industry reference for crawl standards." in all_text
     assert "Paragraphs to add" in all_text
     assert "For the developer" in all_text
 
@@ -277,7 +279,7 @@ def test_export_brief_endpoint():
         response = client.post("/api/export/brief", json=payload)
         assert response.status_code == 200
         assert response.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
-        assert "attachment; filename=\"geo-brief-example.com-" in response.headers["content-disposition"]
+        assert "attachment; filename=\"geo-report-example.com-" in response.headers["content-disposition"]
         assert len(response.content) > 1000
 
         # With access code required

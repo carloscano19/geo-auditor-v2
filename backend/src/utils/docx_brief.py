@@ -229,7 +229,7 @@ def generate_editor_brief_docx(
     title_p = doc.add_paragraph()
     title_p.paragraph_format.space_before = Pt(0)
     title_p.paragraph_format.space_after = Pt(2)
-    run_title = title_p.add_run("Content brief")
+    run_title = title_p.add_run("Content improvement report")
     run_title.font.name = "Arial"
     run_title.font.size = Pt(24)
     run_title.bold = True
@@ -769,17 +769,23 @@ def generate_editor_brief_docx(
                 p_s.paragraph_format.space_before = Pt(2)
                 p_s.paragraph_format.space_after = Pt(4)
 
-                r_title = p_s.add_run(f"{s.title} ({s.domain})\n")
+                title_text = s.title if s.title else s.domain
+                r_title = p_s.add_run(f"{title_text} ({s.domain})\n")
                 r_title.bold = True
                 r_title.font.size = Pt(10)
                 r_title.font.color.rgb = RGBColor(17, 24, 39)
 
-                r_url = p_s.add_run(f"URL: {s.url}   [{s.found_in}]\n")
+                r_url = p_s.add_run(f"URL: {s.url}\n")
                 r_url.font.size = Pt(9)
                 r_url.font.color.rgb = RGBColor(37, 99, 235)
 
+                found_label = s.found_in if s.found_in else "Organic top 10"
+                r_found = p_s.add_run(f"Found in: {found_label}\n")
+                r_found.font.size = Pt(9)
+                r_found.font.color.rgb = RGBColor(107, 114, 128)
+
                 if s.why:
-                    r_why = p_s.add_run(f"Why cite: {s.why}")
+                    r_why = p_s.add_run(f"Why: {s.why}")
                     r_why.font.size = Pt(9.5)
                     r_why.font.italic = True
                     r_why.font.color.rgb = RGBColor(75, 85, 99)

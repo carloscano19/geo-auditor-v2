@@ -2428,34 +2428,52 @@ def test_strip_page_meta_references_unit():
     assert strip_page_meta_references("") == ""
     assert strip_page_meta_references(None) == ""
 
-    # English phrases
-    text_en = (
-        "SEO has evolved into generative search optimization. "
-        "The page states that high-quality content is essential. "
-        "Search engines now prioritize direct answers. "
-        "This page explains how to achieve that. "
-        "The page's audience includes content marketers."
-    )
-    res_en = strip_page_meta_references(text_en)
-    assert "The page states" not in res_en
-    assert "This page explains" not in res_en
-    assert "The page's audience" not in res_en
-    assert res_en == "SEO has evolved into generative search optimization. Search engines now prioritize direct answers."
+    # Required test cases from specification:
+    # 1. "Fans can visit the page of each club." -> preserved
+    assert strip_page_meta_references("Fans can visit the page of each club.") == "Fans can visit the page of each club."
+    # 2. "The page's disclaimer states the token is not available." -> eliminated
+    assert strip_page_meta_references("The page's disclaimer states the token is not available.") == ""
+    # 3. "Según la página, no hay fecha." -> eliminated
+    assert strip_page_meta_references("Según la página, no hay fecha.") == ""
 
-    # Spanish phrases
-    text_es = (
-        "El análisis semántico mejora la visibilidad en motores de respuesta. "
-        "La página contiene datos clave sobre citabilidad. "
-        "Las fuentes primarias aumentan la confianza del modelo. "
-        "En esta página se detallan las métricas."
+    # Mixed sentence preservation:
+    mixed = (
+        "Fans can visit the page of each club. "
+        "The page's disclaimer states the token is not available. "
+        "Club members receive priority booking."
     )
-    res_es = strip_page_meta_references(text_es)
-    assert "La página contiene" not in res_es
-    assert "esta página" not in res_es
-    assert res_es == "El análisis semántico mejora la visibilidad en motores de respuesta. Las fuentes primarias aumentan la confianza del modelo."
+    assert strip_page_meta_references(mixed) == "Fans can visit the page of each club. Club members receive priority booking."
+
+    # English phrases:
+    # 'the page states', 'the page says', 'the page mentions', 'the page does not',
+    # 'the page's disclaimer', 'this page', 'per the page', 'according to the page', 'on the page'
+    en_samples = [
+        ("SEO has evolved into generative search optimization. The page states that quality is vital.", "SEO has evolved into generative search optimization."),
+        ("The page says users prefer speed. Performance benchmarks are critical.", "Performance benchmarks are critical."),
+        ("The page mentions three key tiers. Pricing starts immediately.", "Pricing starts immediately."),
+        ("Direct answers rank highest. The page does not detail enterprise plans.", "Direct answers rank highest."),
+        ("The page's disclaimer clarifies terms. Real-time updates occur daily.", "Real-time updates occur daily."),
+        ("This page explains how to achieve that. Content quality is priority.", "Content quality is priority."),
+        ("Per the page, the tool is free. Developers can test it.", "Developers can test it."),
+        ("According to the page, results vary. Testing is recommended.", "Testing is recommended."),
+        ("Information on the page reflects recent metrics. Citations build authority.", "Citations build authority."),
+    ]
+    for raw, expected in en_samples:
+        assert strip_page_meta_references(raw) == expected
+
+    # Spanish phrases:
+    # 'la página indica', 'la página dice', 'según la página', 'esta página'
+    es_samples = [
+        ("El análisis semántico mejora la visibilidad. La página indica que los datos son de 2023.", "El análisis semántico mejora la visibilidad."),
+        ("La página dice que el servicio es gratuito. Las auditorías son semanales.", "Las auditorías son semanales."),
+        ("Según la página, no hay fecha. El proyecto comenzará en otoño.", "El proyecto comenzará en otoño."),
+        ("En esta página se detallan las opciones. Las fuentes primarias aumentan la confianza.", "Las fuentes primarias aumentan la confianza."),
+    ]
+    for raw, expected in es_samples:
+        assert strip_page_meta_references(raw) == expected
 
     # Text composed entirely of meta-references
-    text_all_meta = "This page provides an overview. The page is updated monthly."
+    text_all_meta = "This page provides an overview. According to the page, details follow."
     assert strip_page_meta_references(text_all_meta) == ""
 
 
@@ -2481,7 +2499,7 @@ def test_ai_plan_strip_meta_references_paragraphs_and_answers():
                 "question": "Where can I find pricing?",
                 "why_it_matters": "Conversion",
                 "answer_source": "page",
-                "draft_answer": "The page provides complete pricing tiers.",
+                "draft_answer": "This page provides complete pricing tiers.",
                 "suggested_location": "Pricing",
             },
             {
@@ -2572,7 +2590,7 @@ def test_ai_fixes_strip_meta_references_in_lead():
             "headline": "Lead testing headline"
         },
         "lead_paragraph": {
-            "suggested": "Enterprise systems require rigorous testing standards. The page's focus is on compliance. Security audits must occur on a regular schedule."
+            "suggested": "Enterprise systems require rigorous testing standards. The page's disclaimer states compliance is optional. Security audits must occur on a regular schedule."
         },
     }
 
@@ -2597,7 +2615,7 @@ def test_ai_fixes_strip_meta_references_in_lead():
         assert resp.status_code == 200
         data = resp.json()
         lead_suggested = data["lead_paragraph"]["suggested"]
-        assert "The page's focus is on compliance." not in lead_suggested
+        assert "The page's disclaimer states compliance is optional." not in lead_suggested
         assert lead_suggested == "Enterprise systems require rigorous testing standards. Security audits must occur on a regular schedule."
 
 

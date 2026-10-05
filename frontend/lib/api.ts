@@ -598,14 +598,14 @@ class ApiClient {
             const contentType = response.headers.get('content-type') || '';
             if (contentType.includes('application/json')) {
                 const err = await response.json().catch(() => ({}));
-                throw new Error(err?.detail || 'Failed to download editor brief');
+                throw new Error(err?.detail || 'Failed to download improvement report');
             }
             throw new Error(SERVER_BUSY_MESSAGE);
         }
 
         const blob = await response.blob();
         const disposition = response.headers.get('content-disposition');
-        let filename = 'geo-brief.docx';
+        let filename = 'geo-report.docx';
         if (disposition && disposition.includes('filename=')) {
             const match = disposition.match(/filename="?([^"]+)"?/);
             if (match && match[1]) filename = match[1];
