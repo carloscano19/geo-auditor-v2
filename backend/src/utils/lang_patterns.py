@@ -679,6 +679,7 @@ def generate_ahrefs_recommendations(
     url_rating: Optional[float] = None,
     domain_rating: Optional[float] = None,
     language: str = "en",
+    linking_pages: Optional[List[Any]] = None,
 ) -> List[str]:
     """
     Generate deterministic rule-based recommendations from Ahrefs off-page signals.
@@ -744,7 +745,61 @@ def generate_ahrefs_recommendations(
                     f"The domain is strong (DR {dr_str}) but this page has little authority of its own (UR {ur_str}). Link to it from your most visited pages."
                 )
 
+    # Rule 6: Low authority / spam backlinks
+    if linking_pages:
+        valid_items = [p for p in linking_pages if p is not None]
+        if valid_items:
+            def _is_low_auth_or_spam(p: Any) -> bool:
+                is_sp = getattr(p, "spam", None) if not isinstance(p, dict) else p.get("spam")
+                if is_sp is True:
+                    return True
+                dr = getattr(p, "domain_rating", None) if not isinstance(p, dict) else p.get("domain_rating")
+                if dr is not None:
+                    try:
+                        return float(dr) < 10.0
+                    except (ValueError, TypeError):
+                        pass
+                return False
+
+            low_auth_count = sum(1 for p in valid_items if _is_low_auth_or_spam(p))
+            if low_auth_count > len(valid_items) / 2:
+                if lang == "es":
+                    recs.append(
+                        "La mayoría de los sitios que enlazan a esta página tienen poca autoridad. Céntrate en conseguir enlaces de sitios relevantes y consolidados."
+                    )
+                else:
+                    recs.append(
+                        "Most sites linking to this page have little authority. Focus on earning links from relevant, established sites."
+                    )
+
     return recs
+
+
+def strip_page_meta_references(text: str) -> str:
+    """
+    Remove sentences that refer to 'the page', 'this page', 'the page's',
+    'la página', or 'esta página' from final publishable web copy.
+    """
+    if not text:
+        return ""
+    # Split by sentence end punctuation followed by whitespace (or end of string)
+    raw_sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+
+    forbidden_pattern = re.compile(
+        r"\b(the\s+page('s)?|this\s+page|la\s+p[aá]gina|esta\s+p[aá]gina)\b",
+        re.IGNORECASE
+    )
+
+    kept = []
+    for s in raw_sentences:
+        s_clean = s.strip()
+        if not s_clean:
+            continue
+        if forbidden_pattern.search(s_clean):
+            continue
+        kept.append(s_clean)
+
+    return " ".join(kept).strip()
 
 
 

@@ -2417,3 +2417,187 @@ async def test_plan_reclassifies_page_to_needs_info():
         assert questions[5]["answer_source"] == "needs_info"
 
 
+# ---------------------------------------------------------------------------
+# strip_page_meta_references tests
+# ---------------------------------------------------------------------------
+
+def test_strip_page_meta_references_unit():
+    from src.utils.lang_patterns import strip_page_meta_references
+
+    # Empty / none
+    assert strip_page_meta_references("") == ""
+    assert strip_page_meta_references(None) == ""
+
+    # English phrases
+    text_en = (
+        "SEO has evolved into generative search optimization. "
+        "The page states that high-quality content is essential. "
+        "Search engines now prioritize direct answers. "
+        "This page explains how to achieve that. "
+        "The page's audience includes content marketers."
+    )
+    res_en = strip_page_meta_references(text_en)
+    assert "The page states" not in res_en
+    assert "This page explains" not in res_en
+    assert "The page's audience" not in res_en
+    assert res_en == "SEO has evolved into generative search optimization. Search engines now prioritize direct answers."
+
+    # Spanish phrases
+    text_es = (
+        "El análisis semántico mejora la visibilidad en motores de respuesta. "
+        "La página contiene datos clave sobre citabilidad. "
+        "Las fuentes primarias aumentan la confianza del modelo. "
+        "En esta página se detallan las métricas."
+    )
+    res_es = strip_page_meta_references(text_es)
+    assert "La página contiene" not in res_es
+    assert "esta página" not in res_es
+    assert res_es == "El análisis semántico mejora la visibilidad en motores de respuesta. Las fuentes primarias aumentan la confianza del modelo."
+
+    # Text composed entirely of meta-references
+    text_all_meta = "This page provides an overview. The page is updated monthly."
+    assert strip_page_meta_references(text_all_meta) == ""
+
+
+def test_ai_plan_strip_meta_references_paragraphs_and_answers():
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_daily_limit=200,
+    )
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "What is the core benefit?",
+                "why_it_matters": "Clarity",
+                "answer_source": "page",
+                "draft_answer": "AI search delivers direct answers to users. This page details all of them.",
+                "suggested_location": "Intro",
+            },
+            {
+                "question": "Where can I find pricing?",
+                "why_it_matters": "Conversion",
+                "answer_source": "page",
+                "draft_answer": "The page provides complete pricing tiers.",
+                "suggested_location": "Pricing",
+            },
+            {
+                "question": "What are the refund terms?",
+                "why_it_matters": "Policy",
+                "answer_source": "needs_info",
+                "draft_answer": "This page does not state refund terms, so the team must clarify the refund guarantee.",
+                "suggested_location": "Footer FAQ",
+            },
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [
+            {
+                "target_issue": "Thin content",
+                "suggested_text": "Generative engines index structured information efficiently. The page mentions several key metrics. Real-time evaluation requires automated benchmarking.",
+                "placement": "Section 2",
+            }
+        ],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.return_value = mock_llm_plan
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/test",
+                "title": "AI Search Guide",
+                "h1": "AI Search Guide",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "AI search delivers direct answers to users. Generative engines index structured information efficiently. Real-time evaluation requires automated benchmarking.",
+            }
+        }
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Check paragraphs_to_add: "The page mentions..." was stripped out
+        paras = data["paragraphs_to_add"]
+        assert len(paras) == 1
+        assert "The page mentions" not in paras[0]["suggested_text"]
+        assert paras[0]["suggested_text"] == "Generative engines index structured information efficiently. Real-time evaluation requires automated benchmarking."
+
+        # Check questions:
+        # Question 1 ("What is the core benefit?"): "This page details all of them." stripped out, kept as page answer
+        # Question 2 ("Where can I find pricing?"): entire draft_answer was meta-reference, so question was discarded
+        # Question 3 ("What are the refund terms?"): answer_source is needs_info, untouched
+        questions = data["questions_to_answer"]
+        assert len(questions) == 2
+
+        q0 = questions[0]
+        assert q0["question"] == "What is the core benefit?"
+        assert q0["answer_source"] == "page"
+        assert q0["draft_answer"] == "AI search delivers direct answers to users."
+
+        q1 = questions[1]
+        assert q1["question"] == "What are the refund terms?"
+        assert q1["answer_source"] == "needs_info"
+        assert "This page does not state refund terms" in q1["draft_answer"]
+
+        # Discarded question must NOT be in combined_schema (FAQPage)
+        if data.get("combined_schema") and data["combined_schema"].get("mainEntity"):
+            faq_questions = [item["name"] for item in data["combined_schema"]["mainEntity"]]
+            assert "Where can I find pricing?" not in faq_questions
+            assert "What is the core benefit?" in faq_questions
+
+
+def test_ai_fixes_strip_meta_references_in_lead():
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_daily_limit=200,
+    )
+
+    mock_llm_fixes = {
+        "json_ld": {
+            "@context": "https://schema.org",
+            "@type": "Article",
+            "headline": "Lead testing headline"
+        },
+        "lead_paragraph": {
+            "suggested": "Enterprise systems require rigorous testing standards. The page's focus is on compliance. Security audits must occur on a regular schedule."
+        },
+    }
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.return_value = mock_llm_fixes
+
+        req_payload = {
+            "ai_context": {
+                "url": "https://example.com/security",
+                "title": "Enterprise Security",
+                "h1": "Enterprise Security",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Enterprise systems require rigorous testing standards. Security audits must occur on a regular schedule.",
+            }
+        }
+
+        resp = client.post("/api/ai/fixes", json=req_payload)
+        assert resp.status_code == 200
+        data = resp.json()
+        lead_suggested = data["lead_paragraph"]["suggested"]
+        assert "The page's focus is on compliance." not in lead_suggested
+        assert lead_suggested == "Enterprise systems require rigorous testing standards. Security audits must occur on a regular schedule."
+
+

@@ -563,3 +563,158 @@ def test_citation_score_invariance_with_and_without_ahrefs():
         assert d1["score"] == d2["score"]
         assert d1["name"] == d2["name"]
 
+
+# 9. Linking pages ("Who links to this page") tests
+@pytest.mark.asyncio
+async def test_ahrefs_client_parses_all_backlinks_linking_pages():
+    client = AhrefsClient(api_key="test-key")
+
+    async def mock_endpoint(cl, endpoint, params, headers):
+        if "backlinks-stats" in endpoint:
+            return {"metrics": {"live": 10, "live_refdomains": 5, "all_time_refdomains": 10}}
+        elif "all-backlinks" in endpoint:
+            return {
+                "backlinks": [
+                    {
+                        "url_from": "https://authoritative.org/guide",
+                        "name_source": "authoritative.org",
+                        "domain_rating_source": 75.0,
+                        "url_rating_source": 24.0,
+                        "anchor": "verified guide",
+                        "is_dofollow": True,
+                        "is_spam": False,
+                        "first_seen_link": "2024-02-10T14:20:00Z",
+                    },
+                    {
+                        "url_from": "https://spammy-site.com/links",
+                        "name_source": "spammy-site.com",
+                        "domain_rating_source": 4.0,
+                        "url_rating_source": 2.0,
+                        "anchor": "visit",
+                        "is_dofollow": False,
+                        "is_spam": True,
+                        "first_seen_link": "2024-05-01 09:10:00",
+                    },
+                ]
+            }
+        return {}
+
+    with patch.object(client, "_get_endpoint", side_effect=mock_endpoint):
+        res = await client.fetch_offpage_signals("https://example.com/target")
+        assert res["linking_pages"] is not None
+        assert len(res["linking_pages"]) == 2
+
+        lp1 = res["linking_pages"][0]
+        assert lp1["domain"] == "authoritative.org"
+        assert lp1["domain_rating"] == 75.0
+        assert lp1["url_rating"] == 24.0
+        assert lp1["anchor"] == "verified guide"
+        assert lp1["dofollow"] is True
+        assert lp1["spam"] is False
+        assert lp1["first_seen"] == "2024-02-10"
+
+        lp2 = res["linking_pages"][1]
+        assert lp2["domain"] == "spammy-site.com"
+        assert lp2["domain_rating"] == 4.0
+        assert lp2["url_rating"] == 2.0
+        assert lp2["anchor"] == "visit"
+        assert lp2["dofollow"] is False
+        assert lp2["spam"] is True
+        assert lp2["first_seen"] == "2024-05-01"
+
+
+@pytest.mark.asyncio
+async def test_ahrefs_client_linking_pages_null_on_failure():
+    client = AhrefsClient(api_key="test-key")
+
+    async def mock_endpoint(cl, endpoint, params, headers):
+        if "backlinks-stats" in endpoint:
+            return {"metrics": {"live": 10, "live_refdomains": 5, "all_time_refdomains": 10}}
+        elif "all-backlinks" in endpoint:
+            return None  # Failure
+        return {}
+
+    with patch.object(client, "_get_endpoint", side_effect=mock_endpoint):
+        res = await client.fetch_offpage_signals("https://example.com/target")
+        assert res["linking_pages"] is None
+        assert res["backlinks"] == 10
+
+
+def test_low_authority_recommendation_rule():
+    # 1. More than half low authority (spam or DR < 10) -> rule triggers
+    linking_pages_low = [
+        {"domain": "site1.com", "domain_rating": 5.0, "spam": False},
+        {"domain": "site2.com", "domain_rating": 8.0, "spam": False},
+        {"domain": "strong.com", "domain_rating": 60.0, "spam": False},
+    ]
+    recs_en = generate_ahrefs_recommendations(linking_pages=linking_pages_low, language="en")
+    assert "Most sites linking to this page have little authority. Focus on earning links from relevant, established sites." in recs_en
+
+    recs_es = generate_ahrefs_recommendations(linking_pages=linking_pages_low, language="es")
+    assert "La mayoría de los sitios que enlazan a esta página tienen poca autoridad. Céntrate en conseguir enlaces de sitios relevantes y consolidados." in recs_es
+
+    # Spam counts towards low authority even if DR >= 10
+    linking_pages_spam = [
+        {"domain": "spam1.com", "domain_rating": 50.0, "spam": True},
+        {"domain": "spam2.com", "domain_rating": 2.0, "spam": False},
+        {"domain": "good.com", "domain_rating": 45.0, "spam": False},
+    ]
+    recs_spam = generate_ahrefs_recommendations(linking_pages=linking_pages_spam, language="en")
+    assert any("little authority" in r for r in recs_spam)
+
+    # 2. More than half strong (DR >= 10, not spam) -> rule does NOT trigger
+    linking_pages_high = [
+        {"domain": "strong1.com", "domain_rating": 40.0, "spam": False},
+        {"domain": "strong2.com", "domain_rating": 65.0, "spam": False},
+        {"domain": "weak.com", "domain_rating": 5.0, "spam": False},
+    ]
+    recs_high = generate_ahrefs_recommendations(linking_pages=linking_pages_high, language="en")
+    assert not any("little authority" in r for r in recs_high)
+
+
+def test_docx_includes_linking_pages_table():
+    audit_res = make_test_audit_response()
+    offpage_data = AhrefsOffpageResponse(
+        domain_rating=50.0,
+        url_rating=15.0,
+        referring_domains=12,
+        backlinks=40,
+        checked_at="2026-10-05T00:00:00Z",
+        recommendations=["Some recommendation"],
+        linking_pages=[
+            {
+                "url_from": "https://partner.com/article",
+                "domain": "partner.com",
+                "domain_rating": 55.0,
+                "url_rating": 12.0,
+                "anchor": "partner link",
+                "dofollow": True,
+                "spam": False,
+                "first_seen": "2024-01-15",
+            },
+            {
+                "url_from": "https://spammer.org/junk",
+                "domain": "spammer.org",
+                "domain_rating": 3.0,
+                "url_rating": 1.0,
+                "anchor": "click here",
+                "dofollow": False,
+                "spam": True,
+                "first_seen": "2024-03-20",
+            },
+        ],
+    )
+    docx_bytes = generate_editor_brief_docx(
+        audit_result=audit_res,
+        ahrefs_offpage=offpage_data,
+    )
+    doc = docx.Document(io.BytesIO(docx_bytes))
+    doc_text = " ".join([p.text for p in doc.paragraphs])
+    assert "Who links to this page:" in doc_text
+
+    table_cells = [cell.text for t in doc.tables for row in t.rows for cell in row.cells]
+    assert "partner.com" in table_cells
+    assert "spammer.org [Spam]" in table_cells
+    assert "partner link" in table_cells
+    assert "2024-01-15" in table_cells
+

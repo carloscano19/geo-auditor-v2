@@ -244,6 +244,17 @@ class AhrefsOffpageRequest(BaseModel):
     language: Optional[str] = "en"
 
 
+class AhrefsLinkingPage(BaseModel):
+    url_from: str
+    domain: str
+    domain_rating: Optional[float] = None
+    url_rating: Optional[float] = None
+    anchor: Optional[str] = ""
+    dofollow: bool = False
+    spam: bool = False
+    first_seen: Optional[str] = None
+
+
 class AhrefsOffpageResponse(BaseModel):
     domain_rating: Optional[float] = None
     url_rating: Optional[float] = None
@@ -255,6 +266,7 @@ class AhrefsOffpageResponse(BaseModel):
     organic_traffic: Optional[float] = None
     checked_at: str
     recommendations: list[str] = Field(default_factory=list)
+    linking_pages: Optional[list[AhrefsLinkingPage]] = None
 
 
 class BriefExportRequest(BaseModel):

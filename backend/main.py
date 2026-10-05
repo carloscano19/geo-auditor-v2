@@ -79,6 +79,7 @@ from src.utils.lang_patterns import (
     MISSING_INFO_ANSWER_PHRASES,
     DISCARD_QUESTION_KEYWORDS,
     generate_ahrefs_recommendations,
+    strip_page_meta_references,
 )
 from src.utils.docx_brief import (
     generate_editor_brief_docx,
@@ -824,6 +825,7 @@ Rules:
 - Language of the suggested paragraph must match the page language ({ctx.language}).
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.
+- CRITICAL COPYWRITING RULE: The suggested lead paragraph must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the article', 'la página', 'esta página', 'the announcement\'s disclaimer', or similar meta-commentary.
 """
 
     llm = LLMClient()
@@ -908,6 +910,7 @@ Rules:
 
     if suggested_lead:
         suggested_lead = remove_financial_advice_phrases(suggested_lead)
+        suggested_lead = strip_page_meta_references(suggested_lead)
 
     if suggested_lead and not all_numbers_in_page(suggested_lead, page_norm):
         suggested_lead = original_lead
@@ -1066,7 +1069,8 @@ async def generate_ai_plan(request: AIPlanRequest):
         "5. Return ONLY a valid JSON object matching the requested schema without markdown quotes or conversational text.\n"
         "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).\n"
         "7. Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations (e.g. 'stock price', 'cotización', 'revenue', 'rentabilidad', 'should I invest').\n"
-        "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric."
+        "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.\n"
+        "9. CRITICAL COPYWRITING RULE: All 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself."
     )
 
     google_context_text = ""
@@ -1171,6 +1175,7 @@ Requirements:
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
 - Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
+- CRITICAL COPYWRITING RULE: All suggested paragraphs ('paragraphs_to_add') and all answers with answer_source 'page' ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or similar meta-commentary.
 - Language: Strictly {lang_instruction}.
 """
 
@@ -1225,6 +1230,12 @@ Requirements:
                     if any(phrase in draft_lower for phrase in MISSING_INFO_ANSWER_PHRASES.get(lk, [])):
                         src = "needs_info"
                         break
+
+            # If still marked as page, strip meta-references ("the page", "this page", etc.)
+            if src == "page":
+                draft_ans = strip_page_meta_references(draft_ans)
+                if not draft_ans.strip():
+                    continue
 
             # Discard questions about stock prices, share prices, revenue, returns, or investing
             q_raw_text = str(q.get("question") or "")
@@ -1363,6 +1374,7 @@ Requirements:
             # Clean editorial verification sentences and financial advice
             stext = remove_verification_phrases(stext)
             stext = remove_financial_advice_phrases(stext)
+            stext = strip_page_meta_references(stext)
             if not stext:
                 continue
 
@@ -1539,6 +1551,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
             url_rating=cached_data.get("url_rating"),
             domain_rating=cached_data.get("domain_rating"),
             language=request.language or "en",
+            linking_pages=cached_data.get("linking_pages"),
         )
         return AhrefsOffpageResponse(
             **cached_data,
@@ -1573,7 +1586,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
         "top3_keywords",
         "organic_traffic",
     ]
-    if not any(signals.get(k) is not None for k in metric_keys):
+    if not any(signals.get(k) is not None for k in metric_keys) and signals.get("linking_pages") is None:
         raise HTTPException(status_code=502, detail="Ahrefs returned no data. Try again later.")
 
     # Increment daily count and cache only when response contains valid data
@@ -1588,6 +1601,7 @@ async def get_offpage_signals(request: AhrefsOffpageRequest):
         url_rating=signals.get("url_rating"),
         domain_rating=signals.get("domain_rating"),
         language=request.language or "en",
+        linking_pages=signals.get("linking_pages"),
     )
 
     return AhrefsOffpageResponse(

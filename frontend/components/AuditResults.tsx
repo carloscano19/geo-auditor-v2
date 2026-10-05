@@ -127,7 +127,8 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const [isEditingQuery, setIsEditingQuery] = useState(false);
     const [aiFixes, setAiFixes] = useState<AIFixesResponse | null>(null);
     const [aiPlan, setAiPlan] = useState<AIPlanResponse | null>(null);
-    const [aiError, setAiError] = useState<string | null>(null);
+    const [aiFixesError, setAiFixesError] = useState<string | null>(null);
+    const [aiPlanError, setAiPlanError] = useState<string | null>(null);
     const [copiedSources, setCopiedSources] = useState(false);
 
     // Ahrefs Off-page state
@@ -175,8 +176,27 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             }
         }
 
-        candidates.sort((a, b) => b.impact - a.impact);
-        return candidates.slice(0, 5);
+        // Merge Heading Structure and Text Walls if both are among candidates
+        const headingIndex = candidates.findIndex(c => c.friendlyName === "Heading Structure" || c.submetricName === "Heading Structure");
+        const textWallsIndex = candidates.findIndex(c => c.friendlyName === "Text Walls" || c.submetricName === "Text Walls");
+
+        let filtered = candidates;
+        if (headingIndex !== -1 && textWallsIndex !== -1) {
+            const headingCand = candidates[headingIndex];
+            const textWallsCand = candidates[textWallsIndex];
+            const mergedAction: TopAction = {
+                friendlyName: "Add H2 headings to break up the text",
+                submetricName: "Heading Structure",
+                recommendation: headingCand.recommendation,
+                impact: Math.max(headingCand.impact, textWallsCand.impact),
+                rawScore: Math.min(headingCand.rawScore, textWallsCand.rawScore),
+            };
+            filtered = candidates.filter((_, idx) => idx !== headingIndex && idx !== textWallsIndex);
+            filtered.push(mergedAction);
+        }
+
+        filtered.sort((a, b) => b.impact - a.impact);
+        return filtered.slice(0, 5);
     }, [results]);
 
     const handleToggleDimension = (dimKey: string) => {
@@ -216,13 +236,13 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const handleGenerateAIFixes = async () => {
         if (!results.ai_context) return;
         setIsAiLoading(true);
-        setAiError(null);
+        setAiFixesError(null);
         try {
             const data = await apiClient.generateAIFixes(results.ai_context);
             setAiFixes(data);
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Failed to generate AI fixes";
-            setAiError(errorMsg);
+            setAiFixesError(errorMsg);
         } finally {
             setIsAiLoading(false);
         }
@@ -231,7 +251,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const handleGenerateAIPlan = async (overrideQuery?: string) => {
         if (!results.ai_context) return;
         setIsPlanLoading(true);
-        setAiError(null);
+        setAiPlanError(null);
         try {
             const data = await apiClient.generateAIPlan(results.ai_context, overrideQuery);
             setAiPlan(data);
@@ -241,10 +261,44 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             setIsEditingQuery(false);
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Failed to generate AI plan";
-            setAiError(errorMsg);
+            setAiPlanError(errorMsg);
         } finally {
             setIsPlanLoading(false);
         }
+    };
+
+    const handleGenerateAllAI = async () => {
+        if (!results.ai_context) return;
+        setIsAiLoading(true);
+        setIsPlanLoading(true);
+        setAiFixesError(null);
+        setAiPlanError(null);
+
+        const fixesPromise = apiClient.generateAIFixes(results.ai_context);
+        const planPromise = apiClient.generateAIPlan(results.ai_context);
+
+        const [fixesResult, planResult] = await Promise.allSettled([fixesPromise, planPromise]);
+
+        if (fixesResult.status === "fulfilled") {
+            setAiFixes(fixesResult.value);
+        } else {
+            const msg = fixesResult.reason instanceof Error ? fixesResult.reason.message : "Failed to generate quick fixes";
+            setAiFixesError(msg);
+        }
+
+        if (planResult.status === "fulfilled") {
+            setAiPlan(planResult.value);
+            if (planResult.value.serp_query) {
+                setCustomQuery(planResult.value.serp_query);
+            }
+            setIsEditingQuery(false);
+        } else {
+            const msg = planResult.reason instanceof Error ? planResult.reason.message : "Failed to generate improvement plan";
+            setAiPlanError(msg);
+        }
+
+        setIsAiLoading(false);
+        setIsPlanLoading(false);
     };
 
     const handleDownloadEditorBrief = async () => {
@@ -451,6 +505,62 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
     return (
         <div className="space-y-6 animate-fade-in">
+            {/* Persistent Export Bar */}
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-white border border-slate-200 rounded-2xl shadow-2xs no-print">
+                <div className="flex flex-wrap items-center gap-2">
+                    <button
+                        type="button"
+                        onClick={handleCopySummary}
+                        className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                    >
+                        <span>📋</span>
+                        <span>Copy Summary for Slack</span>
+                    </button>
+                    <button
+                        type="button"
+                        onClick={() => window.print()}
+                        className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                    >
+                        <span>🖨️</span>
+                        <span>Print PDF</span>
+                    </button>
+                </div>
+                <div className="flex flex-wrap items-center gap-2.5">
+                    <button
+                        type="button"
+                        onClick={handleDownloadEditorBrief}
+                        disabled={isBriefDownloading}
+                        className="text-xs px-3.5 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                    >
+                        {isBriefDownloading ? (
+                            <>
+                                <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
+                                <span>Generating .docx...</span>
+                            </>
+                        ) : (
+                            <>
+                                <span>📄</span>
+                                <span>Download editor brief (.docx)</span>
+                            </>
+                        )}
+                    </button>
+                    {((aiFixes || aiPlan) || ahrefsData) && (
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                            {(aiFixes || aiPlan) && (
+                                <span className="text-[11px] px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 font-medium">
+                                    Includes AI recommendations
+                                </span>
+                            )}
+                            {ahrefsData && (
+                                <span className="text-[11px] px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 font-medium">
+                                    Includes Ahrefs data
+                                </span>
+                            )}
+                        </div>
+                    )}
+                </div>
+            </div>
+
             {/* Tab Navigation Switcher */}
             <div className="flex items-center gap-2 border-b border-slate-200 pb-3 no-print">
                 <button
@@ -532,48 +642,10 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </div>
                                     <p
                                         title={results.url || results.ai_context?.title || "Direct Text Submission"}
-                                        className="text-xs sm:text-sm text-slate-500 mb-4 truncate max-w-2xl"
+                                        className="text-xs sm:text-sm text-slate-500 mb-2 truncate max-w-2xl"
                                     >
                                         {results.url || results.ai_context?.title || "Direct Text Submission"}
                                     </p>
-
-                                    {/* Action Buttons */}
-                                    <div className="flex flex-wrap gap-2.5 justify-center lg:justify-start no-print">
-                                        <button
-                                            type="button"
-                                            onClick={handleCopySummary}
-                                            className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
-                                        >
-                                            <span>📋</span>
-                                            <span>Copy Summary for Slack</span>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={() => window.print()}
-                                            className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
-                                        >
-                                            <span>🖨️</span>
-                                            <span>Print PDF</span>
-                                        </button>
-                                        <button
-                                            type="button"
-                                            onClick={handleDownloadEditorBrief}
-                                            disabled={isBriefDownloading}
-                                            className="text-xs px-3.5 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer font-medium"
-                                        >
-                                            {isBriefDownloading ? (
-                                                <>
-                                                    <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
-                                                    <span>Generating .docx...</span>
-                                                </>
-                                            ) : (
-                                                <>
-                                                    <span>📄</span>
-                                                    <span>Download editor brief (.docx)</span>
-                                                </>
-                                            )}
-                                        </button>
-                                    </div>
                                 </div>
                             </div>
 
@@ -760,6 +832,78 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </div>
                                 </div>
 
+                                {/* Who links to this page */}
+                                <div className="pt-2">
+                                    <p className="text-xs font-bold text-slate-700 mb-2 uppercase tracking-wider">
+                                        Who links to this page
+                                    </p>
+                                    {ahrefsData.linking_pages === null ? (
+                                        <p className="text-xs text-slate-500 italic py-1">Link list unavailable.</p>
+                                    ) : ahrefsData.linking_pages.length === 0 ? (
+                                        <p className="text-xs text-slate-500 italic py-1">No live links found.</p>
+                                    ) : (
+                                        <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
+                                            <table className="w-full text-left text-xs">
+                                                <thead className="bg-slate-50 border-b border-slate-200 text-slate-700 font-semibold">
+                                                    <tr>
+                                                        <th className="px-3 py-2.5">Domain</th>
+                                                        <th className="px-3 py-2.5">DR</th>
+                                                        <th className="px-3 py-2.5">Linking page</th>
+                                                        <th className="px-3 py-2.5">Anchor</th>
+                                                        <th className="px-3 py-2.5">Type</th>
+                                                        <th className="px-3 py-2.5">First seen</th>
+                                                    </tr>
+                                                </thead>
+                                                <tbody className="divide-y divide-slate-100 text-slate-700">
+                                                    {ahrefsData.linking_pages.map((link, idx) => (
+                                                        <tr key={idx} className={link.spam ? "bg-red-50/50" : "hover:bg-slate-50/50"}>
+                                                            <td className="px-3 py-2 font-medium text-slate-900 whitespace-nowrap">
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span>{link.domain}</span>
+                                                                    {link.spam && (
+                                                                        <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-red-100 text-red-700 border border-red-200">
+                                                                            Spam
+                                                                        </span>
+                                                                    )}
+                                                                </div>
+                                                            </td>
+                                                            <td className="px-3 py-2 font-mono text-slate-800">
+                                                                {link.domain_rating != null ? link.domain_rating : "—"}
+                                                            </td>
+                                                            <td className="px-3 py-2 max-w-[200px] truncate">
+                                                                <a
+                                                                    href={link.url_from}
+                                                                    target="_blank"
+                                                                    rel="noopener noreferrer"
+                                                                    className="text-red-600 hover:underline truncate block"
+                                                                    title={link.url_from}
+                                                                >
+                                                                    {link.url_from}
+                                                                </a>
+                                                            </td>
+                                                            <td className="px-3 py-2 max-w-[160px] truncate text-slate-600" title={link.anchor}>
+                                                                {link.anchor || <span className="text-slate-400 italic">No anchor</span>}
+                                                            </td>
+                                                            <td className="px-3 py-2 whitespace-nowrap">
+                                                                <span className={`px-2 py-0.5 rounded-full text-[10px] font-medium ${
+                                                                    link.dofollow
+                                                                        ? "bg-emerald-50 text-emerald-700 border border-emerald-200"
+                                                                        : "bg-slate-100 text-slate-600 border border-slate-200"
+                                                                }`}>
+                                                                    {link.dofollow ? "Dofollow" : "Nofollow"}
+                                                                </span>
+                                                            </td>
+                                                            <td className="px-3 py-2 whitespace-nowrap text-slate-500 font-mono text-[11px]">
+                                                                {link.first_seen || "—"}
+                                                            </td>
+                                                        </tr>
+                                                    ))}
+                                                </tbody>
+                                            </table>
+                                        </div>
+                                    )}
+                                </div>
+
                                 {/* Recommendations */}
                                 {ahrefsData.recommendations && ahrefsData.recommendations.length > 0 && (
                                     <div className="pt-2">
@@ -895,43 +1039,69 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             <div className="flex flex-wrap gap-2.5 no-print">
                                 <button
                                     type="button"
-                                    onClick={handleGenerateAIFixes}
-                                    disabled={isAiLoading}
-                                    className="btn-primary text-xs px-4 py-2"
+                                    onClick={handleGenerateAllAI}
+                                    disabled={isAiLoading || isPlanLoading}
+                                    className="btn-primary text-xs px-4 py-2 flex items-center gap-2"
                                 >
-                                    {isAiLoading ? "Generating Fixes..." : "Quick fixes"}
-                                </button>
-                                <button
-                                    type="button"
-                                    onClick={() => handleGenerateAIPlan()}
-                                    disabled={isPlanLoading}
-                                    className="px-4 py-2 rounded-xl text-xs font-medium bg-slate-900 hover:bg-slate-800 text-white shadow-sm transition-all disabled:opacity-50 cursor-pointer"
-                                >
-                                    {isPlanLoading ? "Building Plan..." : "Full improvement plan"}
+                                    {(isAiLoading || isPlanLoading) ? (
+                                        <>
+                                            <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
+                                            <span>Generating with AI… this can take up to a minute.</span>
+                                        </>
+                                    ) : (
+                                        <>
+                                            <span>✨</span>
+                                            <span>Generate AI recommendations</span>
+                                        </>
+                                    )}
                                 </button>
                             </div>
                         </div>
-
-                        {aiError && (
-                            <div className="mt-4 p-3 bg-red-50 border border-red-200 rounded-xl text-xs text-red-700">
-                                ⚠️ {aiError}
-                            </div>
-                        )}
                     </div>
 
                     {/* Empty State when neither generated yet */}
-                    {!aiFixes && !aiPlan && !isAiLoading && !isPlanLoading && (
+                    {!aiFixes && !aiPlan && !isAiLoading && !isPlanLoading && !aiFixesError && !aiPlanError && (
                         <div className="glass-card p-10 text-center space-y-4">
                             <div className="w-12 h-12 mx-auto rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-2xl font-bold shadow-2xs">
                                 ✨
                             </div>
                             <div className="max-w-md mx-auto space-y-2">
                                 <h4 className="text-base font-bold text-slate-900">
-                                    Generate AI Fixes &amp; Action Plan
+                                    Generate AI Recommendations
                                 </h4>
                                 <p className="text-xs text-slate-500 leading-relaxed">
-                                    Click <strong>Quick fixes</strong> to get an optimized lead paragraph and Schema.org JSON-LD, or <strong>Full improvement plan</strong> for full section restructuring, tables, and Google PAA answers.
+                                    Generate actionable AI recommendations including quick fixes (an optimized opening paragraph and Schema.org JSON-LD) and a full content improvement plan (Google PAA questions, heading hierarchy, comparison table, content opportunities, and authoritative sources to cite).
                                 </p>
+                                <div className="pt-2">
+                                    <button
+                                        type="button"
+                                        onClick={handleGenerateAllAI}
+                                        className="btn-primary text-xs px-4 py-2 inline-flex items-center gap-2"
+                                    >
+                                        <span>✨</span>
+                                        <span>Generate AI recommendations</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Quick Fixes Error Notice with Retry */}
+                    {aiFixesError && (
+                        <div className="glass-card p-4 border-amber-200 bg-amber-50/50">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
+                                    <span>⚠️</span>
+                                    <span>Quick fixes could not be generated: {aiFixesError}</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={handleGenerateAIFixes}
+                                    disabled={isAiLoading}
+                                    className="text-xs px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto"
+                                >
+                                    {isAiLoading ? "Retrying..." : "Retry Quick fixes"}
+                                </button>
                             </div>
                         </div>
                     )}
@@ -1023,6 +1193,26 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </div>
                                 </div>
                             )}
+                        </div>
+                    )}
+
+                    {/* Full Plan Error Notice with Retry */}
+                    {aiPlanError && (
+                        <div className="glass-card p-4 border-amber-200 bg-amber-50/50">
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                                <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
+                                    <span>⚠️</span>
+                                    <span>Full improvement plan could not be generated: {aiPlanError}</span>
+                                </div>
+                                <button
+                                    type="button"
+                                    onClick={() => handleGenerateAIPlan()}
+                                    disabled={isPlanLoading}
+                                    className="text-xs px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto"
+                                >
+                                    {isPlanLoading ? "Retrying..." : "Retry Full plan"}
+                                </button>
+                            </div>
                         </div>
                     )}
 

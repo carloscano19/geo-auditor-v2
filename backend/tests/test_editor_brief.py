@@ -477,3 +477,91 @@ def test_top_actions_zero_raw_score_ranking_and_exclusion():
     assert actions[0][2] == pytest.approx(10.0)
     assert actions[1][2] == pytest.approx(6.0)
 
+
+def test_heading_structure_and_text_walls_merged_in_top_actions():
+    """
+    Heading Structure and Text Walls are fixed with the same action.
+    When both are candidates, they are merged into a single action:
+    'Add H2 headings to break up the text'
+    with the maximum impact of the two, the recommendation of Heading Structure,
+    and letting the next candidate enter the top list.
+    """
+    det_aeo = DetectorResult(
+        dimension="aeo_structure",
+        score=20.0,
+        weight=0.10,
+        contribution=2.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Heading Structure",
+                raw_score=40.0,
+                weight=0.5,
+                weighted_score=20.0,
+                explanation="Poor hierarchy.",
+                recommendations=["Organize content under clear H2 section headings."],
+            ),
+            ScoreBreakdown(
+                name="Text Walls",
+                raw_score=10.0,
+                weight=0.5,
+                weighted_score=5.0,
+                explanation="Very long unbroken text walls.",
+                recommendations=["Break up large text blocks."],
+            ),
+        ],
+    )
+    det_author = DetectorResult(
+        dimension="credibility_signals",
+        score=50.0,
+        weight=0.10,
+        contribution=5.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Author Signals",
+                raw_score=50.0,
+                weight=1.0,
+                weighted_score=50.0,
+                explanation="Author lacks bio.",
+                recommendations=["Add author bio and credentials."],
+            )
+        ],
+    )
+    det_fresh = DetectorResult(
+        dimension="credibility_signals",
+        score=60.0,
+        weight=0.10,
+        contribution=6.0,
+        breakdown=[
+            ScoreBreakdown(
+                name="Freshness Signals",
+                raw_score=60.0,
+                weight=1.0,
+                weighted_score=60.0,
+                explanation="No update date.",
+                recommendations=["Display visible publication and update dates."],
+            )
+        ],
+    )
+
+    # With max_actions=3:
+    # Heading Structure impact: 0.10 * (100 - 40) = 6.0
+    # Text Walls impact: 0.10 * (100 - 10) = 9.0
+    # Merged action impact: max(6.0, 9.0) = 9.0
+    # Merged rec: "Organize content under clear H2 section headings."
+    # Author Signals impact: 0.10 * (100 - 50) = 5.0
+    # Freshness Signals impact: 0.10 * (100 - 60) = 4.0
+    # All 3 fit into top 3 because Heading Structure + Text Walls merged into 1!
+    actions = get_top_non_technical_actions([det_aeo, det_author, det_fresh], max_actions=3)
+    assert len(actions) == 3
+
+    assert actions[0][0] == "Add H2 headings to break up the text"
+    assert actions[0][1] == "Organize content under clear H2 section headings."
+    assert actions[0][2] == pytest.approx(9.0)
+
+    assert actions[1][0] == "Author Information"
+    assert actions[1][2] == pytest.approx(5.0)
+
+    # The 3rd candidate enters because Heading Structure and Text Walls merged into 1
+    assert actions[2][0] == "Publication & Update Dates"
+    assert actions[2][2] == pytest.approx(4.0)
+

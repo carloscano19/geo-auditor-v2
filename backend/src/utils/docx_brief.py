@@ -33,6 +33,7 @@ from src.models.schemas import (
     AIFixesResponse,
     AIPlanResponse,
     AhrefsOffpageResponse,
+    AhrefsLinkingPage,
     DetectorResult,
     ScoreBreakdown,
 )
@@ -135,6 +136,22 @@ def get_top_non_technical_actions(
             impact = det_weight * (100.0 - raw_score)
             friendly_name = FRIENDLY_SUBMETRIC_NAMES.get(name, name)
             candidates.append((friendly_name, rec_text, impact))
+
+    # Merge Heading Structure and Text Walls if both are among candidates
+    heading_cand = None
+    text_walls_cand = None
+    for c in candidates:
+        if c[0] == "Heading Structure" and heading_cand is None:
+            heading_cand = c
+        elif c[0] == "Text Walls" and text_walls_cand is None:
+            text_walls_cand = c
+
+    if heading_cand is not None and text_walls_cand is not None:
+        merged_impact = max(heading_cand[2], text_walls_cand[2])
+        merged_rec = heading_cand[1]
+        merged_action = ("Add H2 headings to break up the text", merged_rec, merged_impact)
+        candidates = [c for c in candidates if c is not heading_cand and c is not text_walls_cand]
+        candidates.append(merged_action)
 
     # Sort descending by impact
     candidates.sort(key=lambda x: x[2], reverse=True)
@@ -382,6 +399,60 @@ def generate_editor_brief_docx(
                 r_b = b_rec.add_run(rec)
                 r_b.font.size = Pt(9.5)
                 r_b.font.color.rgb = RGBColor(55, 65, 81)
+
+        # Backlinks Table ("Who links to this page")
+        if ahrefs_offpage.linking_pages:
+            p_bl_title = doc.add_paragraph()
+            p_bl_title.paragraph_format.space_before = Pt(10)
+            p_bl_title.paragraph_format.space_after = Pt(4)
+            r_bl_title = p_bl_title.add_run("Who links to this page:")
+            r_bl_title.bold = True
+            r_bl_title.font.size = Pt(10)
+            r_bl_title.font.color.rgb = RGBColor(31, 41, 55)
+
+            table_bl = doc.add_table(rows=1, cols=6)
+            table_bl.alignment = WD_TABLE_ALIGNMENT.CENTER
+            table_bl.autofit = True
+
+            bl_hdr = table_bl.rows[0].cells
+            bl_hdr_titles = ["Domain", "DR", "Linking page", "Anchor", "Type", "First seen"]
+            for idx, title in enumerate(bl_hdr_titles):
+                bl_hdr[idx].text = title
+                set_cell_background(bl_hdr[idx], "F9FAFB")
+                set_cell_margins(bl_hdr[idx], 80, 80, 100, 100)
+                for p in bl_hdr[idx].paragraphs:
+                    for r in p.runs:
+                        r.bold = True
+                        r.font.size = Pt(8.5)
+                        r.font.color.rgb = RGBColor(55, 65, 81)
+
+            for lp in ahrefs_offpage.linking_pages[:20]:
+                r_cells = table_bl.add_row().cells
+                is_sp = getattr(lp, "spam", False) if not isinstance(lp, dict) else lp.get("spam", False)
+                dom = (getattr(lp, "domain", "") if not isinstance(lp, dict) else lp.get("domain", "")) or ""
+                dom_display = f"{dom} [Spam]" if is_sp else dom
+                dr_val = getattr(lp, "domain_rating", None) if not isinstance(lp, dict) else lp.get("domain_rating")
+                url_f = (getattr(lp, "url_from", "") if not isinstance(lp, dict) else lp.get("url_from", "")) or ""
+                anch = (getattr(lp, "anchor", "") if not isinstance(lp, dict) else lp.get("anchor", "")) or "—"
+                is_df = getattr(lp, "dofollow", False) if not isinstance(lp, dict) else lp.get("dofollow", False)
+                type_str = "Dofollow" if is_df else "Nofollow"
+                if is_sp:
+                    type_str += " (Spam)"
+                fseen = (getattr(lp, "first_seen", "") if not isinstance(lp, dict) else lp.get("first_seen", "")) or "—"
+
+                r_cells[0].text = dom_display
+                r_cells[1].text = _fmt(dr_val)
+                r_cells[2].text = url_f
+                r_cells[3].text = anch
+                r_cells[4].text = type_str
+                r_cells[5].text = fseen
+
+                for c in r_cells:
+                    set_cell_margins(c, 60, 60, 100, 100)
+                    for p in c.paragraphs:
+                        for r in p.runs:
+                            r.font.size = Pt(8)
+                            r.font.color.rgb = RGBColor(55, 65, 81)
 
     # 3. Suggested opening paragraph (if Quick fixes present)
     if ai_fixes and ai_fixes.lead_paragraph:

@@ -220,12 +220,26 @@ class AhrefsClient:
                 {"target": url, "date_from": thirty_days_ago_str, "history_grouping": "monthly"},
                 headers,
             )
-
-            res_backlinks, res_metrics, res_dr, res_ur_hist = await asyncio.gather(
-                req_backlinks, req_metrics, req_dr, req_ur_hist, return_exceptions=True
+            req_all_backlinks = self._get_endpoint(
+                client,
+                "/site-explorer/all-backlinks",
+                {
+                    "target": url,
+                    "mode": "exact",
+                    "history": "live",
+                    "aggregation": "1_per_domain",
+                    "order_by": "domain_rating_source:desc",
+                    "limit": 20,
+                    "select": "url_from,name_source,domain_rating_source,url_rating_source,anchor,is_dofollow,is_spam,first_seen_link",
+                },
+                headers,
             )
 
-        for r in (res_backlinks, res_metrics, res_dr, res_ur_hist):
+            res_backlinks, res_metrics, res_dr, res_ur_hist, res_all_backlinks = await asyncio.gather(
+                req_backlinks, req_metrics, req_dr, req_ur_hist, req_all_backlinks, return_exceptions=True
+            )
+
+        for r in (res_backlinks, res_metrics, res_dr, res_ur_hist, res_all_backlinks):
             if isinstance(r, AhrefsAuthError):
                 raise r
 
@@ -312,6 +326,50 @@ class AhrefsClient:
                     except (ValueError, TypeError, KeyError):
                         pass
 
+        # 5. Parse all-backlinks (linking_pages)
+        linking_pages: Optional[list[dict]] = None
+        if isinstance(res_all_backlinks, dict) and "backlinks" in res_all_backlinks:
+            raw_links = res_all_backlinks.get("backlinks")
+            if isinstance(raw_links, list):
+                linking_pages = []
+                for item in raw_links:
+                    if not isinstance(item, dict):
+                        continue
+                    dr_val = item.get("domain_rating_source")
+                    ur_val = item.get("url_rating_source")
+                    dr_num: Optional[float] = None
+                    ur_num: Optional[float] = None
+                    if dr_val is not None:
+                        try:
+                            dr_num = float(dr_val)
+                        except (ValueError, TypeError):
+                            pass
+                    if ur_val is not None:
+                        try:
+                            ur_num = float(ur_val)
+                        except (ValueError, TypeError):
+                            pass
+
+                    fs_link = item.get("first_seen_link")
+                    fs_date: Optional[str] = None
+                    if fs_link:
+                        fs_str = str(fs_link).strip()
+                        if len(fs_str) >= 10:
+                            fs_date = fs_str[:10]
+                        else:
+                            fs_date = fs_str
+
+                    linking_pages.append({
+                        "url_from": str(item.get("url_from") or ""),
+                        "domain": str(item.get("name_source") or ""),
+                        "domain_rating": dr_num,
+                        "url_rating": ur_num,
+                        "anchor": str(item.get("anchor") or ""),
+                        "dofollow": bool(item.get("is_dofollow", False)),
+                        "spam": bool(item.get("is_spam", False)),
+                        "first_seen": fs_date,
+                    })
+
         return {
             "domain_rating": domain_rating,
             "url_rating": url_rating,
@@ -321,5 +379,6 @@ class AhrefsClient:
             "organic_keywords": organic_keywords,
             "top3_keywords": top3_keywords,
             "organic_traffic": organic_traffic,
+            "linking_pages": linking_pages,
             "checked_at": datetime.now(timezone.utc).isoformat(),
         }
