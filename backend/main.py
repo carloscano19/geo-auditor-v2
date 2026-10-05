@@ -1093,7 +1093,7 @@ async def generate_ai_plan(request: AIPlanRequest):
             parts.append(f"Google 'Related Searches' for '{serp_query}':\n{rel_lines}\n* INSTRUCTION: Use these related searches as inspiration for the 'suggested_h2_structure'.")
         if candidate_sources:
             src_lines = "\n".join([f"{i}. [{s['found_in']}] Domain: {s['domain']}, Title: {s['title']}" for i, s in enumerate(candidate_sources, start=1)])
-            parts.append(f"Candidate Sources Found on Google for '{serp_query}':\n{src_lines}\n* INSTRUCTION: For each candidate source (1 to {len(candidate_sources)}), return in 'sources_why' a concise 'why' sentence in {lang_instruction} explaining why or how this audited page should cite/link to it. Do NOT return any URLs.")
+            parts.append(f"Candidate Sources Found on Google for '{serp_query}':\n{src_lines}\n* INSTRUCTION: For each candidate source (1 to {len(candidate_sources)}), return in 'sources_why' a concise 1-sentence 'why' in {lang_instruction} explaining why or how this audited page should cite/link to it. Do NOT return any URLs.")
         if parts:
             google_context_text = "\n\nReal Google Search Data (from DataForSEO):\n" + "\n\n".join(parts) + "\n"
 
@@ -1103,7 +1103,7 @@ async def generate_ai_plan(request: AIPlanRequest):
   "sources_why": [
     {{
       "index": 1,
-      "why": "Concise sentence explaining why this page should reference or cite this source"
+      "why": "Concise sentence (1 sentence only) explaining why this page should reference or cite this source"
     }}
   ]"""
 
@@ -1134,7 +1134,7 @@ Generate a JSON object with EXACTLY this structure:
   "suggested_lead": {{
     "original": "{ctx.first_paragraph or ''}",
     "suggested": "40-60 words optimized direct-answer paragraph in {lang_instruction}",
-    "rationale": "Clear explanation of changes made in {lang_instruction}"
+    "rationale": "Clear explanation of changes made in {lang_instruction} (maximum 2 sentences)"
   }},
   "json_ld": {{
     "description": "Short 1-2 sentence summary of the page in {lang_instruction}",
@@ -1154,14 +1154,14 @@ Generate a JSON object with EXACTLY this structure:
   "questions_to_answer": [
     {{
       "question": "Question text in {lang_instruction}",
-      "draft_answer": "Direct answer (max 60 words). If answer_source is 'page', must only use facts from page text.",
+      "draft_answer": "Direct answer (40-70 words). If answer_source is 'page', must only use facts from page text.",
       "answer_source": "page" // ONLY if the page actually answers the question directly. If the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'
     }}
   ],
   "suggested_h2_structure": [
     {{
       "h2": "Suggested or preserved H2 heading text in {lang_instruction}",
-      "purpose": "Brief explanation of user intent / AEO goal",
+      "purpose": "Brief explanation of user intent / AEO goal in exactly 1 sentence",
       "status": "existing" // OR "new"
     }}
   ],
@@ -1196,10 +1196,11 @@ Generate a JSON object with EXACTLY this structure:
 }}
 
 Requirements:
-- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff.
-- json_ld: Factual description (1-2 sentences), about (main entity/topic), and mentions (secondary entities/concepts). Factual only; do NOT invent figures.
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
-- suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items.
+- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
+- json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
+- suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
+- sources_why: For each candidate source, provide 'why' in exactly 1 sentence.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
 - data_opportunities: 2 to 5 suggestions of data points or factual metrics to strengthen the content. Factual and content data only. PROHIBITED: Do NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).
 - paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
@@ -1246,10 +1247,10 @@ Requirements:
             draft_ans = strip_urls(str(q.get("draft_answer") or ""))
             draft_ans = remove_financial_advice_phrases(draft_ans)
 
-            # Length validation: max 60 words
+            # Length validation: max 70 words
             words = draft_ans.split()
-            if len(words) > 60:
-                draft_ans = " ".join(words[:60])
+            if len(words) > 70:
+                draft_ans = " ".join(words[:70])
             
             src = q.get("answer_source", "page")
             if src not in ["page", "needs_info"]:
@@ -1558,7 +1559,8 @@ Requirements:
                             valid_items.append(item)
                         else:
                             removed_schema_count += 1
-                article_schema[field] = valid_items
+                max_items = 3 if field == "about" else 5
+                article_schema[field] = valid_items[:max_items]
             elif isinstance(val, dict):
                 item_ok = True
                 for k in ["name", "description"]:

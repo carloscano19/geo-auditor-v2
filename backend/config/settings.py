@@ -47,6 +47,7 @@ class Settings(BaseSettings):
     llm_api_key: str = Field(default="", repr=False)
     llm_timeout_seconds: float = 45.0
     llm_daily_limit: int = 200
+    llm_max_tokens: int = 16000
 
     # DataForSEO / SERP Configuration
     dataforseo_login: str = ""

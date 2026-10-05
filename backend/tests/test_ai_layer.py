@@ -3006,4 +3006,248 @@ async def test_ai_plan_suggested_lead_filters_financial_advice_and_meta():
         assert "the page" not in suggested.lower()
 
 
+# ---------------------------------------------------------------------------
+# Robust JSON Extraction, max_tokens, json-repair, and Retry Tests
+# ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_llm_truncated_json_repaired_by_json_repair():
+    """
+    Test 1: Truncated JSON that json-repair can fix -> valid plan without failing.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_max_tokens=16000,
+    )
+
+    # Incomplete JSON (missing closing braces/brackets)
+    truncated_content = (
+        '{"questions_to_answer": [{"question": "What is GEO?", "draft_answer": "GEO is AI search optimization.", "answer_source": "page"}], '
+        '"suggested_h2_structure": [{"h2": "Understanding GEO", "purpose": "Explains concept.", "status": "new"}], '
+        '"data_opportunities": [], "paragraphs_to_add": [], "inconsistencies": []'
+    )
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": truncated_content}, "finish_reason": "stop"}]
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("httpx.AsyncClient.post", return_value=mock_resp) as mock_post:
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/geo",
+                "title": "GEO Guide",
+                "first_paragraph": "Old intro.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old intro. GEO is AI search optimization.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["questions_to_answer"]) == 1
+        assert data["questions_to_answer"][0]["question"] == "What is GEO?"
+        assert mock_post.call_count == 1
+
+
+@pytest.mark.asyncio
+async def test_llm_irreparable_json_retries_and_succeeds():
+    """
+    Test 2: Irreparable JSON on first attempt and valid on retry -> valid plan with exactly one extra call.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_max_tokens=16000,
+    )
+
+    mock_resp_fail = MagicMock()
+    mock_resp_fail.status_code = 200
+    mock_resp_fail.json.return_value = {
+        "choices": [{"message": {"content": "I apologize, but I cannot format this right now."}, "finish_reason": "stop"}]
+    }
+
+    valid_content = (
+        '{"questions_to_answer": [{"question": "What is SEO?", "draft_answer": "SEO is search optimization.", "answer_source": "page"}], '
+        '"suggested_h2_structure": [], "data_opportunities": [], "paragraphs_to_add": [], "inconsistencies": []}'
+    )
+    mock_resp_ok = MagicMock()
+    mock_resp_ok.status_code = 200
+    mock_resp_ok.json.return_value = {
+        "choices": [{"message": {"content": valid_content}, "finish_reason": "stop"}]
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("httpx.AsyncClient.post", side_effect=[mock_resp_fail, mock_resp_ok]) as mock_post:
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/seo",
+                "title": "SEO Guide",
+                "first_paragraph": "Old intro.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old intro. SEO is search optimization.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["questions_to_answer"]) == 1
+        assert data["questions_to_answer"][0]["question"] == "What is SEO?"
+        assert mock_post.call_count == 2
+
+        # Verify retry prompt was appended to user message on second call
+        second_call_payload = mock_post.call_args_list[1][1]["json"]
+        last_user_msg = [m for m in second_call_payload["messages"] if m["role"] == "user"][-1]
+        assert "Your previous answer was cut off or invalid. Return ONLY valid JSON" in last_user_msg["content"]
+
+
+@pytest.mark.asyncio
+async def test_llm_finish_reason_length_triggers_retry():
+    """
+    Test 3: finish_reason == 'length' triggers retry even if text has some content.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_max_tokens=16000,
+    )
+
+    mock_resp_length = MagicMock()
+    mock_resp_length.status_code = 200
+    mock_resp_length.json.return_value = {
+        "choices": [{"message": {"content": '{"partial": "cut off'}, "finish_reason": "length"}]
+    }
+
+    valid_content = (
+        '{"questions_to_answer": [{"question": "What is AI?", "draft_answer": "AI is artificial intelligence.", "answer_source": "page"}], '
+        '"suggested_h2_structure": [], "data_opportunities": [], "paragraphs_to_add": [], "inconsistencies": []}'
+    )
+    mock_resp_ok = MagicMock()
+    mock_resp_ok.status_code = 200
+    mock_resp_ok.json.return_value = {
+        "choices": [{"message": {"content": valid_content}, "finish_reason": "stop"}]
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("httpx.AsyncClient.post", side_effect=[mock_resp_length, mock_resp_ok]) as mock_post:
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/ai",
+                "title": "AI Guide",
+                "first_paragraph": "Old intro.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old intro. AI is artificial intelligence.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert len(data["questions_to_answer"]) == 1
+        assert data["questions_to_answer"][0]["question"] == "What is AI?"
+        assert mock_post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_two_consecutive_failures_controlled_error():
+    """
+    Test 4: Two consecutive failures (initial and retry) -> controlled 502 error.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_max_tokens=16000,
+    )
+
+    mock_resp_fail1 = MagicMock()
+    mock_resp_fail1.status_code = 200
+    mock_resp_fail1.json.return_value = {
+        "choices": [{"message": {"content": "Not JSON 1"}, "finish_reason": "stop"}]
+    }
+
+    mock_resp_fail2 = MagicMock()
+    mock_resp_fail2.status_code = 200
+    mock_resp_fail2.json.return_value = {
+        "choices": [{"message": {"content": "Not JSON 2"}, "finish_reason": "stop"}]
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("httpx.AsyncClient.post", side_effect=[mock_resp_fail1, mock_resp_fail2]) as mock_post:
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/fail",
+                "title": "Fail Guide",
+                "first_paragraph": "Old intro.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old intro text.",
+            }
+        })
+        assert res.status_code == 502
+        assert "Could not extract valid JSON from AI response" in res.json()["detail"]
+        assert mock_post.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_max_tokens_in_request_payload():
+    """
+    Test 5: max_tokens present in the request payload sent to the LLM provider.
+    """
+    client_llm = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        max_tokens=16000,
+    )
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.json.return_value = {
+        "choices": [{"message": {"content": '{"test": true}'}, "finish_reason": "stop"}]
+    }
+
+    with patch("httpx.AsyncClient.post", return_value=mock_resp) as mock_post:
+        res = await client_llm.call_chat_completion([{"role": "user", "content": "hello"}])
+        assert res == {"test": True}
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args[1]["json"]
+        assert "max_tokens" in payload
+        assert payload["max_tokens"] == 16000
+
+
+
 
