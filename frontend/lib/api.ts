@@ -122,6 +122,7 @@ export interface PlanSourceToCite {
 }
 
 export interface AIPlanResponse {
+    suggested_lead?: LeadParagraphFix | null;
     questions_to_answer: PlanQuestion[];
     suggested_h2_structure: PlanOutlineItem[];
     suggested_table?: PlanTable | null;
@@ -308,24 +309,33 @@ class ApiClient {
     }
 
     private async parseResponse<T>(response: Response, defaultError: string): Promise<T> {
-        if (response.status === 502 || response.status === 503 || response.status === 504) {
-            throw new Error(SERVER_BUSY_MESSAGE);
-        }
-
         const contentType = response.headers.get('content-type') || '';
-        if (!contentType.includes('application/json')) {
-            throw new Error(SERVER_BUSY_MESSAGE);
-        }
+        let data: Record<string, unknown> | null = null;
 
-        let data: Record<string, unknown> = {};
-        try {
-            data = (await response.json()) as Record<string, unknown>;
-        } catch {
-            throw new Error(SERVER_BUSY_MESSAGE);
+        if (contentType.includes('application/json')) {
+            try {
+                data = (await response.json()) as Record<string, unknown>;
+            } catch {
+                data = null;
+            }
         }
 
         if (!response.ok) {
-            throw new Error((data?.detail as string) || defaultError);
+            const detail = typeof data?.detail === 'string' ? data.detail : null;
+            if (detail) {
+                if (detail.toLowerCase().includes('timed out') || detail.toLowerCase().includes('timeout')) {
+                    throw new Error('The AI took too long to respond. Please try again.');
+                }
+                throw new Error(detail);
+            }
+            if (response.status === 502 || response.status === 503 || response.status === 504) {
+                throw new Error(SERVER_BUSY_MESSAGE);
+            }
+            throw new Error(defaultError);
+        }
+
+        if (!data) {
+            throw new Error(SERVER_BUSY_MESSAGE);
         }
 
         return data as unknown as T;

@@ -474,9 +474,14 @@ def generate_editor_brief_docx(
                             r.font.size = Pt(8)
                             r.font.color.rgb = RGBColor(55, 65, 81)
 
-    # 3. Suggested opening paragraph (if Quick fixes present)
-    if ai_fixes and ai_fixes.lead_paragraph:
+    # 3. Suggested opening paragraph (from Plan or Quick fixes)
+    lp = None
+    if ai_plan and getattr(ai_plan, "suggested_lead", None):
+        lp = ai_plan.suggested_lead
+    elif ai_fixes and ai_fixes.lead_paragraph:
         lp = ai_fixes.lead_paragraph
+
+    if lp:
         h2_lead = doc.add_heading(level=1)
         h2_lead.paragraph_format.space_before = Pt(16)
         h2_lead.paragraph_format.space_after = Pt(4)
@@ -848,9 +853,14 @@ def generate_editor_brief_docx(
                 # Shaded text block for the paragraph
                 add_callout(doc, p_item.suggested_text)
 
-    # 5. Annex: "For the developer" (if Quick fixes JSON-LD or Plan combined_schema present)
-    has_dev_schema = (ai_fixes and ai_fixes.json_ld) or (ai_plan and ai_plan.combined_schema)
-    if has_dev_schema:
+    # 5. Annex: "For the developer" (Schema.org JSON-LD)
+    dev_schema = None
+    if ai_plan and ai_plan.combined_schema:
+        dev_schema = ai_plan.combined_schema
+    elif ai_fixes and ai_fixes.json_ld:
+        dev_schema = ai_fixes.json_ld
+
+    if dev_schema:
         h2_dev = doc.add_heading(level=1)
         h2_dev.paragraph_format.space_before = Pt(20)
         h2_dev.paragraph_format.space_after = Pt(4)
@@ -869,35 +879,19 @@ def generate_editor_brief_docx(
         run_sub_dev.font.size = Pt(9.5)
         run_sub_dev.font.color.rgb = RGBColor(107, 114, 128)
 
-        if ai_fixes and ai_fixes.json_ld:
-            p_lbl_ld = doc.add_paragraph()
-            p_lbl_ld.paragraph_format.space_before = Pt(4)
-            p_lbl_ld.paragraph_format.space_after = Pt(2)
-            r = p_lbl_ld.add_run("Article Schema.org JSON-LD (Quick fixes):")
-            r.bold = True
-            r.font.size = Pt(10)
-            
-            p_code = doc.add_paragraph()
-            p_code.paragraph_format.space_after = Pt(8)
-            r_code = p_code.add_run(json.dumps(ai_fixes.json_ld, indent=2))
-            r_code.font.name = "Courier New"
-            r_code.font.size = Pt(8.5)
-            r_code.font.color.rgb = RGBColor(30, 41, 59)
+        p_lbl = doc.add_paragraph()
+        p_lbl.paragraph_format.space_before = Pt(4)
+        p_lbl.paragraph_format.space_after = Pt(2)
+        r = p_lbl.add_run("Schema.org JSON-LD:")
+        r.bold = True
+        r.font.size = Pt(10)
 
-        if ai_plan and ai_plan.combined_schema:
-            p_lbl_cs = doc.add_paragraph()
-            p_lbl_cs.paragraph_format.space_before = Pt(4)
-            p_lbl_cs.paragraph_format.space_after = Pt(2)
-            r = p_lbl_cs.add_run("Combined Schema.org JSON-LD (Full Plan):")
-            r.bold = True
-            r.font.size = Pt(10)
-
-            p_code = doc.add_paragraph()
-            p_code.paragraph_format.space_after = Pt(8)
-            r_code = p_code.add_run(json.dumps(ai_plan.combined_schema, indent=2))
-            r_code.font.name = "Courier New"
-            r_code.font.size = Pt(8.5)
-            r_code.font.color.rgb = RGBColor(30, 41, 59)
+        p_code = doc.add_paragraph()
+        p_code.paragraph_format.space_after = Pt(8)
+        r_code = p_code.add_run(json.dumps(dev_schema, indent=2))
+        r_code.font.name = "Courier New"
+        r_code.font.size = Pt(8.5)
+        r_code.font.color.rgb = RGBColor(30, 41, 59)
 
     # 6. Footer disclaimer
     for sec in doc.sections:

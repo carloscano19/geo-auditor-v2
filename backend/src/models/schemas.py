@@ -218,6 +218,7 @@ class PlanSourceToCite(BaseModel):
 
 
 class AIPlanResponse(BaseModel):
+    suggested_lead: Optional[LeadParagraphFix] = None
     questions_to_answer: list[PlanQuestion] = Field(default_factory=list)
     suggested_h2_structure: list[PlanOutlineItem] = Field(default_factory=list)
     suggested_table: Optional[PlanTable] = None

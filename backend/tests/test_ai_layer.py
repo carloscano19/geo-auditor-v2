@@ -2830,3 +2830,180 @@ async def test_serp_timeout_retry_failure_no_cache_and_retry_next_call():
         assert mock_http_post.call_count == 4
 
 
+@pytest.mark.asyncio
+async def test_ai_plan_suggested_lead_and_expanded_schema():
+    """
+    Test that /api/ai/plan returns suggested_lead with original, suggested, rationale,
+    and combined_schema containing description, mainEntityOfPage, about, and mentions.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_return = {
+        "suggested_lead": {
+            "original": "Old first paragraph without focus.",
+            "suggested": "Optimized lead that defines GEO concepts immediately with precision.",
+            "rationale": "Clear focus and entity placement in first sentence.",
+        },
+        "json_ld": {
+            "description": "Comprehensive guide on modern GEO optimization strategies.",
+            "about": [{"@type": "Thing", "name": "Generative Engine Optimization"}],
+            "mentions": [{"@type": "Thing", "name": "Perplexity AI"}],
+        },
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+
+        mock_call.return_value = mock_llm_return
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/geo-guide",
+                "title": "GEO Optimization Guide",
+                "h1": "GEO Optimization Guide",
+                "first_paragraph": "Old first paragraph without focus.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old first paragraph without focus. Generative Engine Optimization is key.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+
+        # Check suggested_lead
+        assert data["suggested_lead"] is not None
+        assert data["suggested_lead"]["original"] == "Old first paragraph without focus."
+        assert data["suggested_lead"]["suggested"] == "Optimized lead that defines GEO concepts immediately with precision."
+        assert data["suggested_lead"]["rationale"] == "Clear focus and entity placement in first sentence."
+
+        # Check combined_schema has description, mainEntityOfPage, about, mentions
+        schema = data["combined_schema"]
+        assert "@graph" in schema
+        article = next((item for item in schema["@graph"] if item.get("@type") in ("Article", "BlogPosting")), None)
+        assert article is not None
+        assert article["description"] == "Comprehensive guide on modern GEO optimization strategies."
+        assert article["mainEntityOfPage"] == "https://example.com/geo-guide"
+        assert len(article["about"]) == 1
+        assert article["about"][0]["name"] == "Generative Engine Optimization"
+        assert len(article["mentions"]) == 1
+        assert article["mentions"][0]["name"] == "Perplexity AI"
+
+
+@pytest.mark.asyncio
+async def test_ai_plan_suggested_lead_unverified_figures_fallback_and_warning():
+    """
+    Test that an invented figure in suggested_lead of /api/ai/plan causes fallback to original
+    lead and adds warning.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_return = {
+        "suggested_lead": {
+            "suggested": "This guide claims traffic increased by 999 percent in 2026.",
+            "rationale": "High impact lead",
+        },
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+
+        mock_call.return_value = mock_llm_return
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/traffic-guide",
+                "title": "Traffic Guide",
+                "first_paragraph": "Original safe opening paragraph without numbers.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Original safe opening paragraph without numbers. General body text.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert data["suggested_lead"]["suggested"] == "Original safe opening paragraph without numbers."
+        assert "The suggested lead contained figures not found on the page and was discarded." in data["warnings"]
+
+
+@pytest.mark.asyncio
+async def test_ai_plan_suggested_lead_filters_financial_advice_and_meta():
+    """
+    Test that financial advice and meta-references ('the page') are stripped from suggested_lead in /api/ai/plan.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_return = {
+        "suggested_lead": {
+            "suggested": "Investors should consider this opportunity. The page explains modern indexing architectures.",
+            "rationale": "Direct summary.",
+        },
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+
+        mock_call.return_value = mock_llm_return
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/indexing",
+                "title": "Indexing Guide",
+                "first_paragraph": "Old intro paragraph.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Old intro paragraph. Modern indexing architectures provide fast search results.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        suggested = data["suggested_lead"]["suggested"]
+        assert "investors should" not in suggested.lower()
+        assert "the page" not in suggested.lower()
+
+
+

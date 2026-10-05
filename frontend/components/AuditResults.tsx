@@ -3,7 +3,6 @@
 import React, { useState, useEffect, useMemo } from "react";
 import {
     type AuditResponse,
-    type AIFixesResponse,
     type AIPlanResponse,
     type AhrefsOffpageResponse,
     getDimensionDisplayName,
@@ -120,14 +119,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const [activeTab, setActiveTab] = useState<"overview" | "dimensions" | "ai_plan">("overview");
     const [openDimensions, setOpenDimensions] = useState<Record<string, boolean>>({});
 
-    const [isAiLoading, setIsAiLoading] = useState(false);
     const [isPlanLoading, setIsPlanLoading] = useState(false);
     const [isBriefDownloading, setIsBriefDownloading] = useState(false);
     const [customQuery, setCustomQuery] = useState("");
     const [isEditingQuery, setIsEditingQuery] = useState(false);
-    const [aiFixes, setAiFixes] = useState<AIFixesResponse | null>(null);
     const [aiPlan, setAiPlan] = useState<AIPlanResponse | null>(null);
-    const [aiFixesError, setAiFixesError] = useState<string | null>(null);
     const [aiPlanError, setAiPlanError] = useState<string | null>(null);
     const [copiedSources, setCopiedSources] = useState(false);
 
@@ -233,21 +229,6 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }
     };
 
-    const handleGenerateAIFixes = async () => {
-        if (!results.ai_context) return;
-        setIsAiLoading(true);
-        setAiFixesError(null);
-        try {
-            const data = await apiClient.generateAIFixes(results.ai_context);
-            setAiFixes(data);
-        } catch (err: unknown) {
-            const errorMsg = err instanceof Error ? err.message : "Failed to generate AI fixes";
-            setAiFixesError(errorMsg);
-        } finally {
-            setIsAiLoading(false);
-        }
-    };
-
     const handleGenerateAIPlan = async (overrideQuery?: string) => {
         if (!results.ai_context) return;
         setIsPlanLoading(true);
@@ -267,46 +248,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }
     };
 
-    const handleGenerateAllAI = async () => {
-        if (!results.ai_context) return;
-        setIsAiLoading(true);
-        setIsPlanLoading(true);
-        setAiFixesError(null);
-        setAiPlanError(null);
-
-        const fixesPromise = apiClient.generateAIFixes(results.ai_context);
-        const planPromise = apiClient.generateAIPlan(results.ai_context);
-
-        const [fixesResult, planResult] = await Promise.allSettled([fixesPromise, planPromise]);
-
-        if (fixesResult.status === "fulfilled") {
-            setAiFixes(fixesResult.value);
-        } else {
-            const msg = fixesResult.reason instanceof Error ? fixesResult.reason.message : "Failed to generate quick fixes";
-            setAiFixesError(msg);
-        }
-
-        if (planResult.status === "fulfilled") {
-            setAiPlan(planResult.value);
-            if (planResult.value.serp_query) {
-                setCustomQuery(planResult.value.serp_query);
-            }
-            setIsEditingQuery(false);
-        } else {
-            const msg = planResult.reason instanceof Error ? planResult.reason.message : "Failed to generate improvement plan";
-            setAiPlanError(msg);
-        }
-
-        setIsAiLoading(false);
-        setIsPlanLoading(false);
-    };
-
     const handleDownloadEditorBrief = async () => {
         setIsBriefDownloading(true);
         try {
             await apiClient.downloadEditorBrief({
                 audit_result: results,
-                ai_fixes: aiFixes,
                 ai_plan: aiPlan,
                 ahrefs_offpage: ahrefsData,
             });
@@ -318,15 +264,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
         }
     };
 
-    const handleCopyJsonLd = () => {
-        if (!aiFixes?.json_ld) return;
-        navigator.clipboard.writeText(JSON.stringify(aiFixes.json_ld, null, 2));
-        alert("Schema.org JSON-LD copied to clipboard!");
-    };
-
     const handleCopyLeadParagraph = () => {
-        if (!aiFixes?.lead_paragraph?.suggested) return;
-        navigator.clipboard.writeText(aiFixes.lead_paragraph.suggested);
+        if (!aiPlan?.suggested_lead?.suggested) return;
+        navigator.clipboard.writeText(aiPlan.suggested_lead.suggested);
         alert("Suggested lead paragraph copied to clipboard!");
     };
 
@@ -379,6 +319,18 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             lines.push(`## Warnings & Recommendations`);
             aiPlan.warnings.forEach(w => lines.push(`- ⚠️ ${w}`));
             lines.push("");
+        }
+
+        if (aiPlan.suggested_lead) {
+            lines.push(`## Suggested Opening Paragraph`);
+            lines.push(`*Rewrite the opening paragraph to answer the primary topic immediately (inverted pyramid structure).*\n`);
+            if (aiPlan.suggested_lead.original) {
+                lines.push(`**Current Text:**\n${aiPlan.suggested_lead.original}\n`);
+            }
+            lines.push(`**Suggested Optimized Opening:**\n${aiPlan.suggested_lead.suggested}\n`);
+            if (aiPlan.suggested_lead.rationale) {
+                lines.push(`*Rationale:* ${aiPlan.suggested_lead.rationale}\n`);
+            }
         }
 
         if (aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0) {
@@ -544,9 +496,9 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             </>
                         )}
                     </button>
-                    {((aiFixes || aiPlan) || ahrefsData) && (
+                    {(aiPlan || ahrefsData) && (
                         <div className="flex items-center gap-1.5 flex-wrap">
-                            {(aiFixes || aiPlan) && (
+                            {aiPlan && (
                                 <span className="text-[11px] px-2 py-0.5 rounded-md bg-slate-100 border border-slate-200 text-slate-600 font-medium">
                                     Includes AI recommendations
                                 </span>
@@ -602,7 +554,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                     >
                         <span>✨</span>
                         <span>AI Plan</span>
-                        {(aiFixes || aiPlan) && (
+                        {aiPlan && (
                             <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
                         )}
                     </button>
@@ -840,7 +792,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     {ahrefsData.linking_pages === null ? (
                                         <p className="text-xs text-slate-500 italic py-1">Link list unavailable.</p>
                                     ) : ahrefsData.linking_pages.length === 0 ? (
-                                        <p className="text-xs text-slate-500 italic py-1">No live links found.</p>
+                                        <p className="text-xs text-slate-500 italic py-1">
+                                            {ahrefsData.referring_domains && ahrefsData.referring_domains > 0
+                                                ? `Ahrefs counts ${ahrefsData.referring_domains} referring ${ahrefsData.referring_domains === 1 ? "domain" : "domains"}, but none returned a live link right now (the link may have been removed recently).`
+                                                : "No live links found."}
+                                        </p>
                                     ) : (
                                         <div className="overflow-x-auto rounded-xl border border-slate-200 bg-white">
                                             <table className="w-full text-left text-xs">
@@ -1039,11 +995,11 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                             <div className="flex flex-wrap gap-2.5 no-print">
                                 <button
                                     type="button"
-                                    onClick={handleGenerateAllAI}
-                                    disabled={isAiLoading || isPlanLoading}
+                                    onClick={() => handleGenerateAIPlan()}
+                                    disabled={isPlanLoading}
                                     className="btn-primary text-xs px-4 py-2 flex items-center gap-2"
                                 >
-                                    {(isAiLoading || isPlanLoading) ? (
+                                    {isPlanLoading ? (
                                         <>
                                             <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
                                             <span>Generating with AI… this can take up to a minute.</span>
@@ -1059,8 +1015,8 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                         </div>
                     </div>
 
-                    {/* Empty State when neither generated yet */}
-                    {!aiFixes && !aiPlan && !isAiLoading && !isPlanLoading && !aiFixesError && !aiPlanError && (
+                    {/* Empty State when plan not generated yet */}
+                    {!aiPlan && !isPlanLoading && !aiPlanError && (
                         <div className="glass-card p-10 text-center space-y-4">
                             <div className="w-12 h-12 mx-auto rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-2xl font-bold shadow-2xs">
                                 ✨
@@ -1070,12 +1026,12 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     Generate AI Recommendations
                                 </h4>
                                 <p className="text-xs text-slate-500 leading-relaxed">
-                                    Generate actionable AI recommendations including quick fixes (an optimized opening paragraph and Schema.org JSON-LD) and a full content improvement plan (Google PAA questions, heading hierarchy, comparison table, content opportunities, and authoritative sources to cite).
+                                    Generate actionable AI recommendations including an optimized opening paragraph, Schema.org JSON-LD, and a full content improvement plan (Google PAA questions, heading hierarchy, comparison table, content opportunities, and authoritative sources to cite).
                                 </p>
                                 <div className="pt-2">
                                     <button
                                         type="button"
-                                        onClick={handleGenerateAllAI}
+                                        onClick={() => handleGenerateAIPlan()}
                                         className="btn-primary text-xs px-4 py-2 inline-flex items-center gap-2"
                                     >
                                         <span>✨</span>
@@ -1086,137 +1042,27 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                         </div>
                     )}
 
-                    {/* Quick Fixes Error Notice with Retry */}
-                    {aiFixesError && (
-                        <div className="glass-card p-4 border-amber-200 bg-amber-50/50">
-                            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
-                                <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
-                                    <span>⚠️</span>
-                                    <span>Quick fixes could not be generated: {aiFixesError}</span>
-                                </div>
-                                <button
-                                    type="button"
-                                    onClick={handleGenerateAIFixes}
-                                    disabled={isAiLoading}
-                                    className="text-xs px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto"
-                                >
-                                    {isAiLoading ? "Retrying..." : "Retry Quick fixes"}
-                                </button>
-                            </div>
-                        </div>
-                    )}
-
-                    {/* 1. Quick Fixes Output */}
-                    {aiFixes && (
-                        <div className="glass-card p-6 space-y-6">
-                            <div className="flex items-center justify-between pb-3 border-b border-slate-100">
-                                <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">
-                                    <span>⚡</span> Quick Fixes (Lead Paragraph & Schema.org)
-                                </h4>
-                                <span className="text-[11px] font-mono text-emerald-700 bg-emerald-50 border border-emerald-200 px-2 py-0.5 rounded-md font-semibold">
-                                    Ready
-                                </span>
-                            </div>
-
-                            {/* Lead Paragraph Fix */}
-                            {aiFixes.lead_paragraph && (
-                                <div className="space-y-3">
-                                    <div className="flex items-center justify-between">
-                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            1. Lead Paragraph (First 60 Words / Rule of 60)
-                                        </h5>
-                                        <button
-                                            type="button"
-                                            onClick={handleCopyLeadParagraph}
-                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
-                                        >
-                                            Copy Suggested Text
-                                        </button>
-                                    </div>
-
-                                    {aiFixes.lead_paragraph.rationale && (
-                                        <p className="text-xs text-slate-500 italic">
-                                            {aiFixes.lead_paragraph.rationale}
-                                        </p>
-                                    )}
-
-                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
-                                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
-                                                Current Text
-                                            </span>
-                                            <p className="text-xs text-slate-700 leading-relaxed font-mono">
-                                                {aiFixes.lead_paragraph.original || "(Empty or undetected lead)"}
-                                            </p>
-                                        </div>
-                                        <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-xl space-y-1.5">
-                                            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
-                                                Suggested Optimized Opening
-                                            </span>
-                                            <p className="text-xs text-slate-800 leading-relaxed font-mono font-medium">
-                                                {aiFixes.lead_paragraph.suggested}
-                                            </p>
-                                        </div>
-                                    </div>
-                                </div>
-                            )}
-
-                            {/* Schema.org Fix */}
-                            {aiFixes.json_ld && (
-                                <div className="space-y-3 pt-4 border-t border-slate-100">
-                                    <div className="flex items-center justify-between">
-                                        <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
-                                            2. Suggested Schema.org (JSON-LD)
-                                        </h5>
-                                        <button
-                                            type="button"
-                                            onClick={handleCopyJsonLd}
-                                            className="text-xs text-slate-600 hover:text-slate-900 underline font-medium cursor-pointer"
-                                        >
-                                            Copy JSON-LD
-                                        </button>
-                                    </div>
-
-                                    {aiFixes.warnings && aiFixes.warnings.length > 0 && (
-                                        <ul className="space-y-1 text-xs text-slate-600">
-                                            {aiFixes.warnings.map((rec, idx) => (
-                                                <li key={idx} className="flex items-start gap-1.5">
-                                                    <span className="text-amber-600 font-bold">•</span>
-                                                    <span>{rec}</span>
-                                                </li>
-                                            ))}
-                                        </ul>
-                                    )}
-
-                                    <div className="p-4 bg-slate-900 text-slate-200 rounded-xl overflow-x-auto max-h-72 font-mono text-xs leading-relaxed">
-                                        <pre>{JSON.stringify(aiFixes.json_ld, null, 2)}</pre>
-                                    </div>
-                                </div>
-                            )}
-                        </div>
-                    )}
-
                     {/* Full Plan Error Notice with Retry */}
                     {aiPlanError && (
                         <div className="glass-card p-4 border-amber-200 bg-amber-50/50">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                 <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
                                     <span>⚠️</span>
-                                    <span>Full improvement plan could not be generated: {aiPlanError}</span>
+                                    <span>AI recommendations could not be generated: {aiPlanError}</span>
                                 </div>
                                 <button
                                     type="button"
-                                    onClick={() => handleGenerateAIPlan()}
+                                    onClick={() => handleGenerateAIPlan(customQuery || undefined)}
                                     disabled={isPlanLoading}
                                     className="text-xs px-3.5 py-1.5 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium rounded-xl shadow-2xs transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto"
                                 >
-                                    {isPlanLoading ? "Retrying..." : "Retry Full plan"}
+                                    {isPlanLoading ? "Retrying..." : "Retry"}
                                 </button>
                             </div>
                         </div>
                     )}
 
-                    {/* 2. Full Improvement Plan Output */}
+                    {/* Full Improvement Plan Output */}
                     {aiPlan && (
                         <div className="glass-card p-6 space-y-6">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
@@ -1285,6 +1131,54 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </button>
                                 </div>
                             </div>
+
+                            {/* Suggested opening paragraph */}
+                            {aiPlan.suggested_lead && (
+                                <div className="space-y-3 pb-6 border-b border-slate-100">
+                                    <div className="flex items-center justify-between">
+                                        <div>
+                                            <h5 className="text-xs font-bold text-slate-700 uppercase tracking-wider">
+                                                Suggested opening paragraph
+                                            </h5>
+                                            <p className="text-xs text-slate-500 mt-0.5">
+                                                Rewrite the opening paragraph to answer the primary topic immediately (inverted pyramid structure).
+                                            </p>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleCopyLeadParagraph}
+                                            className="text-xs px-2.5 py-1 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 font-medium transition-all shadow-2xs cursor-pointer flex items-center gap-1"
+                                        >
+                                            📋 Copy Suggested Text
+                                        </button>
+                                    </div>
+
+                                    {aiPlan.suggested_lead.rationale && (
+                                        <p className="text-xs text-slate-500 italic">
+                                            {aiPlan.suggested_lead.rationale}
+                                        </p>
+                                    )}
+
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                                        <div className="p-4 bg-slate-50 border border-slate-200 rounded-xl space-y-1.5">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-slate-400">
+                                                Current Text
+                                            </span>
+                                            <p className="text-xs text-slate-700 leading-relaxed font-mono">
+                                                {aiPlan.suggested_lead.original || "(Empty or undetected lead)"}
+                                            </p>
+                                        </div>
+                                        <div className="p-4 bg-emerald-50/50 border border-emerald-200/80 rounded-xl space-y-1.5">
+                                            <span className="text-[11px] font-bold uppercase tracking-wider text-emerald-700">
+                                                Suggested Optimized Opening
+                                            </span>
+                                            <p className="text-xs text-slate-800 leading-relaxed font-mono font-medium">
+                                                {aiPlan.suggested_lead.suggested}
+                                            </p>
+                                        </div>
+                                    </div>
+                                </div>
+                            )}
 
                             {/* Warnings */}
                             {aiPlan.warnings && aiPlan.warnings.length > 0 && (

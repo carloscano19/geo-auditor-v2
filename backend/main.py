@@ -430,6 +430,9 @@ def build_article_schema(ctx: Any, expected_type: str, json_ld_template: Optiona
 
     if ctx.url:
         json_ld["url"] = ctx.url
+        json_ld["mainEntityOfPage"] = ctx.url
+    elif "mainEntityOfPage" not in json_ld or not json_ld["mainEntityOfPage"]:
+        json_ld["mainEntityOfPage"] = "REPLACE_WITH_PAGE_URL"
 
     # 2. Date published & modified
     if ctx.detected_date_published:
@@ -1074,7 +1077,7 @@ async def generate_ai_plan(request: AIPlanRequest):
         "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).\n"
         "7. Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations (e.g. 'stock price', 'cotización', 'revenue', 'rentabilidad', 'should I invest').\n"
         "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.\n"
-        "9. CRITICAL COPYWRITING RULE: All 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself."
+        "9. CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself."
     )
 
     google_context_text = ""
@@ -1117,6 +1120,9 @@ Detected Publisher: {ctx.detected_publisher or 'Not detected'}
 Detected Date Published: {ctx.detected_date_published or 'Not detected'}
 Detected Date Modified: {ctx.detected_date_modified or 'Not detected'}
 
+Original First Paragraph:
+\"\"\"{ctx.first_paragraph or 'None'}\"\"\"
+
 Failing Submetrics:
 {failing_info or 'None'}
 
@@ -1125,6 +1131,26 @@ Main Text Snippet (First 8000 chars):
 
 Generate a JSON object with EXACTLY this structure:
 {{
+  "suggested_lead": {{
+    "original": "{ctx.first_paragraph or ''}",
+    "suggested": "40-60 words optimized direct-answer paragraph in {lang_instruction}",
+    "rationale": "Clear explanation of changes made in {lang_instruction}"
+  }},
+  "json_ld": {{
+    "description": "Short 1-2 sentence summary of the page in {lang_instruction}",
+    "about": [
+      {{
+        "@type": "Thing",
+        "name": "Main entity or topic"
+      }}
+    ],
+    "mentions": [
+      {{
+        "@type": "Thing",
+        "name": "Secondary entity or concept"
+      }}
+    ]
+  }},
   "questions_to_answer": [
     {{
       "question": "Question text in {lang_instruction}",
@@ -1170,6 +1196,8 @@ Generate a JSON object with EXACTLY this structure:
 }}
 
 Requirements:
+- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff.
+- json_ld: Factual description (1-2 sentences), about (main entity/topic), and mentions (secondary entities/concepts). Factual only; do NOT invent figures.
 - questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
@@ -1179,7 +1207,7 @@ Requirements:
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
 - Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
-- CRITICAL COPYWRITING RULE: All suggested paragraphs ('paragraphs_to_add') and all answers with answer_source 'page' ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or similar meta-commentary.
+- CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all suggested paragraphs ('paragraphs_to_add') and all answers with answer_source 'page' ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or similar meta-commentary.
 - Language: Strictly {lang_instruction}.
 """
 
@@ -1467,8 +1495,86 @@ Requirements:
                 "why": why_str,
             })
 
+    # 4.8 Lead paragraph validation & numeric check
+    lead_data = raw_result.get("suggested_lead") or raw_result.get("lead_paragraph") or {}
+    original_lead = (ctx.first_paragraph or "").strip()
+    suggested_lead_text = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
+    rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
+
+    if suggested_lead_text:
+        suggested_lead_text = remove_financial_advice_phrases(suggested_lead_text)
+        suggested_lead_text = strip_page_meta_references(suggested_lead_text)
+
+    if suggested_lead_text and not all_numbers_in_page(suggested_lead_text, page_norm):
+        suggested_lead_text = original_lead
+        rationale_lead = "The original lead paragraph was kept because the suggested lead contained unverified figures."
+        warnings.append("The suggested lead contained figures not found on the page and was discarded.")
+
+    if not suggested_lead_text:
+        suggested_lead_text = original_lead or "No lead paragraph available."
+    if not rationale_lead:
+        rationale_lead = "Optimized for directness, inverted pyramid structure, and entity clarity."
+
+    lead_paragraph_fix = LeadParagraphFix(
+        original=original_lead,
+        suggested=suggested_lead_text,
+        rationale=rationale_lead,
+    )
+
     # 5. Build combined schema
-    article_schema, article_warnings = build_article_schema(ctx, expected_type, {})
+    json_ld_raw = raw_result.get("json_ld") or raw_result.get("schema_article") or {}
+    if not isinstance(json_ld_raw, dict):
+        json_ld_raw = {}
+
+    article_schema, article_warnings = build_article_schema(ctx, expected_type, json_ld_raw)
+
+    # Validate numeric figures in LLM-generated JSON-LD text fields
+    removed_schema_count = 0
+    for field in ["description", "alternativeHeadline"]:
+        if field in article_schema and isinstance(article_schema[field], str) and article_schema[field]:
+            if not all_numbers_in_page(article_schema[field], page_norm):
+                del article_schema[field]
+                removed_schema_count += 1
+
+    for field in ["about", "mentions"]:
+        if field in article_schema:
+            val = article_schema[field]
+            if isinstance(val, list):
+                valid_items = []
+                for item in val:
+                    if isinstance(item, dict):
+                        item_ok = True
+                        for k in ["name", "description"]:
+                            if k in item and isinstance(item[k], str) and item[k]:
+                                if not all_numbers_in_page(item[k], page_norm):
+                                    item_ok = False
+                                    break
+                        if item_ok:
+                            valid_items.append(item)
+                        else:
+                            removed_schema_count += 1
+                    elif isinstance(item, str):
+                        if all_numbers_in_page(item, page_norm):
+                            valid_items.append(item)
+                        else:
+                            removed_schema_count += 1
+                article_schema[field] = valid_items
+            elif isinstance(val, dict):
+                item_ok = True
+                for k in ["name", "description"]:
+                    if k in val and isinstance(val[k], str) and val[k]:
+                        if not all_numbers_in_page(val[k], page_norm):
+                            item_ok = False
+                            break
+                if not item_ok:
+                    del article_schema[field]
+                    removed_schema_count += 1
+
+    if removed_schema_count > 0:
+        warnings.append(
+            f"{removed_schema_count} Schema.org elements were removed because they contained figures not found on the page."
+        )
+
     combined_schema = build_combined_schema(ctx, article_schema, valid_questions)
 
     # 6. Warnings
@@ -1479,6 +1585,7 @@ Requirements:
         )
 
     response_data = {
+        "suggested_lead": lead_paragraph_fix.model_dump(),
         "questions_to_answer": valid_questions,
         "suggested_h2_structure": valid_h2,
         "suggested_table": valid_table,

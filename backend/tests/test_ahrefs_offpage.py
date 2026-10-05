@@ -328,7 +328,7 @@ def test_recommendation_rules():
 
     # Case B: referring_domains == 1 (1 to 4)
     recs_1 = generate_ahrefs_recommendations(referring_domains=1, language="en")
-    assert any("Only 1 websites link to this page" in r for r in recs_1)
+    assert any("Only 1 website links to this page" in r for r in recs_1)
 
     # Case C: referring_domains == 4 (1 to 4)
     recs_4 = generate_ahrefs_recommendations(referring_domains=4, language="en")

@@ -702,13 +702,23 @@ def generate_ahrefs_recommendations(
                 )
         elif 1 <= referring_domains <= 4:
             if lang == "es":
-                recs.append(
-                    f"Solo {referring_domains} sitios web enlazan a esta página. Conseguir algunos enlaces más de sitios relevantes reforzaría su autoridad."
-                )
+                if referring_domains == 1:
+                    recs.append(
+                        "Solo 1 sitio web enlaza a esta página. Conseguir algunos enlaces más de sitios relevantes reforzaría su autoridad."
+                    )
+                else:
+                    recs.append(
+                        f"Solo {referring_domains} sitios web enlazan a esta página. Conseguir algunos enlaces más de sitios relevantes reforzaría su autoridad."
+                    )
             else:
-                recs.append(
-                    f"Only {referring_domains} websites link to this page. Earning a few more links from relevant sites would strengthen its authority."
-                )
+                if referring_domains == 1:
+                    recs.append(
+                        "Only 1 website links to this page. Earning a few more links from relevant sites would strengthen its authority."
+                    )
+                else:
+                    recs.append(
+                        f"Only {referring_domains} websites link to this page. Earning a few more links from relevant sites would strengthen its authority."
+                    )
 
     # Rule 3 & 4: Keywords & Rankings
     if organic_keywords is not None:
@@ -793,6 +803,8 @@ def strip_page_meta_references(text: str) -> str:
         r"the\s+page\s+states|"
         r"the\s+page\s+says|"
         r"the\s+page\s+mentions|"
+        r"the\s+page\s+explains|"
+        r"the\s+page\s+describes|"
         r"the\s+page\s+does\s+not|"
         r"the\s+page['’]?s\s+disclaimer|"
         r"this\s+page|"
@@ -801,6 +813,8 @@ def strip_page_meta_references(text: str) -> str:
         r"on\s+the\s+page|"
         r"la\s+p[aá]gina\s+indica|"
         r"la\s+p[aá]gina\s+dice|"
+        r"la\s+p[aá]gina\s+explica|"
+        r"la\s+p[aá]gina\s+describe|"
         r"seg[uú]n\s+la\s+p[aá]gina|"
         r"esta\s+p[aá]gina"
         r")\b",

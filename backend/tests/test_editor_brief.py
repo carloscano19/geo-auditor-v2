@@ -587,3 +587,50 @@ def test_heading_structure_and_text_walls_merged_in_top_actions():
     assert actions[2][0] == "Publication & Update Dates"
     assert actions[2][2] == pytest.approx(4.0)
 
+
+def test_generate_editor_brief_docx_with_plan_suggested_lead_only():
+    """
+    Verify that docx generates properly when only ai_plan is provided (with suggested_lead),
+    without ai_fixes.
+    """
+    audit = make_sample_audit_result()
+    ai_plan = AIPlanResponse(
+        suggested_lead=LeadParagraphFix(
+            original="Old lead paragraph.",
+            suggested="Unified plan suggested lead paragraph that directly provides the answer.",
+            rationale="Added inverted pyramid focus.",
+        ),
+        questions_to_answer=[],
+        suggested_h2_structure=[],
+        suggested_table=None,
+        data_opportunities=[],
+        paragraphs_to_add=[],
+        inconsistencies=[],
+        sources_to_cite=[],
+        combined_schema={
+            "@context": "https://schema.org",
+            "@graph": [
+                {
+                    "@type": "Article",
+                    "headline": "Sample Article",
+                    "description": "Article summary.",
+                    "mainEntityOfPage": "https://example.com/blog/seo-guide",
+                }
+            ],
+        },
+        warnings=[],
+    )
+
+    docx_bytes = generate_editor_brief_docx(audit, ai_fixes=None, ai_plan=ai_plan)
+    assert docx_bytes and len(docx_bytes) > 0
+
+    doc = docx.Document(io.BytesIO(docx_bytes))
+    all_text = " ".join([p.text for p in doc.paragraphs])
+
+    assert "Suggested opening paragraph" in all_text
+    assert "Unified plan suggested lead paragraph that directly provides the answer." in all_text
+    assert "For the developer" in all_text
+    assert "https://schema.org" in all_text
+    assert "Article summary." in all_text
+
+
