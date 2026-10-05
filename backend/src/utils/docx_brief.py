@@ -271,6 +271,26 @@ def generate_editor_brief_docx(
     else:
         run_score.font.color.rgb = RGBColor(190, 30, 30)
 
+    # 1.1 Notes / Plan Warnings (if any)
+    if ai_plan and ai_plan.warnings and len(ai_plan.warnings) > 0:
+        h2_notes = doc.add_heading(level=1)
+        h2_notes.paragraph_format.space_before = Pt(8)
+        h2_notes.paragraph_format.space_after = Pt(4)
+        run_h2_notes = h2_notes.add_run("Notes")
+        run_h2_notes.font.name = "Arial"
+        run_h2_notes.font.size = Pt(14)
+        run_h2_notes.bold = True
+        run_h2_notes.font.color.rgb = RGBColor(180, 83, 9)
+
+        for w in ai_plan.warnings:
+            p_w = doc.add_paragraph(style="List Bullet")
+            p_w.paragraph_format.space_before = Pt(1)
+            p_w.paragraph_format.space_after = Pt(2)
+            r_w = p_w.add_run(w)
+            r_w.font.name = "Arial"
+            r_w.font.size = Pt(9.5)
+            r_w.font.color.rgb = RGBColor(146, 64, 14)
+
     # 2. Top actions (Max 8 non-technical)
     h2_actions = doc.add_heading(level=1)
     h2_actions.paragraph_format.space_before = Pt(12)

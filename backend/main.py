@@ -972,6 +972,7 @@ async def generate_ai_plan(request: AIPlanRequest):
     serp_market: Optional[str] = None
     serp_used = False
     serp_data: Optional[dict] = None
+    serp_failed = False
     candidate_sources: list[dict] = []
     warnings: list[str] = []
 
@@ -983,7 +984,7 @@ async def generate_ai_plan(request: AIPlanRequest):
                 serp_query = await resolve_serp_query(ctx, llm, request.target_query)
             _, _, default_market = get_market_for_language(ctx.language or "en")
             serp_market = default_market
-            serp_client = SerpClient()
+            serp_client = SerpClient(current_settings)
             serp_data = await serp_client.fetch_serp_live(
                 query=serp_query,
                 language=ctx.language or "en",
@@ -1022,18 +1023,21 @@ async def generate_ai_plan(request: AIPlanRequest):
                         break
         except SerpDailyLimitExceededError as e:
             logger.warning(f"DataForSEO daily limit reached: {e}")
+            serp_failed = True
             serp_used = False
             serp_data = None
             _, _, serp_market = get_market_for_language(ctx.language or "en")
             warnings.append("Daily Google data limit reached; questions and sources are AI-suggested only.")
         except SerpClientError as e:
             logger.warning(f"DataForSEO error: {e}")
+            serp_failed = True
             serp_used = False
             serp_data = None
             _, _, serp_market = get_market_for_language(ctx.language or "en")
             warnings.append("Google data unavailable for this plan; questions and sources are AI-suggested only.")
         except Exception as e:
             logger.warning(f"Unexpected DataForSEO error: {e}")
+            serp_failed = True
             serp_used = False
             serp_data = None
             _, _, serp_market = get_market_for_language(ctx.language or "en")
@@ -1490,8 +1494,9 @@ Requirements:
         "serp_paa_found": serp_paa_found,
     }
 
-    # 7. Store in cache
-    put_ai_plan_cache(cache_key, response_data, now_ts + 86400)
+    # 7. Store in cache (only if not failed due to DataForSEO error)
+    if not serp_failed:
+        put_ai_plan_cache(cache_key, response_data, now_ts + 86400)
 
     return AIPlanResponse(**response_data)
 

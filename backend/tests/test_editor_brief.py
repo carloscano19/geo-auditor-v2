@@ -264,6 +264,26 @@ def test_generate_editor_brief_docx_validity():
     assert len(doc.tables) >= 1
 
 
+def test_docx_includes_notes_section_with_warnings():
+    audit = make_sample_audit_result()
+    ai_plan = AIPlanResponse(
+        questions_to_answer=[],
+        suggested_h2_structure=[],
+        suggested_table=None,
+        data_opportunities=[],
+        paragraphs_to_add=[],
+        inconsistencies=[],
+        sources_to_cite=[],
+        combined_schema={"@context": "https://schema.org", "@graph": []},
+        warnings=["Google data unavailable for this plan; questions and sources are AI-suggested only."],
+    )
+    docx_bytes = generate_editor_brief_docx(audit, ai_plan=ai_plan)
+    doc = docx.Document(io.BytesIO(docx_bytes))
+    all_text = " ".join([p.text for p in doc.paragraphs])
+    assert "Notes" in all_text
+    assert "Google data unavailable for this plan; questions and sources are AI-suggested only." in all_text
+
+
 def test_export_brief_endpoint():
     client = TestClient(app)
     audit = make_sample_audit_result()

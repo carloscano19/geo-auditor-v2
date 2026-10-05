@@ -1224,10 +1224,14 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">
                                         <span>📋</span> Full Improvement Plan
                                     </h4>
-                                    {aiPlan.serp_used && aiPlan.serp_query && (
+                                    {(aiPlan.serp_used || aiPlan.serp_query || aiPlan.warnings?.some(w => w.toLowerCase().includes("google data unavailable"))) && (
                                         <div className="space-y-1.5 mt-1">
                                             <p className="text-xs text-slate-500">
-                                                Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below
+                                                {aiPlan.serp_used && aiPlan.serp_query ? (
+                                                    <>Google data used: search &apos;{aiPlan.serp_query}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""} · {aiPlan.serp_paa_found ?? 0} real Google questions found · sources listed below</>
+                                                ) : (
+                                                    <>Search query: &apos;{aiPlan.serp_query || customQuery || "Auto"}&apos;{aiPlan.serp_market ? ` (${formatMarketInWords(aiPlan.serp_market)})` : ""}</>
+                                                )}
                                                 {" "}
                                                 <button
                                                     type="button"
@@ -1284,14 +1288,36 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                             {/* Warnings */}
                             {aiPlan.warnings && aiPlan.warnings.length > 0 && (
-                                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-1">
+                                <div className="p-3.5 bg-amber-50 border border-amber-200 rounded-xl space-y-2">
                                     <div className="text-xs font-semibold text-amber-900 flex items-center gap-1.5">
                                         <span>⚠️</span> Warnings &amp; Actions Required:
                                     </div>
-                                    <ul className="text-xs text-amber-800 list-disc list-inside space-y-0.5 pl-1">
-                                        {aiPlan.warnings.map((w, idx) => (
-                                            <li key={idx}>{w}</li>
-                                        ))}
+                                    <ul className="text-xs text-amber-800 list-disc list-inside space-y-2 pl-1">
+                                        {aiPlan.warnings.map((w, idx) => {
+                                            const isGoogleUnavailable = w.toLowerCase().includes("google data unavailable");
+                                            return (
+                                                <li key={idx} className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                                    <span>{w}</span>
+                                                    {isGoogleUnavailable && (
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => handleGenerateAIPlan(customQuery || aiPlan.serp_query || undefined)}
+                                                            disabled={isPlanLoading}
+                                                            className="text-xs px-3 py-1 bg-amber-600 hover:bg-amber-500 disabled:opacity-50 text-white font-medium rounded-lg shadow-2xs transition-all cursor-pointer whitespace-nowrap self-start sm:self-auto shrink-0 flex items-center gap-1.5"
+                                                        >
+                                                            {isPlanLoading ? (
+                                                                <>
+                                                                    <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                                                                    <span>Retrying...</span>
+                                                                </>
+                                                            ) : (
+                                                                <span>Retry with Google data</span>
+                                                            )}
+                                                        </button>
+                                                    )}
+                                                </li>
+                                            );
+                                        })}
                                     </ul>
                                 </div>
                             )}

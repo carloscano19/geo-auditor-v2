@@ -1,6 +1,7 @@
 import pytest
 import hashlib
 import asyncio
+import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
 
@@ -2617,5 +2618,215 @@ def test_ai_fixes_strip_meta_references_in_lead():
         lead_suggested = data["lead_paragraph"]["suggested"]
         assert "The page's disclaimer states compliance is optional." not in lead_suggested
         assert lead_suggested == "Enterprise systems require rigorous testing standards. Security audits must occur on a regular schedule."
+
+
+# ---------------------------------------------------------------------------
+# DataForSEO timeout, retry & caching tests
+# ---------------------------------------------------------------------------
+
+def test_serp_timeout_seconds_setting_and_client_usage():
+    from src.services.serp_client import SerpClient
+
+    # Default timeout is 90.0s
+    default_settings = Settings()
+    assert default_settings.serp_timeout_seconds == 90.0
+
+    # Custom timeout configuration
+    custom_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login123",
+        dataforseo_password="password123",
+        serp_timeout_seconds=45.0,
+    )
+    assert custom_settings.serp_timeout_seconds == 45.0
+
+    client_serp = SerpClient(custom_settings)
+    assert client_serp.settings.serp_timeout_seconds == 45.0
+
+
+@pytest.mark.asyncio
+async def test_serp_timeout_retry_success():
+    """
+    Test that a timeout on attempt 0 retries after 3.0s, succeeds on attempt 1,
+    and returns a plan with Google data (serp_used is True).
+    """
+    from main import ai_plan_cache
+    from src.services.serp_client import serp_cache
+    ai_plan_cache.clear()
+    serp_cache.clear()
+
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login123",
+        dataforseo_password="password123",
+        serp_timeout_seconds=90.0,
+    )
+
+    mock_serp_response = {
+        "tasks": [
+            {
+                "status_code": 20000,
+                "result": [
+                    {
+                        "items": [
+                            {
+                                "type": "people_also_ask",
+                                "items": [
+                                    {"title": "How to optimize for AI?", "url": "https://industry.org/faq", "domain": "industry.org"}
+                                ]
+                            },
+                            {
+                                "type": "organic",
+                                "domain": "authority.org",
+                                "url": "https://authority.org/guide",
+                                "title": "Authoritative Guide"
+                            }
+                        ]
+                    }
+                ]
+            }
+        ]
+    }
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "How to optimize for AI?",
+                "why_it_matters": "Core SEO query",
+                "answer_source": "page",
+                "draft_answer": "AI engines index well structured content.",
+                "suggested_location": "FAQ",
+            }
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    # Attempt 0: TimeoutException, Attempt 1: 200 OK
+    resp_success = MagicMock(status_code=200, json=lambda: mock_serp_response, raise_for_status=lambda: None)
+
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm, \
+         patch("httpx.AsyncClient.post", side_effect=[httpx.TimeoutException("Read timed out"), resp_success]) as mock_http_post, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+
+        mock_llm.return_value = mock_llm_plan
+
+        req_data = {
+            "ai_context": {
+                "url": "https://example.com/guide",
+                "title": "AI Optimization",
+                "h1": "AI Optimization",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "AI engines index well structured content.",
+            },
+            "query": "how to optimize for ai",
+        }
+
+        resp = client.post("/api/ai/plan", json=req_data)
+        assert resp.status_code == 200
+        data = resp.json()
+
+        # Both attempts were executed
+        assert mock_http_post.call_count == 2
+        # The 3-second sleep was called on timeout retry
+        mock_sleep.assert_any_call(3.0)
+
+        # Result includes Google data
+        assert data["serp_used"] is True
+        assert data["serp_paa_found"] >= 1
+        assert any(q["origin"] == "google_paa" for q in data["questions_to_answer"])
+
+
+@pytest.mark.asyncio
+async def test_serp_timeout_retry_failure_no_cache_and_retry_next_call():
+    """
+    Test that timeout on both attempts generates plan without Google data,
+    adds warning, does NOT store plan in ai_plan_cache, and allows next call
+    to retry DataForSEO.
+    """
+    from main import ai_plan_cache
+    from src.services.serp_client import serp_cache
+    ai_plan_cache.clear()
+    serp_cache.clear()
+
+    client = TestClient(app)
+    s = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login123",
+        dataforseo_password="password123",
+        serp_timeout_seconds=90.0,
+    )
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {
+                "question": "What is AI search?",
+                "why_it_matters": "Clarity",
+                "answer_source": "page",
+                "draft_answer": "AI search gives direct answers.",
+                "suggested_location": "Intro",
+            }
+        ],
+        "outline_expansion": [],
+        "comparison_tables": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+    }
+
+    req_data = {
+        "ai_context": {
+            "url": "https://example.com/guide2",
+            "title": "AI Optimization Guide",
+            "h1": "AI Optimization Guide",
+            "language": "en",
+            "content_type": "guide_blog",
+            "main_text": "AI search gives direct answers.",
+        },
+        "query": "ai search guide",
+    }
+
+    # First call: both attempts time out
+    with patch("main.get_settings", return_value=s), \
+         patch("config.settings.get_settings", return_value=s), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm, \
+         patch("httpx.AsyncClient.post", side_effect=httpx.TimeoutException("Read timed out")) as mock_http_post, \
+         patch("asyncio.sleep", new_callable=AsyncMock):
+
+        mock_llm.return_value = mock_llm_plan
+
+        resp1 = client.post("/api/ai/plan", json=req_data)
+        assert resp1.status_code == 200
+        data1 = resp1.json()
+
+        # Both attempts timed out
+        assert mock_http_post.call_count == 2
+        # Plan was generated without Google data
+        assert data1["serp_used"] is False
+        assert any("Google data unavailable" in w for w in data1["warnings"])
+
+        # Cache check: plan must NOT be stored in ai_plan_cache
+        assert len(ai_plan_cache) == 0
+
+        # Second call: DataForSEO is attempted again because not cached
+        resp2 = client.post("/api/ai/plan", json=req_data)
+        assert resp2.status_code == 200
+        # Call count increased by 2 more attempts
+        assert mock_http_post.call_count == 4
 
 

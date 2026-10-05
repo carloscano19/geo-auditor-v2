@@ -193,9 +193,9 @@ class SerpClient:
         )
 
         data = None
-        timeout = httpx.Timeout(30.0)
+        timeout = httpx.Timeout(self.settings.serp_timeout_seconds)
 
-        # Execute with 1 retry on 5xx
+        # Execute with 1 retry on 5xx (after 1s) or timeout/network error (after 3s)
         async with httpx.AsyncClient(timeout=timeout) as client:
             for attempt in range(2):
                 try:
@@ -219,7 +219,7 @@ class SerpClient:
                     )
                 except httpx.RequestError as e:
                     if attempt == 0:
-                        await asyncio.sleep(1.0)
+                        await asyncio.sleep(3.0)
                         continue
                     raise SerpClientError("DataForSEO connection timeout or network error")
                 except Exception as e:

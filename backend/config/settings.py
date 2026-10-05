@@ -52,6 +52,7 @@ class Settings(BaseSettings):
     dataforseo_login: str = ""
     dataforseo_password: str = Field(default="", repr=False)
     serp_daily_limit: int = 100
+    serp_timeout_seconds: float = 90.0
 
     # Security / Access Protection Configuration
     access_code: str = Field(default="", repr=False)
