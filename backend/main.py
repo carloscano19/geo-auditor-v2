@@ -65,6 +65,8 @@ from src.services.serp_client import (
     SerpClientError,
     SerpDailyLimitExceededError,
     get_market_for_language,
+    is_excluded_source,
+    normalize_domain,
 )
 from src.scrapers.playwright_scraper import PlaywrightScraper
 from src.scrapers.base_scraper import ScraperError, ChallengePageError
@@ -998,30 +1000,41 @@ async def generate_ai_plan(request: AIPlanRequest):
 
             # Build candidate sources (max 8, AI Overview first, then Organic top 10, no duplicate domains)
             seen_domains = set()
+            audited_domain = ctx.url or ""
             for src in serp_data.get("ai_overview_sources", []):
+                u = src.get("url") or ""
+                t = src.get("title") or ""
                 dom = (src.get("domain") or "").lower().strip()
-                if dom and dom not in seen_domains:
-                    seen_domains.add(dom)
-                    candidate_sources.append({
-                        "url": src["url"],
-                        "title": src.get("title") or dom,
-                        "domain": dom,
-                        "found_in": "AI Overview",
-                    })
+                if not dom and u:
+                    dom = normalize_domain(u)
+                if dom and not is_excluded_source(dom, url=u, title=t, page_domain=audited_domain):
+                    if dom not in seen_domains:
+                        seen_domains.add(dom)
+                        candidate_sources.append({
+                            "url": u,
+                            "title": t or dom,
+                            "domain": dom,
+                            "found_in": "AI Overview",
+                        })
                 if len(candidate_sources) >= 8:
                     break
 
             if len(candidate_sources) < 8:
                 for src in serp_data.get("organic", []):
+                    u = src.get("url") or ""
+                    t = src.get("title") or ""
                     dom = (src.get("domain") or "").lower().strip()
-                    if dom and dom not in seen_domains:
-                        seen_domains.add(dom)
-                        candidate_sources.append({
-                            "url": src["url"],
-                            "title": src.get("title") or dom,
-                            "domain": dom,
-                            "found_in": "Organic top 10",
-                        })
+                    if not dom and u:
+                        dom = normalize_domain(u)
+                    if dom and not is_excluded_source(dom, url=u, title=t, page_domain=audited_domain):
+                        if dom not in seen_domains:
+                            seen_domains.add(dom)
+                            candidate_sources.append({
+                                "url": u,
+                                "title": t or dom,
+                                "domain": dom,
+                                "found_in": "Organic top 10",
+                            })
                     if len(candidate_sources) >= 8:
                         break
         except SerpDailyLimitExceededError as e:
@@ -1093,7 +1106,7 @@ async def generate_ai_plan(request: AIPlanRequest):
             parts.append(f"Google 'Related Searches' for '{serp_query}':\n{rel_lines}\n* INSTRUCTION: Use these related searches as inspiration for the 'suggested_h2_structure'.")
         if candidate_sources:
             src_lines = "\n".join([f"{i}. [{s['found_in']}] Domain: {s['domain']}, Title: {s['title']}" for i, s in enumerate(candidate_sources, start=1)])
-            parts.append(f"Candidate Sources Found on Google for '{serp_query}':\n{src_lines}\n* INSTRUCTION: For each candidate source (1 to {len(candidate_sources)}), return in 'sources_why' a concise 1-sentence 'why' in {lang_instruction} explaining why or how this audited page should cite/link to it. Do NOT return any URLs.")
+            parts.append(f"Candidate Sources Found on Google for '{serp_query}':\n{src_lines}\n* INSTRUCTION: For each candidate source (1 to {len(candidate_sources)}), evaluate if it is suitable to cite in the text. Return in 'sources_why' a concise 1-sentence 'why' in {lang_instruction} explaining why or how this audited page should cite or link to it. If the source is NOT suitable for citation (such as business/company directories, pages of an unrelated entity or topic, or irrelevant content), return \"why\": null. Do NOT return any URLs.")
         if parts:
             google_context_text = "\n\nReal Google Search Data (from DataForSEO):\n" + "\n\n".join(parts) + "\n"
 
@@ -1103,7 +1116,7 @@ async def generate_ai_plan(request: AIPlanRequest):
   "sources_why": [
     {{
       "index": 1,
-      "why": "Concise sentence (1 sentence only) explaining why this page should reference or cite this source"
+      "why": "Concise 1-sentence explanation why this page should cite this source, or null if unsuitable to cite"
     }}
   ]"""
 
@@ -1200,7 +1213,7 @@ Requirements:
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
 - questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
-- sources_why: For each candidate source, provide 'why' in exactly 1 sentence.
+- sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
 - data_opportunities: 2 to 5 suggestions of data points or factual metrics to strengthen the content. Factual and content data only. PROHIBITED: Do NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).
 - paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
@@ -1466,13 +1479,17 @@ Requirements:
     final_sources_to_cite: list[dict] = []
     if candidate_sources:
         raw_why = raw_result.get("sources_why") or raw_result.get("sources_to_cite_reasons") or raw_result.get("sources_to_cite") or []
-        why_by_index: dict[int, str] = {}
-        why_by_domain: dict[str, str] = {}
+        why_by_index: dict[int, Optional[str]] = {}
+        why_by_domain: dict[str, Optional[str]] = {}
         if isinstance(raw_why, list):
             for item in raw_why:
                 if isinstance(item, dict):
-                    w = str(item.get("why") or "").strip()
-                    w = remove_financial_advice_phrases(w)
+                    w_val = item.get("why")
+                    if w_val is None:
+                        w = None
+                    else:
+                        w = str(w_val).strip()
+                        w = remove_financial_advice_phrases(w)
                     if "index" in item:
                         try:
                             why_by_index[int(item["index"])] = w
@@ -1482,12 +1499,17 @@ Requirements:
                         why_by_domain[item["domain"].lower().strip().replace("www.", "")] = w
         
         for idx, cand in enumerate(candidate_sources, start=1):
-            why_str = why_by_index.get(idx) or why_by_domain.get(cand["domain"]) or ""
-            if not why_str:
-                if lang.startswith("es"):
-                    why_str = "Fuente de referencia relevante para contrastar información sobre este tema."
-                else:
-                    why_str = "Authoritative reference for relevant industry benchmarks and context."
+            why_candidate = why_by_index.get(idx)
+            if why_candidate is None and cand["domain"] in why_by_domain:
+                why_candidate = why_by_domain.get(cand["domain"])
+            
+            # Discard sources where why is null, None, or empty
+            if not why_candidate:
+                continue
+            why_str = str(why_candidate).strip()
+            if not why_str or why_str.lower() in ["null", "none"]:
+                continue
+
             final_sources_to_cite.append({
                 "url": cand["url"],
                 "title": cand["title"],

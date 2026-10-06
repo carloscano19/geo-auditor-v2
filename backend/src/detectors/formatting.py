@@ -132,14 +132,82 @@ class FormattingDetector(BaseDetector):
             # Ignore placeholder alt or empty
             if alt and alt.lower() not in ['image', 'img', 'picture', 'photo']:
                 imgs_with_alt += 1
+
+        # Check for article featured image when outside the extracted content
+        existing_img_srcs = set()
+        for img in img_elements:
+            for attr in ['src', 'data-src', 'data-lazy-src']:
+                val = (img.get(attr) or '').strip()
+                if val:
+                    existing_img_srcs.add(val)
+
+        featured_img_found = None
+        if html:
+            full_soup = BeautifulSoup(html, 'lxml')
+            og_img_tag = full_soup.find('meta', property='og:image') or full_soup.find('meta', attrs={'name': 'og:image'})
+            og_img_url = (og_img_tag.get('content') or '').strip() if og_img_tag else ''
+            featured_keywords = ['hero', 'featured', 'post-thumbnail', 'wp-post-image']
+
+            def _is_in_excluded_section(tag) -> bool:
+                for parent in tag.parents:
+                    if parent.name in ['nav', 'footer', 'aside']:
+                        return True
+                    if parent.name == 'header':
+                        pattrs = " ".join([str(v) for v in parent.attrs.values()]).lower()
+                        if any(k in pattrs for k in ['site', 'global', 'banner', 'main-header']):
+                            return True
+                        if parent.parent and parent.parent.name == 'body':
+                            return True
+                    if parent.name in ['section', 'div', 'aside']:
+                        pattrs = " ".join([str(v) for v in parent.attrs.values()]).lower()
+                        if any(k in pattrs for k in ['related', 'recommend', 'social', 'share']):
+                            return True
+                return False
+
+            for img in full_soup.find_all('img'):
+                if _is_in_excluded_section(img):
+                    continue
+
+                img_attrs_str = " ".join([str(v) for v in img.attrs.values()]).lower()
+                is_featured = any(kw in img_attrs_str for kw in featured_keywords)
+
+                if not is_featured:
+                    for parent in img.parents:
+                        if parent.name in ['body', 'html', '[document]']:
+                            break
+                        pattrs = " ".join([str(v) for v in parent.attrs.values()]).lower()
+                        if any(kw in pattrs for kw in featured_keywords):
+                            is_featured = True
+                            break
+
+                if not is_featured and og_img_url:
+                    for attr in ['src', 'data-src', 'data-lazy-src']:
+                        val = (img.get(attr) or '').strip()
+                        if val and (val in og_img_url or og_img_url in val or val.split('/')[-1] == og_img_url.split('/')[-1]):
+                            is_featured = True
+                            break
+
+                if is_featured:
+                    src_candidates = [(img.get(a) or '').strip() for a in ['src', 'data-src', 'data-lazy-src'] if img.get(a)]
+                    already_in_content = any(s in existing_img_srcs for s in src_candidates)
+                    if not already_in_content:
+                        featured_img_found = img
+                        break
+
+        total_imgs = len(img_elements)
+        if featured_img_found is not None:
+            total_imgs += 1
+            feat_alt = featured_img_found.get('alt', '').strip()
+            if feat_alt and feat_alt.lower() not in ['image', 'img', 'picture', 'photo']:
+                imgs_with_alt += 1
                 
-        total_media = len(img_elements) + len(video_elements)
+        total_media = total_imgs + len(video_elements)
         media_score = 0.0
         status = ""
         
         if total_media > 0:
-            if len(img_elements) > 0:
-                if imgs_with_alt == len(img_elements):
+            if total_imgs > 0:
+                if imgs_with_alt == total_imgs:
                     media_score = 100.0
                     status = "Optimized"
                 elif imgs_with_alt > 0:
@@ -158,7 +226,7 @@ class FormattingDetector(BaseDetector):
         media_recs = []
         if total_media == 0:
             media_recs.append("Add relevant images or video to improve engagement.")
-        if len(img_elements) > 0 and imgs_with_alt < len(img_elements):
+        if total_imgs > 0 and imgs_with_alt < total_imgs:
             media_recs.append("Ensure all images have descriptive 'alt' text.")
             
         if total_media == 0:

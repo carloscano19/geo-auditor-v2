@@ -8,6 +8,7 @@ Includes in-memory 24h caching and domain/social exclusions.
 
 import asyncio
 import logging
+import re
 from datetime import datetime, timezone
 from typing import Optional
 from urllib.parse import urlparse
@@ -21,6 +22,50 @@ logger = logging.getLogger(__name__)
 
 # Social domains to filter from citation sources
 SOCIAL_DOMAINS = LinksDetector.SOCIAL_DOMAINS
+
+# Centralized exclusion lists for candidate sources to cite
+EXCLUDED_IMAGE_VIDEO_DOMAINS: list[str] = [
+    "shutterstock",
+    "istockphoto",
+    "gettyimages",
+    "dreamstime",
+    "alamy",
+    "depositphotos",
+    "123rf",
+    "stock.adobe.com",
+    "pond5",
+    "pexels",
+    "unsplash",
+    "pinterest",
+]
+
+EXCLUDED_SHOP_DOMAINS: list[str] = [
+    "amazon",
+    "ebay",
+    "etsy",
+    "aliexpress",
+]
+
+EXCLUDED_STOCK_TITLE_KEYWORDS: list[str] = [
+    "stock photo",
+    "stock video",
+    "stock footage",
+]
+
+EXCLUDED_STOCK_PATH_KEYWORDS: list[str] = [
+    "/stock-photo",
+    "/stock-video",
+]
+
+IMAGE_DOMAIN_KEYWORDS: list[str] = [
+    "photo",
+    "image",
+    "stock",
+    "video",
+    "footage",
+    "pic",
+    "gallery",
+]
 
 SERP_CACHE_MAX_ENTRIES = 100
 # Cache mapping: key -> (parsed_data, expires_at_timestamp)
@@ -95,14 +140,21 @@ def normalize_domain(domain_or_url: str) -> str:
     return clean.replace("www.", "")
 
 
-def is_excluded_domain(domain: str, url: str, page_domain: str) -> bool:
+def is_excluded_source(domain: str, url: str = "", title: str = "", page_domain: str = "") -> bool:
     """
-    Check if a domain or URL belongs to the audited page or a blocked social network.
+    Check if a candidate source belongs to an excluded category:
+    - The audited page itself
+    - Social networks
+    - Image and video stock banks (shutterstock, istockphoto, etc.)
+    - Any Google domain (google.*, maps.google.*, support.google.*)
+    - Shops (amazon.*, ebay.*, etsy.*, aliexpress.*)
+    - URLs with /stock-photo or /stock-video, or /photos/ or /video/ on image domains
+    - Titles containing stock keywords ("stock photo", "stock video", "stock footage")
     """
     dom = normalize_domain(domain or url)
     if not dom:
         return True
-    
+
     # Check against audited page domain
     if page_domain:
         norm_page_dom = normalize_domain(page_domain)
@@ -114,7 +166,51 @@ def is_excluded_domain(domain: str, url: str, page_domain: str) -> bool:
         if social in dom:
             return True
 
+    # Check against image and video stock banks
+    for img_dom in EXCLUDED_IMAGE_VIDEO_DOMAINS:
+        if img_dom in dom:
+            return True
+
+    # Check against any Google domain
+    if re.search(r"(^|\.)google\.[a-z.]+$", dom):
+        return True
+
+    # Check against shop domains
+    if re.search(r"(^|\.)(amazon|ebay|etsy|aliexpress)\.[a-z.]+$", dom):
+        return True
+
+    # Check against stock title keywords
+    if title:
+        title_lower = title.lower()
+        if any(kw in title_lower for kw in EXCLUDED_STOCK_TITLE_KEYWORDS):
+            return True
+
+    # Check against URL path
+    if url:
+        try:
+            path = urlparse(url).path.lower()
+        except Exception:
+            path = url.lower()
+
+        if any(p_kw in path for p_kw in EXCLUDED_STOCK_PATH_KEYWORDS):
+            return True
+
+        if "/photos/" in path or "/video/" in path:
+            is_image_dom = any(kw in dom for kw in IMAGE_DOMAIN_KEYWORDS) or any(
+                d in dom for d in EXCLUDED_IMAGE_VIDEO_DOMAINS
+            )
+            if is_image_dom:
+                return True
+
     return False
+
+
+def is_excluded_domain(domain: str, url: str, page_domain: str) -> bool:
+    """
+    Check if a domain or URL belongs to the audited page or a blocked domain/source.
+    Preserved for backward compatibility.
+    """
+    return is_excluded_source(domain=domain, url=url, page_domain=page_domain)
 
 
 def get_serp_cache_entry(key: str) -> Optional[dict]:
@@ -336,7 +432,7 @@ class SerpClient:
                         dom = (ref.get("domain") or "").strip()
                         if not dom and url:
                             dom = normalize_domain(url)
-                        if url and dom and not is_excluded_domain(dom, url, page_domain):
+                        if url and dom and not is_excluded_source(dom, url=url, title=title, page_domain=page_domain):
                             ai_overview_sources.append({
                                 "url": url,
                                 "title": title or dom,
@@ -350,7 +446,7 @@ class SerpClient:
                 dom = (item.get("domain") or "").strip()
                 if not dom and url:
                     dom = normalize_domain(url)
-                if url and dom and not is_excluded_domain(dom, url, page_domain):
+                if url and dom and not is_excluded_source(dom, url=url, title=title, page_domain=page_domain):
                     organic.append({
                         "url": url,
                         "title": title or dom,

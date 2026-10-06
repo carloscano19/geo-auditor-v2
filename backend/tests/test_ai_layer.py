@@ -3249,5 +3249,154 @@ async def test_llm_max_tokens_in_request_payload():
         assert payload["max_tokens"] == 16000
 
 
+def test_is_excluded_source_domains_and_patterns():
+    """
+    Test candidate source exclusion list:
+    - Image and video banks (shutterstock, istockphoto, gettyimages, dreamstime, alamy, depositphotos, 123rf, stock.adobe.com, pond5, pexels, unsplash, pinterest)
+    - Google domains (google.*, maps.google.*, support.google.*)
+    - Shops (amazon.*, ebay.*, etsy.*, aliexpress.*)
+    - Social networks
+    - Titles containing "stock photo", "stock video", "stock footage"
+    - URLs with /stock-photo, /stock-video, or /photos/ on image domains
+    - Legitimate sources (wikipedia.org, stadium websites, etc.) are NOT excluded.
+    """
+    from src.services.serp_client import is_excluded_source
+
+    page_dom = "socios.com"
+
+    # Audited page itself
+    assert is_excluded_source("socios.com", page_domain=page_dom) is True
+    assert is_excluded_source("www.socios.com", page_domain=page_dom) is True
+    assert is_excluded_source("blog.socios.com", page_domain=page_dom) is True
+
+    # Image and video banks
+    assert is_excluded_source("dreamstime.com", page_domain=page_dom) is True
+    assert is_excluded_source("istockphoto.com", "https://www.istockphoto.com/photo/velodrome", page_domain=page_dom) is True
+    assert is_excluded_source("shutterstock.com", page_domain=page_dom) is True
+    assert is_excluded_source("gettyimages.com", page_domain=page_dom) is True
+    assert is_excluded_source("alamy.com", page_domain=page_dom) is True
+    assert is_excluded_source("depositphotos.com", page_domain=page_dom) is True
+    assert is_excluded_source("123rf.com", page_domain=page_dom) is True
+    assert is_excluded_source("stock.adobe.com", page_domain=page_dom) is True
+    assert is_excluded_source("pond5.com", page_domain=page_dom) is True
+    assert is_excluded_source("pexels.com", page_domain=page_dom) is True
+    assert is_excluded_source("unsplash.com", page_domain=page_dom) is True
+    assert is_excluded_source("pinterest.com", page_domain=page_dom) is True
+
+    # Google domains
+    assert is_excluded_source("google.com", page_domain=page_dom) is True
+    assert is_excluded_source("maps.google.es", page_domain=page_dom) is True
+    assert is_excluded_source("support.google.com", page_domain=page_dom) is True
+    assert is_excluded_source("google.co.uk", page_domain=page_dom) is True
+
+    # Shops
+    assert is_excluded_source("amazon.com", page_domain=page_dom) is True
+    assert is_excluded_source("amazon.es", "https://www.amazon.es/dp/123", page_domain=page_dom) is True
+    assert is_excluded_source("ebay.com", page_domain=page_dom) is True
+    assert is_excluded_source("etsy.com", page_domain=page_dom) is True
+    assert is_excluded_source("aliexpress.com", page_domain=page_dom) is True
+
+    # Social networks
+    assert is_excluded_source("facebook.com", page_domain=page_dom) is True
+    assert is_excluded_source("x.com", page_domain=page_dom) is True
+    assert is_excluded_source("instagram.com", page_domain=page_dom) is True
+
+    # Stock titles
+    assert is_excluded_source("stadium-news.com", title="CEPAC Velodrome - stock photo collection", page_domain=page_dom) is True
+    assert is_excluded_source("stadium-news.com", title="Marseille fans - stock footage 4K", page_domain=page_dom) is True
+    assert is_excluded_source("stadium-news.com", title="Stadium celebration - stock video", page_domain=page_dom) is True
+
+    # URL path filters
+    assert is_excluded_source("any-domain.com", url="https://any-domain.com/stock-photo/123", page_domain=page_dom) is True
+    assert is_excluded_source("any-domain.com", url="https://any-domain.com/stock-video/123", page_domain=page_dom) is True
+    assert is_excluded_source("photo-press.com", url="https://photo-press.com/photos/marseille", page_domain=page_dom) is True
+
+    # Legitimate non-excluded sources
+    assert is_excluded_source("en.wikipedia.org", "https://en.wikipedia.org/wiki/Stade_V%C3%A9lodrome", title="Stade Velodrome", page_domain=page_dom) is False
+    assert is_excluded_source("stadevelodrome.com", "https://www.stadevelodrome.com/visite", title="Official Stadium Site", page_domain=page_dom) is False
+    assert is_excluded_source("lemonde.fr", "https://www.lemonde.fr/sport/article/marseille", title="Le Monde Sport", page_domain=page_dom) is False
+
+
+def test_sources_to_cite_filters_out_why_null_or_empty():
+    """
+    Test AI relevance filter for candidate sources:
+    - Sources with why: null or empty are discarded.
+    - Sources with why text are kept.
+    - If all sources are discarded, sources_to_cite is empty.
+    """
+    from main import app, ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        dataforseo_login="login1",
+        dataforseo_password="pw1",
+    )
+
+    mock_serp = {
+        "market": "FR/fr",
+        "people_also_ask": [],
+        "related_searches": [],
+        "ai_overview_sources": [
+            {"domain": "source-good.com", "url": "https://source-good.com/info", "title": "Good Source"},
+            {"domain": "source-bad.com", "url": "https://source-bad.com/junk", "title": "Irrelevant Directory"},
+        ],
+        "organic": [
+            {"domain": "source-empty.com", "url": "https://source-empty.com/blank", "title": "Blank Why"},
+        ],
+    }
+
+    mock_llm_plan = {
+        "questions_to_answer": [
+            {"question": "What is the capacity?", "draft_answer": "The capacity is 67,000 spectators.", "answer_source": "page"}
+        ],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+        "sources_why": [
+            {"index": 1, "why": "Authoritative guide on stadium capacity and historical renovations."},
+            {"index": 2, "why": None},  # AI marks as unsuitable (why: null)
+            {"index": 3, "why": ""},    # AI returns empty string
+        ]
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.get_settings", return_value=mock_settings), \
+         patch("src.services.serp_client.SerpClient.fetch_serp_live", new_callable=AsyncMock, return_value=mock_serp), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+
+        mock_llm.side_effect = [
+            {"query": "velodrome stadium"},
+            mock_llm_plan,
+        ]
+
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://www.socios.com/cepac-velodrome-olympique-de-marseille-stadium/",
+                "title": "CEPAC Velodrome",
+                "first_paragraph": "Olympique de Marseille play at the CEPAC Velodrome.",
+                "language": "en",
+                "content_type": "guide_blog",
+                "main_text": "Olympique de Marseille play at the CEPAC Velodrome with capacity of 67,000.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        sources = data["sources_to_cite"]
+
+        # Only source 1 is retained, source 2 (why: None) and source 3 (why: "") are discarded
+        assert len(sources) == 1
+        assert sources[0]["domain"] == "source-good.com"
+        assert sources[0]["url"] == "https://source-good.com/info"
+        assert sources[0]["why"] == "Authoritative guide on stadium capacity and historical renovations."
+
+
+
 
 

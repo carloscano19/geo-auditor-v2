@@ -295,3 +295,147 @@ def test_article_with_many_lists():
     # External banner must not be present
     assert "Quick site notification alert" not in text
 
+
+# ---------------------------------------------------------------------------
+# Tests for Multimedia Content featured image detection (socios_velodrome.html)
+# ---------------------------------------------------------------------------
+
+VELODROME_FIXTURE_PATH = os.path.join(os.path.dirname(__file__), "fixtures", "socios_velodrome.html")
+
+
+@pytest.fixture(scope="module")
+def velodrome_html():
+    """Load the socios.com/cepac-velodrome article fixture once per module."""
+    if not os.path.exists(VELODROME_FIXTURE_PATH):
+        pytest.skip(f"Fixture not found: {VELODROME_FIXTURE_PATH}")
+    with open(VELODROME_FIXTURE_PATH, "r", encoding="utf-8") as f:
+        return f.read()
+
+
+@pytest.mark.asyncio
+async def test_socios_velodrome_multimedia_content_with_featured_image(velodrome_html):
+    """
+    In socios_velodrome.html, the main hero image (OM-BLOG-3a.jpg) is outside
+    the extracted content (div.entry-content) in <div class="sc-blog-single__hero">.
+    The multimedia detector must identify this featured image from the full HTML
+    and return Multimedia Content > 0 (specifically 50.0 due to empty alt text).
+    """
+    from src.detectors.formatting import FormattingDetector
+    from src.models.schemas import PageData
+
+    page_data = PageData(
+        url="https://www.socios.com/cepac-velodrome-olympique-de-marseille-stadium/",
+        final_url="https://www.socios.com/cepac-velodrome-olympique-de-marseille-stadium/",
+        html_raw=velodrome_html,
+        html_rendered=velodrome_html,
+        text_content="Olympique de Marseille (OM) play their home games at the CEPAC Vélodrome...",
+        status_code=200,
+        load_time_ms=120.0,
+    )
+    detector = FormattingDetector()
+    result = await detector.analyze(page_data)
+
+    multimedia_breakdown = next((b for b in result.breakdown if b.name == "Multimedia Content"), None)
+    assert multimedia_breakdown is not None
+    assert multimedia_breakdown.raw_score > 0, (
+        f"Expected Multimedia Content > 0 for page with hero image, got {multimedia_breakdown.raw_score}"
+    )
+    assert multimedia_breakdown.raw_score == 50.0
+    assert "Missing Alt Text: 1 items found" in multimedia_breakdown.explanation
+
+
+@pytest.mark.asyncio
+async def test_page_without_featured_image_multimedia_score_zero():
+    """
+    A page with no images in the article body and no featured image outside
+    must continue to return Multimedia Content score of 0.0 ("No Media: 0 items found.").
+    """
+    from src.detectors.formatting import FormattingDetector
+    from src.models.schemas import PageData
+
+    html_no_media = """
+    <!DOCTYPE html>
+    <html>
+      <head><title>No Media Article</title></head>
+      <body>
+        <header class="site-header">
+          <nav><a href="/">Home</a></nav>
+        </header>
+        <main>
+          <article class="entry-content">
+            <h1>Article Without Images</h1>
+            <p>This is a purely textual article that does not contain any images, videos, or embeds.</p>
+            <p>A second paragraph to ensure the content block is properly recognized as the main content.</p>
+          </article>
+        </main>
+        <footer><p>Copyright 2026</p></footer>
+      </body>
+    </html>
+    """
+    page_data = PageData(
+        url="https://example.com/no-media",
+        final_url="https://example.com/no-media",
+        html_raw=html_no_media,
+        html_rendered=html_no_media,
+        text_content="Article Without Images. This is a purely textual article...",
+        status_code=200,
+        load_time_ms=80.0,
+    )
+    detector = FormattingDetector()
+    result = await detector.analyze(page_data)
+
+    multimedia_breakdown = next((b for b in result.breakdown if b.name == "Multimedia Content"), None)
+    assert multimedia_breakdown is not None
+    assert multimedia_breakdown.raw_score == 0.0
+    assert "No Media: 0 items found" in multimedia_breakdown.explanation
+
+
+@pytest.mark.asyncio
+async def test_page_with_featured_image_and_alt_text_optimized():
+    """
+    A page with a featured image in a hero container with descriptive alt text
+    must score 100.0 ("Optimized: 1 items found.").
+    """
+    from src.detectors.formatting import FormattingDetector
+    from src.models.schemas import PageData
+
+    html_hero_with_alt = """
+    <!DOCTYPE html>
+    <html>
+      <head>
+        <title>Featured Image Article</title>
+        <meta property="og:image" content="https://example.com/images/hero-stadium.jpg" />
+      </head>
+      <body>
+        <header class="site-header"><nav><a href="/">Home</a></nav></header>
+        <main>
+          <div class="article-hero-wrapper">
+            <img src="https://example.com/images/hero-stadium.jpg" class="featured-image wp-post-image" alt="Panoramic view of the stadium during matchday" />
+          </div>
+          <article class="entry-content">
+            <h1>Stadium Architecture</h1>
+            <p>Detailed analysis of modern stadium infrastructure and supporter facilities.</p>
+            <p>Engineering innovations have transformed classic athletic grounds into multi-use complexes.</p>
+          </article>
+        </main>
+      </body>
+    </html>
+    """
+    page_data = PageData(
+        url="https://example.com/stadium",
+        final_url="https://example.com/stadium",
+        html_raw=html_hero_with_alt,
+        html_rendered=html_hero_with_alt,
+        text_content="Stadium Architecture. Detailed analysis of modern stadium infrastructure...",
+        status_code=200,
+        load_time_ms=80.0,
+    )
+    detector = FormattingDetector()
+    result = await detector.analyze(page_data)
+
+    multimedia_breakdown = next((b for b in result.breakdown if b.name == "Multimedia Content"), None)
+    assert multimedia_breakdown is not None
+    assert multimedia_breakdown.raw_score == 100.0
+    assert "Optimized: 1 items found" in multimedia_breakdown.explanation
+
+
