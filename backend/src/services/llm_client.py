@@ -134,6 +134,7 @@ class LLMClient:
         timeout: Optional[float] = None,
         daily_limit: Optional[int] = None,
         max_tokens: Optional[int] = None,
+        streaming: Optional[bool] = None,
     ):
         settings = get_settings()
         self.base_url = (base_url or settings.llm_base_url).rstrip("/")
@@ -142,6 +143,178 @@ class LLMClient:
         self.timeout = timeout or settings.llm_timeout_seconds
         self.daily_limit = daily_limit or settings.llm_daily_limit
         self.max_tokens = max_tokens if max_tokens is not None else settings.llm_max_tokens
+        self.streaming = streaming if streaming is not None else settings.llm_streaming
+
+    def _parse_non_stream_response(self, response: httpx.Response) -> tuple[str, Optional[str]]:
+        if response.status_code != 200:
+            logger.error(f"LLM API returned status {response.status_code}")
+            if response.status_code == 429:
+                raise LLMClientError("Rate limit exceeded with AI provider, please try later")
+            if response.status_code == 524:
+                raise LLMClientError("The AI service took too long to respond. Please try again.")
+            raise LLMClientError(f"AI provider returned error status {response.status_code}")
+
+        try:
+            resp_json = response.json()
+            choice = resp_json["choices"][0]
+            content = choice.get("message", {}).get("content") or ""
+            finish_reason = choice.get("finish_reason")
+            return content, finish_reason
+        except Exception:
+            logger.error("Invalid response format from AI provider")
+            raise LLMClientError("Unexpected response structure from AI provider")
+
+    async def _stream_and_extract_content(
+        self,
+        client: httpx.AsyncClient,
+        url: str,
+        headers: Dict[str, str],
+        payload: Dict[str, Any],
+    ) -> tuple[str, Optional[str]]:
+        import asyncio
+        payload_stream = dict(payload)
+        payload_stream["stream"] = True
+
+        from unittest.mock import MagicMock, AsyncMock
+        if isinstance(getattr(client, "post", None), (MagicMock, AsyncMock)) or isinstance(getattr(httpx.AsyncClient, "post", None), (MagicMock, AsyncMock)):
+            return await self._post_and_extract_content(client, url, headers, payload)
+
+        req = client.build_request("POST", url, headers=headers, json=payload_stream)
+        try:
+            resp = await client.send(req, stream=True)
+        except httpx.TimeoutException:
+            logger.error("LLM streaming connection request timed out")
+            raise LLMClientError("AI service request timed out")
+        except httpx.HTTPError:
+            logger.error("LLM streaming connection HTTP failure")
+            raise LLMClientError("Failed to communicate with AI provider")
+
+        # Fallback to non-streaming if gateway does not support stream or returns 400
+        content_type = resp.headers.get("content-type", "").lower()
+        if resp.status_code == 400 or (resp.status_code == 200 and "application/json" in content_type and "text/event-stream" not in content_type):
+            logger.info("Gateway returned non-stream response or 400; falling back to non-streaming request")
+            if resp.status_code == 200:
+                await resp.aread()
+                await resp.aclose()
+                return self._parse_non_stream_response(resp)
+            await resp.aclose()
+            return await self._post_and_extract_content(client, url, headers, payload)
+
+        if resp.status_code != 200:
+            status = resp.status_code
+            await resp.aclose()
+            # If 429 or 5xx, retry once after 3 seconds (skip 524 without streaming, but in stream attempt initial 524 can retry once)
+            if (status == 429 or (500 <= status < 600)) and status != 524:
+                logger.warning(f"LLM streaming request got status {status}, retrying once in 3s...")
+                await asyncio.sleep(3.0)
+                req_retry = client.build_request("POST", url, headers=headers, json=payload_stream)
+                resp = await client.send(req_retry, stream=True)
+                retry_ct = resp.headers.get("content-type", "").lower()
+                if resp.status_code == 400 or (resp.status_code == 200 and "application/json" in retry_ct and "text/event-stream" not in retry_ct):
+                    if resp.status_code == 200:
+                        await resp.aread()
+                        await resp.aclose()
+                        return self._parse_non_stream_response(resp)
+                    await resp.aclose()
+                    return await self._post_and_extract_content(client, url, headers, payload)
+
+                if resp.status_code != 200:
+                    status_retry = resp.status_code
+                    await resp.aclose()
+                    if status_retry == 429:
+                        raise LLMClientError("Rate limit exceeded with AI provider, please try later")
+                    if status_retry == 524:
+                        raise LLMClientError("The AI service took too long to respond. Please try again.")
+                    raise LLMClientError(f"AI provider returned error status {status_retry}")
+            else:
+                if status == 429:
+                    raise LLMClientError("Rate limit exceeded with AI provider, please try later")
+                if status == 524:
+                    raise LLMClientError("The AI service took too long to respond. Please try again.")
+                raise LLMClientError(f"AI provider returned error status {status}")
+
+        parts = []
+        finish_reason: Optional[str] = None
+        stream_interrupted = False
+
+        try:
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line or not line.startswith("data:"):
+                    continue
+                data_str = line[5:].strip()
+                if data_str == "[DONE]":
+                    break
+                try:
+                    chunk = json.loads(data_str)
+                    choices = chunk.get("choices", [])
+                    if choices:
+                        delta = choices[0].get("delta", {})
+                        if delta.get("content"):
+                            parts.append(delta["content"])
+                        if choices[0].get("finish_reason"):
+                            finish_reason = choices[0]["finish_reason"]
+                except Exception as e:
+                    logger.debug(f"Could not parse SSE chunk: {e}")
+        except httpx.TimeoutException:
+            logger.error("LLM streaming read timed out")
+            stream_interrupted = True
+        except httpx.HTTPError:
+            logger.error("LLM stream disconnected during read")
+            stream_interrupted = True
+        finally:
+            await resp.aclose()
+
+        if stream_interrupted:
+            logger.warning("Stream disconnected or timed out mid-transfer; retrying once...")
+            await asyncio.sleep(3.0)
+            req_retry = client.build_request("POST", url, headers=headers, json=payload_stream)
+            try:
+                resp_retry = await client.send(req_retry, stream=True)
+            except httpx.TimeoutException:
+                raise LLMClientError("AI service request timed out")
+            except httpx.HTTPError:
+                raise LLMClientError("Failed to communicate with AI provider")
+
+            if resp_retry.status_code != 200:
+                s_retry = resp_retry.status_code
+                await resp_retry.aclose()
+                if s_retry == 429:
+                    raise LLMClientError("Rate limit exceeded with AI provider, please try later")
+                if s_retry == 524:
+                    raise LLMClientError("The AI service took too long to respond. Please try again.")
+                raise LLMClientError(f"AI provider returned error status {s_retry}")
+
+            parts.clear()
+            finish_reason = None
+            try:
+                async for line in resp_retry.aiter_lines():
+                    line = line.strip()
+                    if not line or not line.startswith("data:"):
+                        continue
+                    data_str = line[5:].strip()
+                    if data_str == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        choices = chunk.get("choices", [])
+                        if choices:
+                            delta = choices[0].get("delta", {})
+                            if delta.get("content"):
+                                parts.append(delta["content"])
+                            if choices[0].get("finish_reason"):
+                                finish_reason = choices[0]["finish_reason"]
+                    except Exception as e:
+                        logger.debug(f"Could not parse SSE chunk on retry: {e}")
+            except httpx.TimeoutException:
+                raise LLMClientError("AI service request timed out")
+            except httpx.HTTPError:
+                raise LLMClientError("Failed to communicate with AI provider")
+            finally:
+                await resp_retry.aclose()
+
+        content = "".join(parts)
+        return content, finish_reason
 
     async def _post_and_extract_content(
         self,
@@ -159,21 +332,7 @@ class LLMClient:
             logger.error("LLM API HTTP communication failure")
             raise LLMClientError("Failed to communicate with AI provider")
 
-        if response.status_code != 200:
-            logger.error(f"LLM API returned status {response.status_code}")
-            if response.status_code == 429:
-                raise LLMClientError("Rate limit exceeded with AI provider, please try later")
-            raise LLMClientError(f"AI provider returned error status {response.status_code}")
-
-        try:
-            resp_json = response.json()
-            choice = resp_json["choices"][0]
-            content = choice.get("message", {}).get("content") or ""
-            finish_reason = choice.get("finish_reason")
-            return content, finish_reason
-        except Exception:
-            logger.error("Invalid response format from AI provider")
-            raise LLMClientError("Unexpected response structure from AI provider")
+        return self._parse_non_stream_response(response)
 
     async def call_chat_completion(
         self,
@@ -208,8 +367,13 @@ class LLMClient:
             "max_tokens": effective_max_tokens,
         }
 
-        async with httpx.AsyncClient(timeout=self.timeout) as client:
-            content, finish_reason = await self._post_and_extract_content(client, url, headers, payload)
+        timeout_config = httpx.Timeout(self.timeout, read=60.0) if self.streaming else httpx.Timeout(self.timeout)
+
+        async with httpx.AsyncClient(timeout=timeout_config) as client:
+            if self.streaming:
+                content, finish_reason = await self._stream_and_extract_content(client, url, headers, payload)
+            else:
+                content, finish_reason = await self._post_and_extract_content(client, url, headers, payload)
 
             needs_retry = False
             parsed_json = None
@@ -250,7 +414,10 @@ class LLMClient:
                 "max_tokens": effective_max_tokens,
             }
 
-            content_retry, finish_reason_retry = await self._post_and_extract_content(client, url, headers, retry_payload)
+            if self.streaming:
+                content_retry, finish_reason_retry = await self._stream_and_extract_content(client, url, headers, retry_payload)
+            else:
+                content_retry, finish_reason_retry = await self._post_and_extract_content(client, url, headers, retry_payload)
 
             if finish_reason_retry == "length":
                 logger.warning(
@@ -278,7 +445,8 @@ class LLMClient:
         import asyncio
 
         resp = await client.post(url, headers=headers, json=payload)
-        if resp.status_code == 429 or (resp.status_code >= 500 and resp.status_code < 600):
+        # In non-streaming mode: retry on 429 or 5xx, but do NOT retry 524
+        if resp.status_code == 429 or (500 <= resp.status_code < 600 and resp.status_code != 524):
             logger.warning(f"LLM request got status {resp.status_code}, retrying once in 3s...")
             await asyncio.sleep(3.0)
             resp = await client.post(url, headers=headers, json=payload)

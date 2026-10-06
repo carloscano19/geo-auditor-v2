@@ -49,6 +49,7 @@ class Settings(BaseSettings):
     llm_timeout_seconds: float = 45.0
     llm_daily_limit: int = 200
     llm_max_tokens: int = 16000
+    llm_streaming: bool = True
 
     # DataForSEO / SERP Configuration
     dataforseo_login: str = ""

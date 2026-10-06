@@ -1,4 +1,5 @@
 import pytest
+import json
 import hashlib
 import asyncio
 import httpx
@@ -102,21 +103,18 @@ async def test_llm_client_retry_on_429():
         daily_limit=10,
     )
 
-    mock_resp_429 = MagicMock()
-    mock_resp_429.status_code = 429
-    mock_resp_429.json.return_value = {"error": "Rate limit exceeded"}
+    mock_resp_429 = httpx.Response(429, json={"error": "Rate limit exceeded"})
+    mock_resp_200 = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json={"choices": [{"message": {"content": '{"json_ld": {"@type": "Article"}}'}}]}
+    )
 
-    mock_resp_200 = MagicMock()
-    mock_resp_200.status_code = 200
-    mock_resp_200.json.return_value = {
-        "choices": [{"message": {"content": '{"json_ld": {"@type": "Article"}}'}}]
-    }
-
-    with patch("httpx.AsyncClient.post", side_effect=[mock_resp_429, mock_resp_200]) as mock_post, \
+    with patch("httpx.AsyncClient.send", side_effect=[mock_resp_429, mock_resp_200]) as mock_send, \
          patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
         res = await client.call_chat_completion([{"role": "user", "content": "hello"}])
         assert res["json_ld"]["@type"] == "Article"
-        assert mock_post.call_count == 2
+        assert mock_send.call_count == 2
         mock_sleep.assert_called_once_with(3.0)
 
 
@@ -129,11 +127,9 @@ async def test_llm_client_error_sanitization():
         daily_limit=10,
     )
 
-    mock_resp_500 = MagicMock()
-    mock_resp_500.status_code = 500
-    mock_resp_500.text = "Internal error with SUPER_SECRET_KEY_123"
+    mock_resp_500 = httpx.Response(500, text="Internal error with SUPER_SECRET_KEY_123")
 
-    with patch("httpx.AsyncClient.post", side_effect=[mock_resp_500, mock_resp_500]), \
+    with patch("httpx.AsyncClient.send", side_effect=[mock_resp_500, mock_resp_500]), \
          patch("asyncio.sleep", new_callable=AsyncMock):
         with pytest.raises(LLMClientError) as exc_info:
             await client.call_chat_completion([{"role": "user", "content": "hi"}])
@@ -3446,6 +3442,182 @@ def test_sources_to_cite_filters_out_why_null_or_empty():
         assert sources[0]["domain"] == "source-good.com"
         assert sources[0]["url"] == "https://source-good.com/info"
         assert sources[0]["why"] == "Authoritative guide on stadium capacity and historical renovations."
+
+
+# ---------------------------------------------------------------------------
+# 30. LLM Streaming & 524 Handling Tests
+# ---------------------------------------------------------------------------
+
+class MockAsyncIteratorStream(httpx.AsyncByteStream):
+    def __init__(self, chunks: List[bytes]):
+        self.chunks = chunks
+
+    async def __aiter__(self):
+        for chunk in self.chunks:
+            yield chunk
+
+
+@pytest.mark.asyncio
+async def test_llm_streaming_multi_chunk_valid_json():
+    """
+    Test 1: SSE response in multiple fragments forming valid JSON yields correct parsed result.
+    """
+    client = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=True,
+    )
+
+    d1 = {"choices": [{"delta": {"content": '{"result": '}, "finish_reason": None}]}
+    d2 = {"choices": [{"delta": {"content": '"success", '}, "finish_reason": None}]}
+    d3 = {"choices": [{"delta": {"content": '"score": 100}'}, "finish_reason": "stop"}]}
+
+    raw_stream = (
+        f"data: {json.dumps(d1)}\n\n"
+        f"data: {json.dumps(d2)}\n\n"
+        f"data: {json.dumps(d3)}\n\n"
+        f"data: [DONE]\n\n"
+    ).encode("utf-8")
+
+    resp_stream = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=MockAsyncIteratorStream([raw_stream]),
+    )
+
+    with patch("httpx.AsyncClient.send", return_value=resp_stream) as mock_send:
+        res = await client.call_chat_completion([{"role": "user", "content": "hello"}])
+        assert res == {"result": "success", "score": 100}
+        assert mock_send.call_count == 1
+        req = mock_send.call_args[0][0]
+        payload = json.loads(req.content.decode("utf-8"))
+        assert payload.get("stream") is True
+
+
+@pytest.mark.asyncio
+async def test_llm_streaming_finish_reason_length_triggers_retry():
+    """
+    Test 2: SSE response with finish_reason 'length' triggers automatic retry.
+    """
+    client = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=True,
+    )
+
+    d_len = {"choices": [{"delta": {"content": '{"partial": true'}, "finish_reason": "length"}]}
+    raw_stream_len = f"data: {json.dumps(d_len)}\n\ndata: [DONE]\n\n".encode("utf-8")
+    resp_length = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=MockAsyncIteratorStream([raw_stream_len]),
+    )
+
+    d_ok = {"choices": [{"delta": {"content": '{"complete": true}'}, "finish_reason": "stop"}]}
+    raw_stream_ok = f"data: {json.dumps(d_ok)}\n\ndata: [DONE]\n\n".encode("utf-8")
+    resp_ok = httpx.Response(
+        200,
+        headers={"content-type": "text/event-stream"},
+        stream=MockAsyncIteratorStream([raw_stream_ok]),
+    )
+
+    with patch("httpx.AsyncClient.send", side_effect=[resp_length, resp_ok]) as mock_send:
+        res = await client.call_chat_completion([{"role": "user", "content": "test length"}])
+        assert res == {"complete": True}
+        assert mock_send.call_count == 2
+
+
+@pytest.mark.asyncio
+async def test_llm_streaming_fallback_when_gateway_returns_plain_json():
+    """
+    Test 3: Gateway returns plain application/json even though stream=True was requested -> processed normally.
+    """
+    client = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=True,
+    )
+
+    resp_json = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json={"choices": [{"message": {"content": '{"fallback": "json"}'}, "finish_reason": "stop"}]},
+    )
+
+    with patch("httpx.AsyncClient.send", return_value=resp_json) as mock_send:
+        res = await client.call_chat_completion([{"role": "user", "content": "fallback test"}])
+        assert res == {"fallback": "json"}
+
+
+@pytest.mark.asyncio
+async def test_llm_streaming_disabled_setting_omits_stream():
+    """
+    Test 4: When llm_streaming=False, the request payload does not have stream: True.
+    """
+    client = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=False,
+    )
+
+    mock_resp = httpx.Response(
+        200,
+        headers={"content-type": "application/json"},
+        json={"choices": [{"message": {"content": '{"no_stream": true}'}, "finish_reason": "stop"}]},
+    )
+
+    with patch("httpx.AsyncClient.post", return_value=mock_resp) as mock_post:
+        res = await client.call_chat_completion([{"role": "user", "content": "no stream"}])
+        assert res == {"no_stream": True}
+        assert mock_post.call_count == 1
+        payload = mock_post.call_args[1]["json"]
+        assert "stream" not in payload
+
+
+@pytest.mark.asyncio
+async def test_llm_524_error_message_clarity():
+    """
+    Test 5: 524 status from Cloudflare yields user-friendly message and no retry in non-streaming mode.
+    """
+    # Non-streaming 524
+    client_non_stream = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=False,
+    )
+    mock_resp_524 = httpx.Response(524, text="Cloudflare 524 A timeout occurred")
+
+    with patch("httpx.AsyncClient.post", return_value=mock_resp_524) as mock_post, \
+         patch("asyncio.sleep", new_callable=AsyncMock) as mock_sleep:
+        with pytest.raises(LLMClientError) as exc_info:
+            await client_non_stream.call_chat_completion([{"role": "user", "content": "timeout test"}])
+        assert "The AI service took too long to respond. Please try again." in str(exc_info.value)
+        # Verify 524 was not retried in non-streaming mode
+        assert mock_post.call_count == 1
+        mock_sleep.assert_not_called()
+
+    # Streaming 524
+    client_stream = LLMClient(
+        base_url="https://api.test.com",
+        model="gpt-4o",
+        api_key="secret-key",
+        daily_limit=10,
+        streaming=True,
+    )
+    with patch("httpx.AsyncClient.send", return_value=mock_resp_524):
+        with pytest.raises(LLMClientError) as exc_info_stream:
+            await client_stream.call_chat_completion([{"role": "user", "content": "timeout stream"}])
+        assert "The AI service took too long to respond. Please try again." in str(exc_info_stream.value)
 
 
 

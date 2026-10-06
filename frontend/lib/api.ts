@@ -322,6 +322,9 @@ class ApiClient {
 
         if (!response.ok) {
             const detail = typeof data?.detail === 'string' ? data.detail : null;
+            if (response.status === 524 || (detail && (detail.includes('524') || detail.toLowerCase().includes('took too long')))) {
+                throw new Error('The AI service took too long to respond. Please try again.');
+            }
             if (detail) {
                 if (detail.toLowerCase().includes('timed out') || detail.toLowerCase().includes('timeout')) {
                     throw new Error('The AI took too long to respond. Please try again.');
