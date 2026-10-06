@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     # CORS Configuration
     # In production, set GEO_AUDITOR_CORS_ORIGINS='["https://your-frontend.vercel.app"]'
     cors_origins: list[str] = ["http://localhost:3000", "https://carloscanofernandez.com", "http://carloscanofernandez.com"]
+    cors_origin_regex: str = ""
     
     # Scraping Configuration
     scraper_timeout_ms: int = 30000

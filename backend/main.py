@@ -254,12 +254,26 @@ async def access_code_middleware(request: Request, call_next):
     return await call_next(request)
 
 
+class DynamicCORSMiddleware(CORSMiddleware):
+    def is_allowed_origin(self, origin: str) -> bool:
+        if super().is_allowed_origin(origin):
+            return True
+        current_regex = settings.cors_origin_regex if settings else ""
+        if current_regex:
+            try:
+                return bool(re.fullmatch(current_regex, origin))
+            except Exception:
+                return False
+        return False
+
+
 # CORSMiddleware must be the outermost middleware so CORS headers
 # (e.g. access-control-allow-origin) are added to all responses,
 # including 401 and 429 errors from access_code_middleware.
 app.add_middleware(
-    CORSMiddleware,
+    DynamicCORSMiddleware,
     allow_origins=settings.cors_origins,
+    allow_origin_regex=settings.cors_origin_regex or None,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

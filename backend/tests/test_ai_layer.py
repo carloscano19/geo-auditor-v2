@@ -2087,6 +2087,57 @@ def test_access_code_cors_headers():
         assert "x-access-code" in allowed_headers or "*" in allowed_headers
 
 
+def test_cors_origin_regex_headers():
+    from main import reset_failed_auth_attempts
+    reset_failed_auth_attempts()
+    client = TestClient(app)
+    code = "cors-regex-secret"
+    regex_pattern = r"https://geo-auditor-v2(-[a-z0-9-]+)?\.vercel\.app"
+    s = Settings(access_code=code, cors_origin_regex=regex_pattern)
+
+    allowed_vercel_preview = "https://geo-auditor-v2-git-main-abc.vercel.app"
+    allowed_vercel_prod = "https://geo-auditor-v2.vercel.app"
+    disallowed_origin = "https://otro-sitio.vercel.app"
+
+    with patch("main.settings", s), patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        # 1. Matching regex origin receives Access-Control-Allow-Origin
+        r_preview = client.get("/api/health", headers={"Origin": allowed_vercel_preview})
+        assert r_preview.status_code == 200
+        assert r_preview.headers.get("access-control-allow-origin") == allowed_vercel_preview
+
+        r_prod = client.get("/api/health", headers={"Origin": allowed_vercel_prod})
+        assert r_prod.status_code == 200
+        assert r_prod.headers.get("access-control-allow-origin") == allowed_vercel_prod
+
+        # 2. Disallowed origin does NOT receive Access-Control-Allow-Origin
+        r_disallowed = client.get("/api/health", headers={"Origin": disallowed_origin})
+        assert r_disallowed.status_code == 200
+        assert r_disallowed.headers.get("access-control-allow-origin") is None
+
+        # 3. 401 without code includes CORS header for matching origin
+        r_401 = client.post("/api/auth/check", headers={"Origin": allowed_vercel_preview})
+        assert r_401.status_code == 401
+        assert r_401.headers.get("access-control-allow-origin") == allowed_vercel_preview
+
+        # 4. 401 with wrong code includes CORS header for matching origin
+        r_wrong = client.post(
+            "/api/auth/check",
+            headers={"X-Access-Code": "wrong-code", "Origin": allowed_vercel_preview}
+        )
+        assert r_wrong.status_code == 401
+        assert r_wrong.headers.get("access-control-allow-origin") == allowed_vercel_preview
+
+        # 5. 429 rate limit includes CORS header for matching origin
+        for _ in range(11):
+            client.post("/api/auth/check", headers={"X-Access-Code": "bad", "X-Forwarded-For": "198.51.100.99"})
+        r_429 = client.post(
+            "/api/auth/check",
+            headers={"X-Access-Code": "bad", "X-Forwarded-For": "198.51.100.99", "Origin": allowed_vercel_preview}
+        )
+        assert r_429.status_code == 429
+        assert r_429.headers.get("access-control-allow-origin") == allowed_vercel_preview
+
+
 # ---------------------------------------------------------------------------
 # 19. SERP Daily Limit & Fallback Tests
 # ---------------------------------------------------------------------------
