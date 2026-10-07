@@ -2,6 +2,7 @@ import pytest
 import json
 import hashlib
 import asyncio
+from typing import List, Dict, Any, Optional
 import httpx
 from unittest.mock import AsyncMock, patch, MagicMock
 from fastapi.testclient import TestClient
