@@ -21,3 +21,4 @@
 ## Informes
 - No afirmes que algo está hecho sin haberlo verificado ejecutándolo.
 - Si algo no se ha podido hacer o hay dudas, dilo claramente en lugar de dar por supuesto.
+- Actualiza el README en cada rama que cambie variables de entorno, endpoints o el funcionamiento visible.
