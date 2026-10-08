@@ -286,9 +286,11 @@ async def check_access_code():
     return {"status": "ok"}
 
 
-@app.get("/api/health")
-async def health_check():
-    """Health check endpoint."""
+@app.api_route("/api/health", methods=["GET", "HEAD"])
+async def health_check(request: Request):
+    """Health check endpoint. Supports GET and HEAD."""
+    if request.method == "HEAD":
+        return Response(status_code=200)
     return {
         "status": "healthy",
         "version": settings.app_version,

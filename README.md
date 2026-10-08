@@ -6,9 +6,9 @@ A production-ready auditor and optimization engine for Generative Engine Optimiz
 
 ## 1. What It Is
 
-**GEO-AUDITOR AI** scores how ready a web page is to be cited and recommended by AI answer engines—including ChatGPT, Google Gemini, Anthropic Claude, and Perplexity. It explains why a page received its score across deterministic on-page dimensions and generates concrete, actionable fixes.
+**GEO-AUDITOR AI** scores how ready a web page is to be cited and recommended by AI engines—including ChatGPT, Google Gemini, Anthropic Claude, and Perplexity. It explains why a page received its score across deterministic on-page dimensions and generates concrete, actionable fixes.
 
-Built for **SEO, content, and editorial teams** who need to adapt their content strategy beyond traditional search engine rankings towards AI visibility and answer-engine citability.
+Built for **SEO, content, and editorial teams** who need to adapt their content strategy beyond traditional search engine rankings toward AI visibility and answer-engine citability.
 
 - **Live URL:** [https://geo-auditor-v2.vercel.app](https://geo-auditor-v2.vercel.app)
 - **Legacy Redirect:** Traffic to `carloscanofernandez.com/geo-auditor/` is automatically redirected to the Vercel app.
@@ -18,9 +18,9 @@ Built for **SEO, content, and editorial teams** who need to adapt their content 
 ## 2. Features
 
 - **Single URL & Pasted Text Audits:** Audit any live web page by URL (rendered via headless Playwright) or paste raw HTML/plain text directly to analyze staging content or pages behind strict CAPTCHAs.
-- **Target Query Optimization:** Optional query input that enables the **Query Match** scoring dimension and seeds real Google SERP retrieval.
-- **Batch Audits:** Analyze up to 20 URLs concurrently with background job processing, progress reporting, aggregated issues grouped by topic, domain-wide recurring issues, CSV exports, and direct "Analyze with AI" triggers.
-- **Unified AI Recommendations (Single Call):** Generates a complete editorial action plan in a single AI roundtrip:
+- **Target Query Optimization:** Optional query input that adds the **Query Match** dimension and fixes the Google search used for competitive discovery.
+- **Batch Audits:** Analyze up to 20 URLs concurrently with background job processing, progress reporting, aggregated issues grouped by topic, site-wide recurring issues by domain, CSV exports, and direct "Analyze with AI" triggers.
+- **AI Recommendations in One Call:** Generates a complete editorial action plan in a single AI roundtrip:
   - Suggested opening lead paragraph (with strict numerical hallucination protection, investor advice filtering, and non-distorting prose).
   - Content inconsistencies and factual contradictions.
   - Questions to answer (incorporating real Google People Also Ask data).
@@ -30,9 +30,9 @@ Built for **SEO, content, and editorial teams** who need to adapt their content 
   - Authoritative sources to cite (filtered against image banks, e-commerce stores, and Google domains).
   - Draft paragraphs to add.
   - A single, deduplicated, consolidated Schema.org JSON-LD structure (`Article`/`NewsArticle`/`Review`/`Product`).
-- **Dynamic Search Modification / Retry with Google Data:** Change target queries on the fly or retry live Google SERP extraction if previous external calls timed out.
-- **Off-Page Authority via Ahrefs API v3:** Evaluates domain rating, page URL rating, total search traffic, referring domains, and incoming backlink anchor text, returning rule-based off-page recommendations.
-- **Downloadable Word Report (.docx):** Export a client-ready Word document containing the executive summary, score breakdown, failing metrics, and AI recommendations.
+- **Change Search / Retry with Google Data:** Change target queries on the fly or retry live Google SERP extraction if previous external calls timed out.
+- **Off-Page Signals via Ahrefs API v3:** Evaluates domain rating, page URL rating, total search traffic, referring domains, and incoming backlink anchor text, returning rule-based off-page recommendations.
+- **Improvement Report in Word (.docx):** Export a client-ready Word document containing the executive summary, score breakdown, failing metrics, and AI recommendations.
 - **Access Code Gatekeeper:** Optional HMAC-based password protection with IP rate limiting (429 response after 10 consecutive failed attempts within 15 minutes).
 - **Server Cold-Start Management:** The frontend actively checks backend health and displays an informative *"Waking up the server… this can take up to a minute"* state when Render spins up from idle.
 
@@ -109,10 +109,16 @@ The classifier inspects Schema.org entities, URL paths, and opening text in `src
                |                   |                   |
                v                   v                   v
 +-----------------------+ +-----------------+ +-----------------------+
-|  Internal LLM Gateway | |   DataForSEO    | |     Ahrefs API v3     |
-|   hub.culturabuilder  | |  SERP Live Adv  | |   Off-page metrics &  |
+|  Company LLM Gateway  | |   DataForSEO    | |     Ahrefs API v3     |
+| hub.culturabuilder.com| |  SERP Live Adv  | |   Off-page metrics &  |
 |  (SSE Streamed Comps) | | (PAA, Overview) | |   backlink anchors    |
 +-----------------------+ +-----------------+ +-----------------------+
+               ^
+               | Kept awake via
++--------------+--------------+
+|     UptimeRobot Monitor     |
+|   (HEAD /api/health q5m)    |
++-----------------------------+
 ```
 
 - **Frontend:** Next.js 14 static export (`output: 'export'`, `trailingSlash: true`) deployed on Vercel at project `geo-auditor-v2` with Root Directory set to `frontend`.
@@ -121,8 +127,8 @@ The classifier inspects Schema.org entities, URL paths, and opening text in `src
   - **Company LLM Gateway:** OpenAI-compatible API running via SSE streaming (`"stream": true`) through Cloudflare.
   - **DataForSEO:** Live Advanced Google SERP queries retrieving People Also Ask, organic competitors, and AI Overview citations.
   - **Ahrefs API v3:** Domain Rating, URL Rating, search volume, and referring domains.
-- **Legacy Redirect:** GitHub Actions FTP deploy action that pushes a redirect `index.html` referencing `vars.NEW_FRONTEND_URL` to Hostinger on each push to `main`.
-- **Keep-Alive:** Periodic pinging of `/api/health` keeps the Render instance warm.
+- **Legacy Hostinger Redirect:** GitHub Actions FTP deploy action that pushes a redirect `index.html` referencing `vars.NEW_FRONTEND_URL` to Hostinger on each push to `main`.
+- **Keep-Alive:** UptimeRobot monitor pinging `/api/health` every 5 minutes (HEAD/GET) keeps the Render backend awake.
 
 ---
 
@@ -191,7 +197,7 @@ All endpoints except health and version checks enforce `X-Access-Code` authentic
 
 | Method | Path | Purpose | Requires Auth |
 |:---|:---|:---|:---:|
-| `GET` | `/api/health` | Health and keep-alive probe | No |
+| `GET`, `HEAD` | `/api/health` | Health and keep-alive probe (HEAD returns 200 without body) | No |
 | `GET` | `/api/version` | Reports app version, AI enabled, and SERP enabled status | No |
 | `POST` | `/api/auth/check` | Validates provided access code | Yes |
 | `GET` | `/api/scoring-weights` | Returns current weights configuration JSON | Yes |
@@ -261,7 +267,7 @@ If the LLM gateway proxy fails to support Server-Sent Events, set:
 
 ### Keeping the Backend Awake
 On free Render tiers, instances sleep after 15 minutes of inactivity:
-- Set up an external uptime monitor (e.g., UptimeRobot) pinging `https://<backend-url>/api/health` every 5 minutes.
+- Set up an external uptime monitor (e.g., UptimeRobot) pinging `https://<backend-url>/api/health` every 5 minutes (HEAD or GET).
 - Alternatively, upgrade the Render instance to a paid *Starter* plan.
 
 ### Deployment Flow
@@ -335,7 +341,7 @@ npm run build
 
 ## 12. Troubleshooting
 
-- **"Waking up the server…":** Render instance is resuming from spin-down. Wait up to 60 seconds for the service to answer `/api/health`.
+- **"Waking up the server…":** Render instance is resuming from spin-down. Wait up to 60 seconds for the service to answer `/api/health` (check UptimeRobot monitor status).
 - **401 Unauthorized / Invalid Access Code:** Check the access code modal on the frontend and verify that `X-Access-Code` matches `GEO_AUDITOR_ACCESS_CODE`.
 - **"The AI took too long to respond" (Error 524):** The upstream LLM gateway timed out behind Cloudflare (100 s limit). Ensure `GEO_AUDITOR_LLM_STREAMING=true` so tokens stream back immediately.
 - **401 Unauthorized from LLM Provider:** The company gateway authorization token has expired or was revoked. Re-authenticate via `chiliz auth login` and update `GEO_AUDITOR_LLM_API_KEY`.
@@ -351,7 +357,7 @@ npm run build
 
 - **Heuristic On-Page Scoring:** The score evaluates structural and semantic readiness for AI engines; it does not guarantee that a specific LLM will cite the page for every prompt.
 - **Single Page Scope:** The auditor assesses the target URL in isolation rather than sitewide domain authority.
-- **Render Free Tier Quotas:** Free instances provide 512 MB RAM and sleep after inactivity.
+- **Render Free Tier Quotas:** Free instances provide 512 MB RAM and sleep after inactivity without the keep-alive monitor.
 - **In-Memory Volatility:** Rate limits, batch job summaries, and response caches are lost upon service restarts.
 - **Mandatory Editorial Review:** AI-generated paragraphs, schema changes, and leads must be reviewed by humans before publication, especially for regulated or financial topics.
 - **Vercel Hobby Plan:** Intended for non-commercial evaluation; must upgrade to Vercel Pro if officially institutionalized across corporate teams.

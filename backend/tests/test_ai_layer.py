@@ -2038,6 +2038,16 @@ def test_access_code_rate_limiting():
         assert client.get("/api/version", headers={"X-Forwarded-For": "198.51.100.1"}).status_code == 200
 
 
+def test_health_check_head_request():
+    """Verify that HEAD /api/health responds with 200, empty body, and requires no access code."""
+    client = TestClient(app)
+    s = Settings(access_code="secret-gate-code")
+    with patch("main.settings", s), patch("main.get_settings", return_value=s), patch("config.settings.get_settings", return_value=s):
+        res = client.head("/api/health")
+        assert res.status_code == 200
+        assert len(res.content) == 0
+
+
 def test_access_code_cors_headers():
     client = TestClient(app)
     code = "cors-test-code-123"
