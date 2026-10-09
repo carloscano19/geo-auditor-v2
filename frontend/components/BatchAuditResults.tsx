@@ -201,7 +201,7 @@ export default function BatchAuditResults({
     return (
         <div className="space-y-6 animate-fade-in">
             {/* Header card with summary stats & export actions */}
-            <div className="glass-card p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
+            <div className="rounded-card border border-hairline bg-surface p-6 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
                 <div>
                     <div className="flex items-center gap-2 mb-1">
                         <h2 className="text-xl sm:text-2xl font-bold text-slate-900 tracking-tight">
@@ -238,7 +238,7 @@ export default function BatchAuditResults({
                         type="button"
                         onClick={handleDownloadCsv}
                         disabled={isDownloadingCsv}
-                        className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                        className="px-3.5 py-2 btn-default text-xs h-8 px-3 flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                     >
                         <span>📥</span> {isDownloadingCsv ? "Exporting..." : "Export CSV"}
                     </button>
@@ -248,7 +248,7 @@ export default function BatchAuditResults({
                             type="button"
                             onClick={handleDownloadIssuesCsv}
                             disabled={isDownloadingIssues}
-                            className="px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs text-xs font-medium flex items-center gap-1.5 transition-all disabled:opacity-50 cursor-pointer"
+                            className="px-3.5 py-2 btn-default text-xs h-8 px-3 flex items-center gap-1.5 disabled:opacity-50 cursor-pointer"
                         >
                             <span>📋</span> {isDownloadingIssues ? "Exporting..." : "Export Issues"}
                         </button>
@@ -258,7 +258,7 @@ export default function BatchAuditResults({
 
             {/* Section 1: Site-wide Issues */}
             {siteWideIssues.length > 0 && (
-                <div className="glass-card p-6 border-l-4 border-l-amber-500">
+                <div className="rounded-card border border-hairline bg-surface p-6 border-l-4 border-l-amber-500">
                     <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                         <div>
                             <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -280,7 +280,7 @@ export default function BatchAuditResults({
             )}
 
             {/* Section 2: Issues by Topic */}
-            <div className="glass-card p-6">
+            <div className="rounded-card border border-hairline bg-surface p-6">
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div>
                         <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -307,7 +307,7 @@ export default function BatchAuditResults({
             </div>
 
             {/* Section 3: URLs Overview Table */}
-            <div className="glass-card p-6">
+            <div className="rounded-card border border-hairline bg-surface p-6">
                 <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                     <div>
                         <h3 className="text-base font-bold text-slate-900 flex items-center gap-2">
@@ -320,7 +320,7 @@ export default function BatchAuditResults({
                     <button
                         type="button"
                         onClick={toggleSort}
-                        className="text-xs px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 flex items-center gap-1.5 transition-colors cursor-pointer shadow-2xs font-medium"
+                        className="text-xs px-3 py-1.5 btn-default text-xs h-7 px-2.5 flex items-center gap-1.5"
                     >
                         <span>Sort Score:</span>
                         <span className="font-bold text-red-600 font-mono">
@@ -442,7 +442,7 @@ export default function BatchAuditResults({
                         <button
                             type="button"
                             onClick={() => setSelectedItem(null)}
-                            className="px-3 py-1.5 bg-white hover:bg-slate-50 border border-slate-200 rounded-lg text-slate-700 text-xs font-semibold shadow-2xs transition-colors cursor-pointer"
+                            className="px-3 py-1.5 btn-default text-xs h-7 px-2.5 font-semibold"
                         >
                             ✕ Close Report
                         </button>

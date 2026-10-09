@@ -1,10 +1,35 @@
 "use client";
 
 import { useState, useEffect, useRef, useCallback } from "react";
+import {
+  Globe,
+  FileText,
+  ListFilter,
+  Sun,
+  Moon,
+  Laptop,
+  Menu,
+  PanelLeftClose,
+  PanelLeftOpen,
+  CheckCircle2,
+  AlertTriangle,
+  LogOut,
+  Target,
+} from "lucide-react";
 import AuditForm from "@/components/AuditForm";
 import AuditResults from "@/components/AuditResults";
 import BatchAuditResults from "@/components/BatchAuditResults";
 import { apiClient, type AuditResponse, type BatchJobResponse } from "@/lib/api";
+import {
+  ChilizBrandBlock,
+  ChilizTile,
+  Segmented,
+  Tooltip,
+  ViewHeader,
+  Card,
+  Button,
+} from "@/components/ui";
+import { useTheme } from "@/components/theme-provider";
 
 type ModuleId = "url" | "text" | "batch";
 
@@ -21,14 +46,11 @@ const MODULE_NAV_ITEMS: {
     moduleNumber: "Module 1",
     description: "Single page citability analysis",
     icon: (active) => (
-      <svg
-        className={`w-5 h-5 shrink-0 ${active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600"}`}
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9" />
-      </svg>
+      <Globe
+        className={`size-[18px] shrink-0 ${
+          active ? "text-accent" : "text-nav-ink-2 group-hover:text-nav-ink"
+        }`}
+      />
     ),
   },
   {
@@ -37,14 +59,11 @@ const MODULE_NAV_ITEMS: {
     moduleNumber: "Module 2",
     description: "Draft & raw content evaluation",
     icon: (active) => (
-      <svg
-        className={`w-5 h-5 shrink-0 ${active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600"}`}
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
+      <FileText
+        className={`size-[18px] shrink-0 ${
+          active ? "text-accent" : "text-nav-ink-2 group-hover:text-nav-ink"
+        }`}
+      />
     ),
   },
   {
@@ -53,21 +72,20 @@ const MODULE_NAV_ITEMS: {
     moduleNumber: "Module 3",
     description: "Bulk audit up to 20 URLs",
     icon: (active) => (
-      <svg
-        className={`w-5 h-5 shrink-0 ${active ? "text-red-600" : "text-slate-400 group-hover:text-slate-600"}`}
-        fill="none"
-        stroke="currentColor"
-        viewBox="0 0 24 24"
-      >
-        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
-      </svg>
+      <ListFilter
+        className={`size-[18px] shrink-0 ${
+          active ? "text-accent" : "text-nav-ink-2 group-hover:text-nav-ink"
+        }`}
+      />
     ),
   },
 ];
 
 export default function Home() {
+  const { theme, setTheme } = useTheme();
   const [activeModule, setActiveModule] = useState<ModuleId>("url");
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
 
   const [isLoading, setIsLoading] = useState(false);
   const [results, setResults] = useState<AuditResponse | null>(null);
@@ -118,7 +136,6 @@ export default function Home() {
   }, []);
 
   const checkServerAndAuth = useCallback(async () => {
-    // If not responded in 5 seconds, switch to waking_up state
     if (!fiveSecondTimerRef.current) {
       fiveSecondTimerRef.current = setTimeout(() => {
         setServerStatus((prev) => (prev === "checking" ? "waking_up" : prev));
@@ -217,7 +234,7 @@ export default function Home() {
       }
       keysToRemove.forEach((k) => localStorage.removeItem(k));
     } catch {
-      // Ignore in restricted environments
+      // Ignore
     }
 
     checkServerAndAuth();
@@ -339,8 +356,8 @@ export default function Home() {
   // 1. Loading screen
   if (serverStatus === "checking") {
     return (
-      <div className="min-h-screen bg-[#f1f5f9] flex items-center justify-center">
-        <div className="w-10 h-10 border-3 border-slate-200 border-t-red-600 rounded-full animate-spin" />
+      <div className="min-h-screen bg-plane flex items-center justify-center">
+        <div className="w-10 h-10 border-2 border-hairline border-t-accent rounded-full animate-spin" />
       </div>
     );
   }
@@ -348,23 +365,23 @@ export default function Home() {
   // 2. Waking up screen
   if (serverStatus === "waking_up") {
     return (
-      <div className="min-h-screen bg-[#f1f5f9] flex flex-col items-center justify-center p-4 sm:p-6">
+      <div className="min-h-screen bg-plane flex flex-col items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-md text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-red-600 text-white font-bold text-xl shadow-md shadow-red-600/25 mb-4">
-            S
+          <div className="flex justify-center mb-4">
+            <ChilizTile className="size-12" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 mb-6">
+          <h1 className="text-2xl font-display font-bold tracking-tight text-ink mb-6">
             Socios · Chiliz
           </h1>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center space-y-4">
-            <div className="w-10 h-10 border-3 border-slate-200 border-t-red-600 rounded-full animate-spin mx-auto mb-2" />
-            <h2 className="text-base font-bold text-slate-900">
+          <Card elevated className="p-8 text-center space-y-4">
+            <div className="w-10 h-10 border-2 border-hairline border-t-accent rounded-full animate-spin mx-auto mb-2" />
+            <h2 className="text-base font-semibold text-ink">
               Waking up the server… this can take up to a minute.
             </h2>
-            <p className="text-xs text-slate-500 leading-relaxed max-w-xs mx-auto">
+            <p className="text-xs text-ink-3 leading-relaxed max-w-xs mx-auto">
               Render free tier sleeps when inactive. Reconnecting automatically…
             </p>
-          </div>
+          </Card>
         </div>
       </div>
     );
@@ -373,30 +390,32 @@ export default function Home() {
   // 3. Unresponsive screen
   if (serverStatus === "unresponsive") {
     return (
-      <div className="min-h-screen bg-[#f1f5f9] flex flex-col items-center justify-center p-4 sm:p-6">
+      <div className="min-h-screen bg-plane flex flex-col items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-md text-center">
-          <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-red-600 text-white font-bold text-xl shadow-md shadow-red-600/25 mb-4">
-            S
+          <div className="flex justify-center mb-4">
+            <ChilizTile className="size-12" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 mb-6">
+          <h1 className="text-2xl font-display font-bold tracking-tight text-ink mb-6">
             Socios · Chiliz
           </h1>
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-8 text-center space-y-4">
-            <div className="text-3xl">⚠️</div>
-            <h2 className="text-base font-bold text-slate-900">
+          <Card elevated className="p-8 text-center space-y-4">
+            <div className="flex justify-center">
+              <AlertTriangle className="size-10 text-critical" />
+            </div>
+            <h2 className="text-base font-semibold text-ink">
               Server Unresponsive
             </h2>
-            <p className="text-xs text-slate-500 max-w-xs mx-auto">
+            <p className="text-xs text-ink-3 max-w-xs mx-auto">
               The server is not responding. Please try again in a few minutes.
             </p>
-            <button
-              type="button"
+            <Button
+              variant="primary"
               onClick={handleRetryServer}
-              className="w-full py-2.5 px-4 rounded-lg bg-red-600 hover:bg-red-500 text-white font-medium text-sm shadow-sm transition-colors cursor-pointer"
+              className="w-full"
             >
               Retry
-            </button>
-          </div>
+            </Button>
+          </Card>
         </div>
       </div>
     );
@@ -405,26 +424,26 @@ export default function Home() {
   // 4. Access Code Screen
   if (accessRequired && !isAuthenticated) {
     return (
-      <div className="min-h-screen bg-[#f1f5f9] flex flex-col items-center justify-center p-4 sm:p-6">
+      <div className="min-h-screen bg-plane flex flex-col items-center justify-center p-4 sm:p-6">
         <div className="w-full max-w-md">
           <div className="text-center mb-8">
-            <div className="inline-flex items-center justify-center w-12 h-12 rounded-xl bg-red-600 text-white font-bold text-xl shadow-md shadow-red-600/25 mb-4">
-              S
+            <div className="flex justify-center mb-4">
+              <ChilizTile className="size-12" />
             </div>
-            <h1 className="text-2xl font-bold tracking-tight text-slate-900">
+            <h1 className="text-2xl font-display font-bold tracking-tight text-ink">
               Socios · Chiliz
             </h1>
-            <p className="text-sm text-slate-500 mt-1">
+            <p className="text-xs font-semibold tracking-wider uppercase text-brand-lilac mt-1">
               GEO Auditor — Private Access
             </p>
           </div>
 
-          <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-6 sm:p-8">
+          <Card elevated className="p-6 sm:p-8">
             <form onSubmit={handleAuthSubmit} className="space-y-5">
               <div>
                 <label
                   htmlFor="access-code"
-                  className="block text-xs font-semibold uppercase tracking-wider text-slate-700 mb-2"
+                  className="block text-micro font-semibold uppercase tracking-wider text-ink-2 mb-2"
                 >
                   Access code
                 </label>
@@ -439,122 +458,112 @@ export default function Home() {
                   placeholder="Enter access code..."
                   autoFocus
                   disabled={isSubmittingAuth}
-                  className="w-full px-4 py-2.5 rounded-lg bg-slate-50 border border-slate-200 text-slate-900 placeholder:text-slate-400 text-sm focus:outline-none focus:bg-white focus:border-red-500 focus:ring-2 focus:ring-red-500/20 transition-all disabled:opacity-60"
+                  className="input-field"
                 />
                 {authError && (
-                  <div className="mt-3 p-3 rounded-lg bg-red-50 border border-red-200 text-red-700 text-xs flex items-center gap-2">
-                    <span>⚠️</span>
+                  <div className="mt-3 p-3 rounded-control bg-critical-soft border border-critical/30 text-critical text-xs flex items-center gap-2">
+                    <AlertTriangle className="size-4 shrink-0" />
                     <span>{authError}</span>
                   </div>
                 )}
               </div>
 
-              <button
+              <Button
                 type="submit"
+                variant="primary"
                 disabled={isSubmittingAuth || !accessCodeInput.trim()}
-                className="w-full py-2.5 px-4 rounded-lg bg-red-600 hover:bg-red-500 active:bg-red-700 text-white font-medium text-sm shadow-sm transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer"
+                className="w-full"
               >
                 {isSubmittingAuth ? "Checking access..." : "Enter Dashboard"}
-              </button>
+              </Button>
             </form>
 
-            <div className="mt-6 pt-4 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-400">
+            <div className="mt-6 pt-4 border-t border-hairline flex items-center justify-between text-micro text-ink-3">
               <span>Restricted access for authorized personnel</span>
-              <span className="flex items-center gap-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-emerald-500" />
+              <span className="flex items-center gap-1.5 font-medium text-good">
+                <span className="size-1.5 rounded-full bg-good" />
                 Protected
               </span>
             </div>
-          </div>
+          </Card>
         </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-[#f1f5f9] flex flex-col">
+    <div className="min-h-screen bg-plane flex flex-col">
       {/* Mobile Drawer Backdrop */}
       {mobileSidebarOpen && (
         <div
           onClick={() => setMobileSidebarOpen(false)}
-          className="fixed inset-0 z-50 bg-slate-900/40 backdrop-blur-xs transition-opacity lg:hidden"
+          className="fixed inset-0 z-50 bg-scrim backdrop-blur-xs transition-opacity md:hidden"
         />
       )}
 
-      {/* Left Sidebar (Desktop Fixed + Mobile Slide-over Drawer) */}
+      {/* Left Sidebar (Dark Side Menu) */}
       <aside
-        className={`fixed inset-y-0 left-0 z-50 w-72 bg-white border-r border-slate-200 flex flex-col justify-between transition-transform duration-300 ease-in-out lg:translate-x-0 ${
-          mobileSidebarOpen ? "translate-x-0 shadow-2xl" : "-translate-x-full"
+        className={`fixed inset-y-0 left-0 z-50 bg-nav-bg border-r border-nav-line flex flex-col justify-between transition-all duration-300 ease-in-out md:translate-x-0 ${
+          sidebarCollapsed ? "w-18" : "w-64"
+        } ${
+          mobileSidebarOpen
+            ? "translate-x-0 shadow-pop"
+            : "-translate-x-full md:translate-x-0"
         }`}
       >
         <div className="flex flex-col flex-1 min-h-0">
           {/* Brand Block */}
-          <div className="h-16 px-6 border-b border-slate-200 flex items-center justify-between shrink-0">
-            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded-lg bg-red-600 flex items-center justify-center font-bold text-white text-base shadow-sm shadow-red-600/30">
-                S
-              </div>
-              <div className="flex flex-col">
-                <span className="font-bold tracking-tight text-slate-900 text-sm leading-tight">
-                  Socios · Chiliz
-                </span>
-                <span className="text-[11px] text-slate-500 font-medium leading-tight">
-                  GEO Auditor
-                </span>
-              </div>
-            </div>
-
-            {/* Mobile close button */}
-            <button
-              onClick={() => setMobileSidebarOpen(false)}
-              className="p-1 rounded-lg text-slate-400 hover:text-slate-600 hover:bg-slate-100 lg:hidden cursor-pointer"
-              title="Close navigation"
-            >
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M6 18L18 6M6 6l12 12" />
-              </svg>
-            </button>
-          </div>
+          <ChilizBrandBlock
+            collapsed={sidebarCollapsed}
+            subtitle="GEO AUDITOR"
+          />
 
           {/* Navigation Items */}
-          <div className="flex-1 overflow-y-auto px-4 py-6 space-y-6">
+          <div className="flex-1 overflow-y-auto px-3 py-4 space-y-4">
             <div>
-              <div className="px-3 pb-2 text-[10px] font-bold uppercase tracking-wider text-slate-400">
-                Audit Modules
-              </div>
-              <nav className="space-y-1.5">
+              {!sidebarCollapsed ? (
+                <div className="px-3 pb-2 text-micro font-bold tracking-[0.8px] text-nav-ink-3 uppercase select-none">
+                  MAIN
+                </div>
+              ) : (
+                <div className="h-4" />
+              )}
+
+              <nav className="space-y-1">
                 {MODULE_NAV_ITEMS.map((item) => {
                   const isActive = activeModule === item.id;
                   return (
                     <button
                       key={item.id}
                       onClick={() => handleNavSelect(item.id)}
-                      className={`w-full group text-left px-3.5 py-3 rounded-xl transition-all cursor-pointer flex items-center gap-3.5 ${
+                      title={sidebarCollapsed ? `${item.moduleNumber}: ${item.label}` : undefined}
+                      className={`w-full group relative text-left rounded-control transition-all cursor-pointer flex items-center select-none ${
+                        sidebarCollapsed
+                          ? "h-10 justify-center px-0"
+                          : "h-10 px-3 gap-3"
+                      } ${
                         isActive
-                          ? "bg-red-50/70 border border-red-200 text-red-700 shadow-xs"
-                          : "text-slate-600 hover:text-slate-900 hover:bg-slate-50 border border-transparent"
+                          ? "bg-nav-active font-semibold text-nav-active-ink"
+                          : "text-nav-ink-2 hover:bg-nav-hover hover:text-nav-ink"
                       }`}
                     >
+                      {/* Active Indicator Bar */}
+                      {isActive && (
+                        <span
+                          className="absolute inset-y-2 left-0 w-[3px] rounded-full bg-brand"
+                          aria-hidden="true"
+                        />
+                      )}
+
                       <div className="shrink-0">{item.icon(isActive)}</div>
 
-                      <div className="flex-1 min-w-0">
-                        <div className="flex items-center justify-between gap-1.5">
-                          <span
-                            className={`text-xs font-semibold truncate ${
-                              isActive ? "text-slate-900 font-bold" : "text-slate-700 group-hover:text-slate-900"
-                            }`}
-                          >
+                      {!sidebarCollapsed && (
+                        <div className="flex-1 min-w-0 flex items-center justify-between gap-1.5">
+                          <span className="text-sm truncate">
                             {item.label}
                           </span>
                         </div>
-                        <p
-                          className={`text-[11px] truncate ${
-                            isActive ? "text-red-700/80 font-medium" : "text-slate-400"
-                          }`}
-                        >
-                          {item.description}
-                        </p>
-                      </div>
+                      )}
                     </button>
                   );
                 })}
@@ -563,138 +572,199 @@ export default function Home() {
           </div>
         </div>
 
-        {/* Sidebar Footer */}
-        <div className="p-4 border-t border-slate-200 bg-slate-50/50 space-y-2">
-          <div className="flex items-center justify-between px-2 py-1 text-xs">
-            <div className="flex items-center gap-2">
-              <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-              <span className="font-medium text-slate-700 text-[11px]">System Status</span>
+        {/* Sidebar Footer: System Status & Collapse Toggle */}
+        <div className="p-3 border-t border-nav-line bg-white/[0.02] shrink-0 space-y-2">
+          {!sidebarCollapsed ? (
+            <>
+              <div className="flex items-center justify-between px-2 py-1 text-xs">
+                <div className="flex items-center gap-2">
+                  <span className="size-2 rounded-full bg-good animate-pulse" />
+                  <span className="font-medium text-nav-ink-2 text-micro">System</span>
+                </div>
+                <span className="text-[10px] font-mono text-good font-semibold bg-good-soft/20 border border-good/30 px-1.5 py-0.5 rounded">
+                  ONLINE
+                </span>
+              </div>
+              <div className="px-2 pt-1 flex items-center justify-between text-micro text-nav-ink-3 border-t border-nav-line">
+                <span>{version}</span>
+                {accessRequired && (
+                  <button
+                    type="button"
+                    onClick={handleLogout}
+                    className="text-nav-ink-3 hover:text-accent font-medium transition-colors cursor-pointer flex items-center gap-1"
+                  >
+                    <LogOut className="size-3" />
+                    <span>Log out</span>
+                  </button>
+                )}
+              </div>
+              <p className="px-2 text-[10px] text-nav-ink-3 pt-0.5">
+                Built by{" "}
+                <a
+                  href="https://www.linkedin.com/in/carlos-cano-fernandez-seo-aso-manager/"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-nav-ink-2 hover:text-nav-ink underline"
+                >
+                  Carlos Cano Fernandez
+                </a>
+              </p>
+            </>
+          ) : (
+            <div className="flex justify-center py-1">
+              <span className="size-2 rounded-full bg-good" title="System Online" />
             </div>
-            <span className="text-[10px] font-mono text-emerald-700 font-semibold bg-emerald-50 border border-emerald-200 px-1.5 py-0.2 rounded">
-              ONLINE
-            </span>
-          </div>
-          <div className="px-2 pt-1 flex items-center justify-between text-[11px] text-slate-500 border-t border-slate-200/60">
-            <span>{version}</span>
-            {accessRequired && (
-              <button
-                type="button"
-                onClick={handleLogout}
-                className="text-slate-500 hover:text-red-600 font-medium transition-colors cursor-pointer"
-              >
-                Log out
-              </button>
+          )}
+
+          {/* Desktop Collapse Toggle */}
+          <button
+            type="button"
+            onClick={() => setSidebarCollapsed(!sidebarCollapsed)}
+            className={`w-full hidden md:flex items-center rounded-control py-2 text-micro font-medium text-nav-ink-3 hover:text-nav-ink hover:bg-nav-hover transition-colors cursor-pointer select-none ${
+              sidebarCollapsed ? "justify-center px-0" : "justify-between px-2.5"
+            }`}
+            title={sidebarCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          >
+            {!sidebarCollapsed && <span>Collapse</span>}
+            {sidebarCollapsed ? (
+              <PanelLeftOpen className="size-4 shrink-0" />
+            ) : (
+              <PanelLeftClose className="size-4 shrink-0" />
             )}
-          </div>
-          <p className="px-2 text-[10px] text-slate-400 pt-0.5">
-            Built by{" "}
-            <a
-              href="https://www.linkedin.com/in/carlos-cano-fernandez-seo-aso-manager/"
-              target="_blank"
-              rel="noopener noreferrer"
-              className="text-slate-500 hover:text-slate-700 underline"
-            >
-              Carlos Cano Fernandez
-            </a>
-          </p>
+          </button>
         </div>
       </aside>
 
-      {/* Main Content Area (Offset by sidebar width on desktop) */}
-      <div className="flex-1 flex flex-col min-w-0 lg:pl-72">
-        {/* Top Header Bar */}
-        <header className="sticky top-0 z-30 border-b border-slate-200 bg-white/95 backdrop-blur-md shadow-xs no-print">
-          <div className="px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between gap-4">
+      {/* Main Content Area */}
+      <div
+        className={`flex-1 flex flex-col min-w-0 transition-all duration-300 ${
+          sidebarCollapsed ? "md:pl-18" : "md:pl-64"
+        }`}
+      >
+        {/* Sticky Translucent Top Bar */}
+        <header className="sticky top-0 z-30 border-b border-hairline bg-surface/75 backdrop-blur-md no-print">
+          <div className="mx-auto w-full max-w-[1600px] min-h-16 px-4 py-3 sm:px-6 lg:px-8 flex items-center justify-between gap-4">
             <div className="flex items-center gap-3 min-w-0">
               <button
                 type="button"
                 onClick={() => setMobileSidebarOpen(true)}
-                className="p-2 -ml-2 rounded-lg text-slate-600 hover:text-slate-900 hover:bg-slate-100 lg:hidden cursor-pointer"
-                aria-label="Open sidebar"
+                className="p-1.5 -ml-1 rounded-control text-ink-2 hover:text-ink hover:bg-surface-2 md:hidden cursor-pointer"
+                aria-label="Open navigation menu"
               >
-                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
-                </svg>
+                <Menu className="size-5" />
               </button>
 
               <div className="flex items-center gap-2 truncate">
-                <span className="font-semibold tracking-tight text-slate-900 text-sm sm:text-base truncate">
+                <span className="font-semibold text-sm sm:text-[0.9375rem] text-ink truncate">
                   {currentNav.label}
                 </span>
-                <span className="text-slate-400 hidden sm:inline">/</span>
-                <span className="text-slate-500 text-xs hidden sm:inline">
+                <span className="text-hairline-strong hidden sm:inline" aria-hidden="true">
+                  /
+                </span>
+                <span className="text-xs text-ink-2 hidden sm:inline truncate">
                   {currentNav.description}
                 </span>
               </div>
             </div>
 
-            {/* Right Status Badges */}
-            <div className="flex items-center flex-wrap gap-1.5 sm:gap-2 justify-end">
+            {/* Right Status Badges & Theme Switcher */}
+            <div className="flex items-center gap-2 shrink-0">
+              {/* Theme Switcher */}
+              <Segmented
+                size="sm"
+                value={theme}
+                onChange={(val) => setTheme(val as "light" | "dark" | "system")}
+                options={[
+                  {
+                    value: "light",
+                    label: <span className="sr-only">Light</span>,
+                    icon: <Sun className="size-3.5" />,
+                  },
+                  {
+                    value: "dark",
+                    label: <span className="sr-only">Dark</span>,
+                    icon: <Moon className="size-3.5" />,
+                  },
+                  {
+                    value: "system",
+                    label: <span className="sr-only">System</span>,
+                    icon: <Laptop className="size-3.5" />,
+                  },
+                ]}
+                className="hidden sm:inline-flex"
+              />
+
               {/* AI Connected Badge */}
-              <div
-                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
-                  aiEnabled
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                    : "bg-slate-100 border-slate-200 text-slate-500"
-                }`}
-                title={aiEnabled ? "AI Connected (AI model & fixes enabled)" : "AI Disconnected (No API key)"}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${aiEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
-                <span className="hidden sm:inline">AI Connected</span>
-                <span className="sm:hidden">AI</span>
-              </div>
+              <Tooltip content={aiEnabled ? "AI Connected (AI model & fixes enabled)" : "AI Disconnected (No API key)"}>
+                <div
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-micro font-medium border ${
+                    aiEnabled
+                      ? "border-good/30 bg-good-soft text-good"
+                      : "border-hairline bg-surface-2 text-ink-3"
+                  }`}
+                >
+                  <span className={`size-1.5 rounded-full ${aiEnabled ? "bg-good animate-pulse" : "bg-ink-3"}`} />
+                  <span className="hidden sm:inline">AI Connected</span>
+                  <span className="sm:hidden">AI</span>
+                </div>
+              </Tooltip>
 
               {/* Google Data Badge */}
-              <div
-                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
-                  serpEnabled
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                    : "bg-slate-100 border-slate-200 text-slate-500"
-                }`}
-                title={serpEnabled ? "Google Data Connected (Live SERP/PAA enabled)" : "Google Data Disabled"}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${serpEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
-                <span className="hidden sm:inline">Google data</span>
-                <span className="sm:hidden">Google</span>
-              </div>
+              <Tooltip content={serpEnabled ? "Google Data Connected (Live SERP/PAA enabled)" : "Google Data Disabled"}>
+                <div
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-micro font-medium border ${
+                    serpEnabled
+                      ? "border-good/30 bg-good-soft text-good"
+                      : "border-hairline bg-surface-2 text-ink-3"
+                  }`}
+                >
+                  <span className={`size-1.5 rounded-full ${serpEnabled ? "bg-good animate-pulse" : "bg-ink-3"}`} />
+                  <span className="hidden sm:inline">Google data</span>
+                  <span className="sm:hidden">Google</span>
+                </div>
+              </Tooltip>
 
               {/* Ahrefs Badge */}
-              <div
-                className={`inline-flex items-center gap-1.5 px-2 py-0.5 sm:px-2.5 sm:py-1 rounded-full text-xs font-medium border shadow-2xs shrink-0 ${
-                  ahrefsEnabled
-                    ? "bg-emerald-50 border-emerald-200 text-emerald-800"
-                    : "bg-slate-100 border-slate-200 text-slate-500"
-                }`}
-                title={ahrefsEnabled ? "Ahrefs API Connected (Off-page metrics enabled)" : "Ahrefs API Disabled"}
-              >
-                <span className={`w-1.5 h-1.5 rounded-full shrink-0 ${ahrefsEnabled ? "bg-emerald-500 animate-pulse" : "bg-slate-400"}`} />
-                <span>Ahrefs</span>
-              </div>
+              <Tooltip content={ahrefsEnabled ? "Ahrefs API Connected (Off-page metrics enabled)" : "Ahrefs API Disabled"}>
+                <div
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-micro font-medium border ${
+                    ahrefsEnabled
+                      ? "border-good/30 bg-good-soft text-good"
+                      : "border-hairline bg-surface-2 text-ink-3"
+                  }`}
+                >
+                  <span className={`size-1.5 rounded-full ${ahrefsEnabled ? "bg-good animate-pulse" : "bg-ink-3"}`} />
+                  <span>Ahrefs</span>
+                </div>
+              </Tooltip>
             </div>
           </div>
         </header>
 
         {/* Page Content Body */}
         <main className="p-4 sm:p-6 lg:p-8 space-y-6 max-w-7xl mx-auto w-full">
-          {/* Audit Input Card */}
-          <div className="glass-card p-6 no-print">
-            <div className="mb-4">
-              <h2 className="text-base font-bold text-slate-900 tracking-tight">
-                {activeModule === "url"
+          {/* Page Banner / Header */}
+          <div className="no-print">
+            <ViewHeader
+              title={
+                activeModule === "url"
                   ? "Audit Page URL"
                   : activeModule === "text"
                   ? "Audit Raw Content"
-                  : "Batch Audit Multiple URLs"}
-              </h2>
-              <p className="text-xs text-slate-500 mt-0.5">
-                {activeModule === "url"
-                  ? "Evaluate single page citability potential across leading AI engines."
+                  : "Batch Audit Multiple URLs"
+              }
+              description={
+                activeModule === "url"
+                  ? "Evaluate single page citability potential across leading AI engines (ChatGPT, Perplexity, Gemini, Claude)."
                   : activeModule === "text"
-                  ? "Paste draft content or article text before publishing."
-                  : "Audit up to 20 URLs at once to detect site-wide and topic-level issues."}
-              </p>
-            </div>
+                  ? "Paste draft content or article text before publishing to optimize citations."
+                  : "Audit up to 20 URLs at once to detect site-wide and topic-level issues."
+              }
+            />
+          </div>
 
+          {/* Audit Input Card */}
+          <Card elevated className="p-6 no-print">
             <AuditForm
               key={formKey}
               initialUrl={formUrl}
@@ -704,25 +774,25 @@ export default function Home() {
               isLoading={isLoading}
               batchProgress={batchProgress}
             />
-          </div>
+          </Card>
 
           {/* Error Banner */}
           {error && (
-            <div className="p-4 bg-red-50 border border-red-200 rounded-2xl flex items-center gap-3 text-red-700 text-sm shadow-sm">
-              <span className="text-xl">⚠️</span>
+            <div className="p-4 bg-critical-soft border border-critical/30 rounded-card flex items-center gap-3 text-critical text-sm shadow-sm">
+              <AlertTriangle className="size-5 shrink-0" />
               <p className="font-medium">{error}</p>
             </div>
           )}
 
           {/* Loading Card */}
           {isLoading && !batchData && (
-            <div className="glass-card p-12 text-center space-y-4">
-              <div className="w-10 h-10 border-3 border-slate-200 border-t-red-600 rounded-full animate-spin mx-auto" />
-              <h3 className="text-lg font-bold text-slate-900">Analyzing Content...</h3>
-              <p className="text-xs text-slate-500">
+            <Card elevated className="p-12 text-center space-y-4">
+              <div className="w-10 h-10 border-2 border-hairline border-t-accent rounded-full animate-spin mx-auto" />
+              <h3 className="text-lg font-bold text-ink">Analyzing Content...</h3>
+              <p className="text-xs text-ink-3">
                 Running comprehensive citability audit across 11 dimensions...
               </p>
-            </div>
+            </Card>
           )}
 
           {/* Individual Audit Results */}
@@ -742,15 +812,15 @@ export default function Home() {
 
           {/* Ready to Audit State */}
           {!results && !batchData && !isLoading && (
-            <div className="glass-card p-8 sm:p-12 text-center space-y-6">
-              <div className="w-16 h-16 mx-auto rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-3xl font-bold shadow-2xs">
-                🎯
+            <Card elevated className="p-8 sm:p-12 text-center space-y-6">
+              <div className="size-16 mx-auto rounded-card bg-accent-soft text-accent flex items-center justify-center text-3xl font-bold shadow-xs">
+                <Target className="size-8" />
               </div>
               <div className="max-w-md mx-auto space-y-2">
-                <h3 className="text-lg font-bold text-slate-900">
+                <h3 className="text-lg font-bold text-ink">
                   Ready to Audit Content
                 </h3>
-                <p className="text-xs text-slate-500 leading-relaxed">
+                <p className="text-xs text-ink-3 leading-relaxed">
                   Enter a target URL or paste draft text above to evaluate how AI search engines (ChatGPT, Perplexity, Gemini, Claude) perceive, parse, and cite your content.
                 </p>
               </div>
@@ -762,15 +832,15 @@ export default function Home() {
                   { title: "Evidence & Facts Density", desc: "Citations, numbers & verifiable data" },
                   { title: "Off-page Ahrefs Signals", desc: "Backlinks & domain authority check" },
                 ].map((item, idx) => (
-                  <div key={idx} className="p-3.5 bg-slate-50 rounded-xl border border-slate-200/80 space-y-0.5">
-                    <p className="text-xs font-bold text-slate-900 flex items-center gap-1.5">
-                      <span className="text-red-600">✓</span> {item.title}
+                  <div key={idx} className="p-3.5 bg-surface-2 rounded-control border border-hairline space-y-0.5">
+                    <p className="text-xs font-semibold text-ink flex items-center gap-1.5">
+                      <CheckCircle2 className="size-3.5 text-accent" /> {item.title}
                     </p>
-                    <p className="text-[11px] text-slate-500 pl-4">{item.desc}</p>
+                    <p className="text-micro text-ink-3 pl-5">{item.desc}</p>
                   </div>
                 ))}
               </div>
-            </div>
+            </Card>
           )}
         </main>
       </div>

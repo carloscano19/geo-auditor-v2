@@ -458,12 +458,12 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     return (
         <div className="space-y-6 animate-fade-in">
             {/* Persistent Export Bar */}
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-white border border-slate-200 rounded-2xl shadow-2xs no-print">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-surface border border-hairline rounded-card shadow-card no-print">
                 <div className="flex flex-wrap items-center gap-2">
                     <button
                         type="button"
                         onClick={handleCopySummary}
-                        className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                        className="btn-default text-xs h-8 px-3 flex items-center gap-2 cursor-pointer font-medium"
                     >
                         <span>📋</span>
                         <span>Copy Summary for Slack</span>
@@ -471,7 +471,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                     <button
                         type="button"
                         onClick={() => window.print()}
-                        className="text-xs px-3.5 py-2 bg-white hover:bg-slate-50 border border-slate-200 rounded-xl text-slate-700 shadow-2xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                        className="btn-default text-xs h-8 px-3 flex items-center gap-2 cursor-pointer font-medium"
                     >
                         <span>🖨️</span>
                         <span>Print PDF</span>
@@ -482,7 +482,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                         type="button"
                         onClick={handleDownloadEditorBrief}
                         disabled={isBriefDownloading}
-                        className="text-xs px-3.5 py-2 bg-red-600 hover:bg-red-500 disabled:opacity-50 text-white rounded-xl shadow-xs transition-all flex items-center gap-2 cursor-pointer font-medium"
+                        className="btn-primary text-xs h-8 px-3.5 flex items-center gap-2 cursor-pointer font-medium"
                     >
                         {isBriefDownloading ? (
                             <>
@@ -514,14 +514,14 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             </div>
 
             {/* Tab Navigation Switcher */}
-            <div className="flex items-center gap-2 border-b border-slate-200 pb-3 no-print">
+            <div className="flex items-center gap-2 border-b border-hairline pb-3 no-print">
                 <button
                     type="button"
                     onClick={() => setActiveTab("overview")}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                    className={`px-4 py-2 rounded-control text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 select-none ${
                         activeTab === "overview"
-                            ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
-                            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                            ? "bg-ink text-surface shadow-sm"
+                            : "text-ink-2 hover:text-ink hover:bg-surface-2"
                     }`}
                 >
                     <span>📊</span>
@@ -530,15 +530,17 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                 <button
                     type="button"
                     onClick={() => setActiveTab("dimensions")}
-                    className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                    className={`px-4 py-2 rounded-control text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 select-none ${
                         activeTab === "dimensions"
-                            ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
-                            : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                            ? "bg-ink text-surface shadow-sm"
+                            : "text-ink-2 hover:text-ink hover:bg-surface-2"
                     }`}
                 >
                     <span>📑</span>
                     <span>Dimensions</span>
-                    <span className="text-[10px] px-1.5 py-0.2 rounded-full font-mono font-bold bg-slate-200/80 text-slate-700">
+                    <span className={`text-micro px-1.5 py-0.2 rounded-full font-mono font-bold ${
+                        activeTab === "dimensions" ? "bg-surface text-ink" : "bg-surface-2 text-ink-2 border border-hairline"
+                    }`}>
                         {results.detector_results.length}
                     </span>
                 </button>
@@ -546,16 +548,16 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                     <button
                         type="button"
                         onClick={() => setActiveTab("ai_plan")}
-                        className={`px-4 py-2 rounded-xl text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 ${
+                        className={`px-4 py-2 rounded-control text-xs font-semibold transition-all cursor-pointer flex items-center gap-2 select-none ${
                             activeTab === "ai_plan"
-                                ? "bg-red-50 text-red-700 border border-red-200 shadow-2xs"
-                                : "text-slate-600 hover:text-slate-900 hover:bg-slate-100 border border-transparent"
+                                ? "bg-ink text-surface shadow-sm"
+                                : "text-ink-2 hover:text-ink hover:bg-surface-2"
                         }`}
                     >
                         <span>✨</span>
                         <span>AI Plan</span>
                         {aiPlan && (
-                            <span className="w-2 h-2 rounded-full bg-red-600 animate-pulse" />
+                            <span className="size-2 rounded-full bg-accent animate-pulse" />
                         )}
                     </button>
                 )}
@@ -564,7 +566,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             {/* TAB 1: OVERVIEW */}
             <div className={`space-y-6 ${activeTab === "overview" ? "block" : "hidden print:block"}`}>
                 {/* Score & Meta Card */}
-                <div className="glass-card p-6 sm:p-8">
+                <div className="rounded-card border border-hairline bg-surface p-6 sm:p-8">
                     <div className="flex flex-col lg:flex-row items-center gap-8">
                         {/* Score Circle */}
                         <div className="flex flex-col items-center shrink-0">
@@ -621,7 +623,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                 </div>
 
                 {/* Top 5 Actions Card */}
-                <div className="glass-card p-6">
+                <div className="rounded-card border border-hairline bg-surface p-6">
                     <div className="flex items-center justify-between mb-4 flex-wrap gap-2">
                         <div className="flex items-center gap-2.5">
                             <div className="w-8 h-8 rounded-lg bg-red-100 text-red-700 flex items-center justify-center text-sm font-bold shadow-2xs">
@@ -679,7 +681,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                 {/* Off-page Signals (Ahrefs) Card */}
                 {results.url && (
-                    <div className="glass-card p-6">
+                    <div className="rounded-card border border-hairline bg-surface p-6">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 mb-4">
                             <div className="flex items-center gap-2.5">
                                 <div className="w-8 h-8 rounded-lg bg-orange-100 text-orange-700 flex items-center justify-center text-sm font-bold shadow-2xs">
@@ -882,7 +884,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                 )}
 
                 {/* Not Measured by this Tool Card */}
-                <div className="glass-card p-6">
+                <div className="rounded-card border border-hairline bg-surface p-6">
                     <div className="flex items-center gap-2.5 mb-2">
                         <div className="w-8 h-8 rounded-lg bg-slate-100 text-slate-700 flex items-center justify-center text-sm font-bold shadow-2xs">
                             ℹ️
@@ -978,7 +980,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             {!hideAiFixes && results.ai_context && (
                 <div className={`space-y-6 ${activeTab === "ai_plan" ? "block" : "hidden print:block"}`}>
                     {/* Header info card */}
-                    <div className="glass-card p-6 border-slate-200">
+                    <div className="rounded-card border border-hairline bg-surface p-6 border-slate-200">
                         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
                             <div>
                                 <div className="flex items-center gap-2">
@@ -1017,7 +1019,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                     {/* Empty State when plan not generated yet */}
                     {!aiPlan && !isPlanLoading && !aiPlanError && (
-                        <div className="glass-card p-10 text-center space-y-4">
+                        <div className="rounded-card border border-hairline bg-surface p-10 text-center space-y-4">
                             <div className="w-12 h-12 mx-auto rounded-2xl bg-red-50 text-red-600 flex items-center justify-center text-2xl font-bold shadow-2xs">
                                 ✨
                             </div>
@@ -1044,7 +1046,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                     {/* Full Plan Error Notice with Retry */}
                     {aiPlanError && (
-                        <div className="glass-card p-4 border-amber-200 bg-amber-50/50">
+                        <div className="rounded-card border border-hairline bg-surface p-4 border-amber-200 bg-amber-50/50">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
                                 <div className="flex items-center gap-2 text-xs text-amber-800 font-medium">
                                     <span>⚠️</span>
@@ -1064,7 +1066,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                     {/* Full Improvement Plan Output */}
                     {aiPlan && (
-                        <div className="glass-card p-6 space-y-6">
+                        <div className="rounded-card border border-hairline bg-surface p-6 space-y-6">
                             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pb-3 border-b border-slate-100">
                                 <div>
                                     <h4 className="text-base font-bold text-slate-900 flex items-center gap-2">

@@ -1,6 +1,8 @@
 "use client";
 
 import { useState, useEffect, FormEvent } from "react";
+import { Globe, FileText, Target, Loader2, Play } from "lucide-react";
+import { Button } from "@/components/ui/button";
 
 interface AuditFormProps {
     onSubmit: (url: string | null, text: string | null, targetQuery?: string) => void;
@@ -78,19 +80,19 @@ export default function AuditForm({
     };
 
     return (
-        <form onSubmit={handleSubmit} className="space-y-5">
+        <form onSubmit={handleSubmit} className="space-y-4">
             {mode === "url" ? (
                 /* URL Input */
                 <div className="space-y-1.5">
                     <label
                         htmlFor="url"
-                        className="block text-xs font-semibold uppercase tracking-wider text-slate-700"
+                        className="block text-micro font-semibold uppercase tracking-wider text-ink-2"
                     >
                         Target URL
                     </label>
                     <div className="relative">
-                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                            <span className="text-base">🌐</span>
+                        <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
+                            <Globe className="size-4" />
                         </div>
                         <input
                             type="url"
@@ -98,7 +100,7 @@ export default function AuditForm({
                             value={url}
                             onChange={(e) => setUrl(e.target.value)}
                             placeholder="https://example.com/article"
-                            className="input-field pl-11"
+                            className="input-field pl-10"
                             required
                             disabled={isLoading}
                         />
@@ -110,13 +112,13 @@ export default function AuditForm({
                     <div className="space-y-1.5">
                         <label
                             htmlFor="title"
-                            className="block text-xs font-semibold uppercase tracking-wider text-slate-700"
+                            className="block text-micro font-semibold uppercase tracking-wider text-ink-2"
                         >
                             Article Title (H1)
                         </label>
                         <div className="relative">
-                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                                <span className="text-base">📝</span>
+                            <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
+                                <FileText className="size-4" />
                             </div>
                             <input
                                 type="text"
@@ -124,7 +126,7 @@ export default function AuditForm({
                                 value={title}
                                 onChange={(e) => setTitle(e.target.value)}
                                 placeholder="e.g. What Are Fan Tokens and How Do They Work?"
-                                className="input-field pl-11"
+                                className="input-field pl-10"
                                 disabled={isLoading}
                             />
                         </div>
@@ -133,7 +135,7 @@ export default function AuditForm({
                     <div className="space-y-1.5">
                         <label
                             htmlFor="body"
-                            className="block text-xs font-semibold uppercase tracking-wider text-slate-700"
+                            className="block text-micro font-semibold uppercase tracking-wider text-ink-2"
                         >
                             Content Body
                         </label>
@@ -142,7 +144,7 @@ export default function AuditForm({
                             value={body}
                             onChange={(e) => setBody(e.target.value)}
                             placeholder="Paste your article content here (without the title)..."
-                            className="input-field min-h-[160px] font-mono text-xs leading-relaxed"
+                            className="w-full bg-surface-2 border border-hairline rounded-control p-3.5 text-xs font-mono leading-relaxed text-ink placeholder:text-ink-3 focus:outline-none focus:border-accent focus:bg-surface min-h-[160px] transition-colors"
                             required
                             disabled={isLoading}
                         />
@@ -154,11 +156,11 @@ export default function AuditForm({
                     <div className="flex items-center justify-between">
                         <label
                             htmlFor="batchUrls"
-                            className="block text-xs font-semibold uppercase tracking-wider text-slate-700"
+                            className="block text-micro font-semibold uppercase tracking-wider text-ink-2"
                         >
                             Target URLs (1 per line)
                         </label>
-                        <span className="text-[11px] font-mono text-slate-400">
+                        <span className="text-micro font-mono text-ink-3">
                             Max 20 URLs
                         </span>
                     </div>
@@ -167,12 +169,12 @@ export default function AuditForm({
                         value={batchUrlsText}
                         onChange={(e) => setBatchUrlsText(e.target.value)}
                         placeholder={"https://example.com/page-1\nhttps://example.com/page-2\nhttps://example.com/page-3"}
-                        className="input-field min-h-[140px] font-mono text-xs leading-relaxed"
+                        className="w-full bg-surface-2 border border-hairline rounded-control p-3.5 text-xs font-mono leading-relaxed text-ink placeholder:text-ink-3 focus:outline-none focus:border-accent focus:bg-surface min-h-[140px] transition-colors"
                         required
                         disabled={isLoading}
                     />
                     {batchError && (
-                        <p className="text-xs text-red-600 font-medium mt-1">
+                        <p className="text-xs text-critical font-medium mt-1">
                             {batchError}
                         </p>
                     )}
@@ -183,13 +185,13 @@ export default function AuditForm({
             <div className="space-y-1.5">
                 <label
                     htmlFor="targetQuery"
-                    className="block text-xs font-semibold uppercase tracking-wider text-slate-700"
+                    className="block text-micro font-semibold uppercase tracking-wider text-ink-2"
                 >
-                    Target query <span className="text-[11px] text-slate-400 font-normal lowercase">(optional)</span>
+                    Target query <span className="text-micro text-ink-3 font-normal lowercase">(optional)</span>
                 </label>
                 <div className="relative">
-                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-slate-400">
-                        <span className="text-base">🎯</span>
+                    <div className="absolute inset-y-0 left-0 pl-3.5 flex items-center pointer-events-none text-ink-3">
+                        <Target className="size-4" />
                     </div>
                     <input
                         type="text"
@@ -197,7 +199,7 @@ export default function AuditForm({
                         value={targetQuery}
                         onChange={(e) => setTargetQuery(e.target.value)}
                         placeholder="e.g. best running shoes for flat feet"
-                        className="input-field pl-11"
+                        className="input-field pl-10"
                         disabled={isLoading}
                     />
                 </div>
@@ -205,16 +207,16 @@ export default function AuditForm({
 
             {/* Batch Progress Bar */}
             {isLoading && batchProgress && batchProgress.total > 0 && (
-                <div className="space-y-2 p-3 bg-slate-50 rounded-xl border border-slate-200">
-                    <div className="flex justify-between text-xs text-slate-600 font-medium">
+                <div className="space-y-2 p-3 bg-surface-2 rounded-control border border-hairline">
+                    <div className="flex justify-between text-xs text-ink-2 font-medium">
                         <span>Auditing URLs...</span>
-                        <span className="font-mono font-bold text-red-600">
+                        <span className="font-mono font-bold text-accent">
                             {batchProgress.completed} / {batchProgress.total}
                         </span>
                     </div>
-                    <div className="w-full h-2 bg-slate-200 rounded-full overflow-hidden">
+                    <div className="w-full h-1.5 bg-hairline rounded-full overflow-hidden">
                         <div
-                            className="h-full bg-red-600 transition-all duration-300 rounded-full"
+                            className="h-full bg-accent transition-all duration-300 rounded-full"
                             style={{
                                 width: `${Math.round((batchProgress.completed / batchProgress.total) * 100)}%`
                             }}
@@ -224,58 +226,29 @@ export default function AuditForm({
             )}
 
             {/* Submit Button */}
-            <button
+            <Button
                 type="submit"
+                variant="primary"
                 disabled={
                     isLoading ||
                     (mode === "url" && !url.trim()) ||
                     (mode === "text" && !body.trim()) ||
                     (mode === "batch" && !batchUrlsText.trim())
                 }
-                className="w-full btn-primary"
+                className="w-full"
             >
                 {isLoading ? (
                     <>
-                        <svg
-                            className="animate-spin h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                        >
-                            <circle
-                                className="opacity-25"
-                                cx="12"
-                                cy="12"
-                                r="10"
-                                stroke="currentColor"
-                                strokeWidth="4"
-                            />
-                            <path
-                                className="opacity-75"
-                                fill="currentColor"
-                                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"
-                            />
-                        </svg>
+                        <Loader2 className="size-4 animate-spin" />
                         <span>{mode === "batch" ? "Processing Batch..." : "Analyzing Content..."}</span>
                     </>
                 ) : (
                     <>
-                        <svg
-                            className="h-4 w-4"
-                            fill="none"
-                            viewBox="0 0 24 24"
-                            stroke="currentColor"
-                        >
-                            <path
-                                strokeLinecap="round"
-                                strokeLinejoin="round"
-                                strokeWidth={2}
-                                d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"
-                            />
-                        </svg>
+                        <Play className="size-4 fill-current" />
                         <span>{mode === "batch" ? "Run Batch Audit" : "Run Audit"}</span>
                     </>
                 )}
-            </button>
+            </Button>
         </form>
     );
 }

@@ -1,19 +1,115 @@
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 :root {
-  --background: #f1f5f9;
-  --foreground: #0f172a;
-  --font-sans: -apple-system, BlinkMacSystemFont, "Inter", "Segoe UI", Roboto, sans-serif;
+  /* Brand constants: identical in both themes */
+  --brand: #ff0052;
+  --brand-lilac: #cf85ff;
+  --night: #0a0516;
+  --night-2: #140927;
+
+  --plane: #f6f5fa;          /* page under the cards */
+  --surface: #ffffff;        /* cards */
+  --surface-2: #f4f2f8;      /* recessed: table heads, tracks, hover */
+  --hairline: #e9e6f0;
+  --hairline-strong: #d6d1e0;
+  --ink: #0b0518;
+  --ink-2: #4b4560;
+  --ink-3: #6e6882;
+
+  /* Accent = Chiliz red stepped for text (5.5:1 on white). Interactive ONLY. */
+  --accent: #d10045;
+  --accent-hover: #b3003b;
+  --accent-on: #ffffff;
+  --accent-soft: #ffe9f0;
+
+  /* Data & Status */
+  --verified: #4f5764;
+  --spoofed: #9070d1;
+  --spoofed-soft: #f0eafb;
+  --s2xx: #0ca30c; --s3xx: #2a78d6; --s4xx: #d98c00; --s5xx: #d03b3b;
+
+  --good: #0f7a29;     --good-soft: #e3f5e8;
+  --warn: #a06a00;     --warn-soft: #fdf2dd;
+  --critical: #b42318; --critical-soft: #fdecea;
+  --info: #2563be;     --info-soft: #e7effc;
+
+  --grid: #eeecf3;
+
+  /* Series */
+  --series-1: #2a78d6; --series-2: #eb6834; --series-3: #1baf7a; --series-4: #eda100;
+  --series-5: #e87ba4; --series-6: #008300; --series-7: #4a3aa7; --series-8: #e34948;
+
+  /* Side menu: night in both themes */
+  --nav-bg: #0a0516;
+  --nav-ink: #f3f0f9;
+  --nav-ink-2: #a69eba;
+  --nav-ink-3: #8b84a3;
+  --nav-hover: rgb(255 255 255 / 0.06);
+  --nav-active: rgb(255 0 82 / 0.16);
+  --nav-active-ink: #ff5c8d;
+  --nav-line: rgb(255 255 255 / 0.08);
+
+  /* The landing banner: night with lilac and red glows */
+  --banner:
+    radial-gradient(120% 140% at 100% 0%, rgb(207 133 255 / 0.32) 0%, transparent 55%),
+    radial-gradient(80% 120% at 0% 100%, rgb(255 0 82 / 0.22) 0%, transparent 60%),
+    linear-gradient(135deg, #1a0b33 0%, #0f0620 55%, #0a0516 100%);
+
+  /* Elevation */
+  --elevation-card: 0 1px 2px rgb(11 5 24 / 0.04), 0 4px 16px rgb(11 5 24 / 0.05);
+  --elevation-pop: 0 12px 32px rgb(11 5 24 / 0.16);
+  --elevation-banner: 0 8px 32px rgb(76 29 149 / 0.25), 0 2px 8px rgb(0 0 0 / 0.08);
+  --scrim: rgb(11 5 24 / 0.5);
+
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-display: "Space Grotesk", "Inter", -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+}
+
+.dark {
+  --plane: #0a0516;
+  --surface: #130a24;
+  --surface-2: #1b1030;
+  --hairline: #2a1f40;
+  --hairline-strong: #3d3057;
+  --ink: #f3f0f9;
+  --ink-2: #b9b1cc;
+  --ink-3: #9890ae;
+
+  --accent: #ff4d85;
+  --accent-hover: #ff7aa2;
+  --accent-on: #0b0518;
+  --accent-soft: #2a0e22;
+
+  --verified: #7d8694;
+  --spoofed: #ad93e0;
+  --spoofed-soft: #241f36;
+  --s2xx: #22b422; --s3xx: #4b90e2; --s4xx: #f0b429; --s5xx: #e05a5a;
+
+  --good: #3ec46a;     --good-soft: #10291a;
+  --warn: #e0a92b;     --warn-soft: #2b2010;
+  --critical: #f97066; --critical-soft: #331414;
+  --info: #6aa5f5;     --info-soft: #111f3a;
+
+  --grid: #221838;
+
+  --series-1: #3987e5; --series-2: #d95926; --series-3: #199e70; --series-4: #c98500;
+  --series-5: #d55181; --series-6: #008300; --series-7: #9085e9; --series-8: #e66767;
+
+  --nav-bg: #07030f;
+
+  --elevation-card: 0 4px 20px rgb(0 0 0 / 0.3);
+  --elevation-pop: 0 12px 32px rgb(0 0 0 / 0.55);
+  --elevation-banner: 0 8px 32px rgb(0 0 0 / 0.45);
+  --scrim: rgb(0 0 0 / 0.65);
 }
 
 * {
   box-sizing: border-box;
-  margin: 0;
-  padding: 0;
 }
 
 html, body {
@@ -22,17 +118,24 @@ html, body {
 
 html {
   scroll-behavior: smooth;
+  color-scheme: light;
+}
+
+html.dark {
+  color-scheme: dark;
 }
 
 body {
-  background: #f1f5f9;
-  color: #0f172a;
+  background: var(--plane);
+  color: var(--ink);
   font-family: var(--font-sans);
+  font-size: 0.8125rem;
+  line-height: 1.45;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* Custom scrollbar matching LLM-dashboard */
+/* Custom scrollbars */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -43,94 +146,34 @@ body {
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: var(--hairline-strong);
   border-radius: 9999px;
 }
 
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
+  background: var(--ink-3);
 }
 
-/* Utility classes for GEO-AUDITOR */
+/* Reusable legacy/modern component utilities matching Chiliz system */
 @layer components {
   .glass-card {
-    @apply bg-white border border-slate-200/90 rounded-2xl shadow-sm shadow-slate-200/50 transition-all;
-  }
-
-  .score-badge {
-    @apply inline-flex items-center justify-center px-2.5 py-0.5 rounded-full text-xs font-semibold;
-  }
-
-  .score-badge-excellent {
-    @apply bg-emerald-50 border border-emerald-200 text-emerald-700;
-  }
-
-  .score-badge-good {
-    @apply bg-lime-50 border border-lime-200 text-lime-700;
-  }
-
-  .score-badge-warning {
-    @apply bg-amber-50 border border-amber-200 text-amber-800;
-  }
-
-  .score-badge-poor {
-    @apply bg-orange-50 border border-orange-200 text-orange-700;
-  }
-
-  .score-badge-critical {
-    @apply bg-red-50 border border-red-200 text-red-700;
+    @apply rounded-card border border-hairline bg-surface shadow-card transition-colors;
   }
 
   .btn-primary {
-    @apply inline-flex items-center justify-center gap-2 px-5 py-2.5 rounded-xl text-sm font-medium bg-red-600 hover:bg-red-500 active:bg-red-700 text-white shadow-sm shadow-red-600/20 transition-all disabled:opacity-60 disabled:cursor-not-allowed disabled:bg-red-600 disabled:hover:bg-red-600 cursor-pointer;
+    @apply inline-flex items-center justify-center gap-2 h-9 px-4 rounded-control text-[0.8125rem] font-semibold bg-accent text-accent-on shadow-sm hover:bg-accent-hover active:opacity-90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none;
+  }
+
+  .btn-default {
+    @apply inline-flex items-center justify-center gap-2 h-9 px-4 rounded-control text-[0.8125rem] font-semibold border border-hairline bg-surface text-ink hover:border-hairline-strong hover:bg-surface-2 dark:bg-surface-2 transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none;
+  }
+
+  .btn-ghost {
+    @apply inline-flex items-center justify-center gap-2 h-9 px-3 rounded-control text-[0.8125rem] font-semibold text-ink-2 hover:bg-surface-2 hover:text-ink transition-colors disabled:opacity-50 disabled:cursor-not-allowed cursor-pointer select-none;
   }
 
   .input-field {
-    @apply w-full bg-slate-50 border border-slate-200 rounded-xl px-3.5 py-2.5 text-sm text-slate-900 placeholder:text-slate-400 focus:outline-none focus:ring-2 focus:ring-red-500/20 focus:border-red-500 focus:bg-white transition-all;
-  }
-
-  .card-hover {
-    @apply transition-all duration-200 hover:border-slate-300 hover:shadow-md;
-  }
-}
-
-/* Gradient text effect */
-.gradient-text {
-  background: linear-gradient(135deg, #0070f3 0%, #00d4ff 100%);
-  -webkit-background-clip: text;
-  -webkit-text-fill-color: transparent;
-  background-clip: text;
-}
-
-/* Animated gradient border */
-.gradient-border {
-  position: relative;
-  background: #111111;
-  border-radius: 12px;
-}
-
-.gradient-border::before {
-  content: '';
-  position: absolute;
-  inset: -1px;
-  border-radius: 13px;
-  background: linear-gradient(135deg, #0070f3, #00d4ff, #0070f3);
-  background-size: 200% 200%;
-  animation: gradient-shift 3s ease infinite;
-  z-index: -1;
-}
-
-@keyframes gradient-shift {
-  0% {
-    background-position: 0% 50%;
-  }
-
-  50% {
-    background-position: 100% 50%;
-  }
-
-  100% {
-    background-position: 0% 50%;
+    @apply w-full h-10 bg-surface-2 border border-hairline rounded-control px-3.5 text-[0.8125rem] text-ink placeholder:text-ink-3 focus:outline-none focus:border-accent focus:bg-surface transition-colors;
   }
 }
 
@@ -139,24 +182,11 @@ body {
   transition: stroke-dasharray 1s ease-out;
 }
 
-/* Split screen layout */
-.split-screen {
-  display: grid;
-  grid-template-columns: minmax(400px, 1fr) 2fr;
-  min-height: 100vh;
-}
-
-@media (max-width: 1024px) {
-  .split-screen {
-    grid-template-columns: 1fr;
-    grid-template-rows: auto 1fr;
-  }
-}
-
+/* Print Styles */
 @media print {
-  /* Hide sidebar, header, and interactive elements */
   aside,
   header,
+  nav,
   button,
   input,
   select,
@@ -165,15 +195,13 @@ body {
     display: none !important;
   }
 
-  /* Reset layout for printing */
-  .lg\:pl-72 {
-    padding-left: 0 !important;
+  body {
+    background: #ffffff !important;
+    color: #0b0518 !important;
   }
 
-  .split-screen {
-    display: block !important;
-    height: auto !important;
-    overflow: visible !important;
+  .lg\:pl-64, .md\:pl-64, .md\:pl-18 {
+    padding-left: 0 !important;
   }
 
   main {
@@ -181,55 +209,27 @@ body {
     padding: 0 !important;
     margin: 0 !important;
     max-width: 100% !important;
-    overflow: visible !important;
   }
 
-  /* Force display all tab contents and all accordion details */
   .print\:block,
   .accordion-content {
     display: block !important;
     visibility: visible !important;
   }
 
-  body {
-    background: #fff !important;
-    color: #0f172a !important;
-  }
-
-  /* Preserve SVG score ring colors exactly as rendered on screen */
-  svg {
-    print-color-adjust: exact;
-    -webkit-print-color-adjust: exact;
-  }
-
-  svg circle {
-    print-color-adjust: exact;
-    -webkit-print-color-adjust: exact;
-  }
-
-  /* Score ring — keep stroke colors visible */
-  .score-circle {
-    print-color-adjust: exact;
-    -webkit-print-color-adjust: exact;
-    transition: none !important;
-    animation: none !important;
-  }
-
-  /* Ensure breakdown cards are visible but clean */
   .glass-card {
-    background: #fff !important;
-    border: 1px solid #e2e8f0 !important;
+    background: #ffffff !important;
+    border: 1px solid #e9e6f0 !important;
     box-shadow: none !important;
     break-inside: avoid;
     margin-bottom: 1.5rem !important;
   }
 
-  /* Expand dimension details */
-  details {
-    display: block !important;
+  svg {
+    print-color-adjust: exact;
+    -webkit-print-color-adjust: exact;
   }
 
-  /* Hide scrollbars */
   ::-webkit-scrollbar {
     display: none;
   }

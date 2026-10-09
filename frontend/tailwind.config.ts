@@ -10,61 +10,85 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        // LLM Dashboard light theme palette
-        background: "#f1f5f9",
-        foreground: "#0f172a",
-        // Primary brand red accent
-        primary: {
-          DEFAULT: "#dc2626", // red-600
-          hover: "#ef4444",   // red-500
-          light: "#fee2e2",   // red-100
-          dark: "#b91c1c",    // red-700
+        brand: {
+          DEFAULT: "var(--brand)",
+          lilac: "var(--brand-lilac)",
         },
-        // Score colors (calibrated for light background)
-        score: {
-          excellent: "#16a34a", // green-600
-          good: "#65a30d",      // lime-600
-          warning: "#ca8a04",   // amber-600
-          poor: "#ea580c",      // orange-600
-          critical: "#dc2626",  // red-600
+        night: {
+          DEFAULT: "var(--night)",
+          2: "var(--night-2)",
         },
-        // Surface colors
+        plane: "var(--plane)",
         surface: {
-          DEFAULT: "#ffffff",
-          muted: "#f8fafc",
-          hover: "#f1f5f9",
-          border: "#e2e8f0",
-          elevated: "#ffffff",
+          DEFAULT: "var(--surface)",
+          2: "var(--surface-2)",
         },
-        // Text colors
-        text: {
-          primary: "#0f172a",
-          secondary: "#334155",
-          muted: "#64748b",
+        hairline: {
+          DEFAULT: "var(--hairline)",
+          strong: "var(--hairline-strong)",
+        },
+        ink: {
+          DEFAULT: "var(--ink)",
+          2: "var(--ink-2)",
+          3: "var(--ink-3)",
+        },
+        accent: {
+          DEFAULT: "var(--accent)",
+          hover: "var(--accent-hover)",
+          on: "var(--accent-on)",
+          soft: "var(--accent-soft)",
+        },
+        verified: "var(--verified)",
+        spoofed: {
+          DEFAULT: "var(--spoofed)",
+          soft: "var(--spoofed-soft)",
+        },
+        good: {
+          DEFAULT: "var(--good)",
+          soft: "var(--good-soft)",
+        },
+        warn: {
+          DEFAULT: "var(--warn)",
+          soft: "var(--warn-soft)",
+        },
+        critical: {
+          DEFAULT: "var(--critical)",
+          soft: "var(--critical-soft)",
+        },
+        info: {
+          DEFAULT: "var(--info)",
+          soft: "var(--info-soft)",
+        },
+        grid: "var(--grid)",
+        nav: {
+          bg: "var(--nav-bg)",
+          ink: "var(--nav-ink)",
+          "ink-2": "var(--nav-ink-2)",
+          "ink-3": "var(--nav-ink-3)",
+          hover: "var(--nav-hover)",
+          active: "var(--nav-active)",
+          "active-ink": "var(--nav-active-ink)",
+          line: "var(--nav-line)",
         },
       },
-      fontFamily: {
-        sans: ["-apple-system", "BlinkMacSystemFont", "Inter", "Segoe UI", "Roboto", "sans-serif"],
-        mono: ["ui-monospace", "SFMono-Regular", "Menlo", "Monaco", "Consolas", "JetBrains Mono", "monospace"],
+      borderRadius: {
+        card: "16px",
+        panel: "16px",
+        tile: "12px",
+        control: "10px",
       },
       boxShadow: {
-        xs: "0 1px 2px 0 rgba(0, 0, 0, 0.05)",
-        card: "0 1px 3px 0 rgba(0, 0, 0, 0.05), 0 1px 2px -1px rgba(0, 0, 0, 0.05)",
+        card: "var(--elevation-card)",
+        pop: "var(--elevation-pop)",
+        banner: "var(--elevation-banner)",
       },
-      animation: {
-        "pulse-slow": "pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite",
-        "fade-in": "fadeIn 0.3s ease-out",
-        "slide-up": "slideUp 0.3s ease-out",
+      fontSize: {
+        micro: ["0.6875rem", { lineHeight: "1rem" }],
       },
-      keyframes: {
-        fadeIn: {
-          "0%": { opacity: "0" },
-          "100%": { opacity: "1" },
-        },
-        slideUp: {
-          "0%": { opacity: "0", transform: "translateY(8px)" },
-          "100%": { opacity: "1", transform: "translateY(0)" },
-        },
+      fontFamily: {
+        sans: ["var(--font-sans)", "system-ui", "-apple-system", "BlinkMacSystemFont", "Inter", "Segoe UI", "sans-serif"],
+        display: ["var(--font-display)", "Space Grotesk", "Inter", "system-ui", "sans-serif"],
+        mono: ["var(--font-mono)", "JetBrains Mono", "ui-monospace", "SFMono-Regular", "Menlo", "Consolas", "monospace"],
       },
     },
   },
