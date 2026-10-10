@@ -39,7 +39,7 @@ export function PageBanner({
       <div className="flex flex-wrap items-center justify-between gap-5">
         <div className="flex min-w-0 items-start gap-4">
           {icon && (
-            <span className="hidden sm:grid size-12 place-items-center rounded-tile border border-white/15 bg-white/10 shrink-0">
+            <span className="hidden sm:grid size-12 place-items-center rounded-tile border border-white/15 bg-[#ffffff]/10 shrink-0">
               {icon}
             </span>
           )}
@@ -86,7 +86,7 @@ export function BannerFigure({
   return (
     <div
       className={cn(
-        "rounded-tile border border-white/10 bg-white/[0.06] px-4 py-3 shrink-0",
+        "rounded-tile border border-white/10 bg-[#ffffff]/[0.06] px-4 py-3 shrink-0",
         className
       )}
     >
@@ -115,8 +115,8 @@ export function BannerButton({
       className={cn(
         "inline-flex items-center justify-center gap-2 h-9 rounded-control px-3.5 text-[0.8125rem] font-semibold transition-colors cursor-pointer select-none",
         variant === "solid"
-          ? "bg-white text-night shadow-sm hover:bg-white/90"
-          : "border border-white/20 bg-white/10 text-white hover:bg-white/15",
+          ? "bg-[#ffffff] text-night shadow-sm hover:bg-[#ffffff]/90"
+          : "border border-white/20 bg-[#ffffff]/10 text-white hover:bg-[#ffffff]/15",
         className
       )}
       {...props}

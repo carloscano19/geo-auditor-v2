@@ -184,6 +184,33 @@ body {
 
 /* Print Styles */
 @media print {
+  :root,
+  .dark,
+  html.dark,
+  body {
+    --plane: #ffffff !important;
+    --surface: #ffffff !important;
+    --surface-2: #f4f2f8 !important;
+    --hairline: #e9e6f0 !important;
+    --hairline-strong: #d6d1e0 !important;
+    --ink: #0b0518 !important;
+    --ink-2: #4b4560 !important;
+    --ink-3: #6e6882 !important;
+
+    --accent: #d10045 !important;
+    --accent-hover: #b3003b !important;
+    --accent-on: #ffffff !important;
+    --accent-soft: #ffe9f0 !important;
+
+    --good: #0f7a29 !important;     --good-soft: #e3f5e8 !important;
+    --warn: #a06a00 !important;     --warn-soft: #fdf2dd !important;
+    --critical: #b42318 !important; --critical-soft: #fdecea !important;
+    --info: #2563be !important;     --info-soft: #e7effc !important;
+
+    background: #ffffff !important;
+    color: #0b0518 !important;
+  }
+
   aside,
   header,
   nav,

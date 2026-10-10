@@ -573,7 +573,7 @@ export default function Home() {
         </div>
 
         {/* Sidebar Footer: System Status & Collapse Toggle */}
-        <div className="p-3 border-t border-nav-line bg-white/[0.02] shrink-0 space-y-2">
+        <div className="p-3 border-t border-nav-line bg-nav-hover/30 shrink-0 space-y-2">
           {!sidebarCollapsed ? (
             <>
               <div className="flex items-center justify-between px-2 py-1 text-xs">
