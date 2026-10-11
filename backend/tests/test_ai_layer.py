@@ -2394,7 +2394,7 @@ async def test_plan_reclassifies_page_to_needs_info():
                 "question": "What is the launch date?",
                 "why_it_matters": "Timeline",
                 "answer_source": "page",
-                "draft_answer": "The page does not specify the exact launch date of the product.",
+                "draft_answer": "Official documentation does not specify the exact launch date of the product.",
                 "suggested_location": "Under Section 1",
             },
             {
@@ -2408,21 +2408,21 @@ async def test_plan_reclassifies_page_to_needs_info():
                 "question": "¿Cuáles son los requisitos de acceso?",
                 "why_it_matters": "Onboarding",
                 "answer_source": "page",
-                "draft_answer": "El artículo no menciona los requisitos para solicitar la beca.",
+                "draft_answer": "La convocatoria oficial no menciona los requisitos para solicitar la beca.",
                 "suggested_location": "Sección requisitos",
             },
             {
                 "question": "¿Cuál es la tasa de éxito?",
                 "why_it_matters": "Results",
                 "answer_source": "page",
-                "draft_answer": "El texto no indica el porcentaje final de aprobados.",
+                "draft_answer": "El informe anual no indica el porcentaje final de aprobados.",
                 "suggested_location": "Conclusión",
             },
             {
                 "question": "What are the supported payment methods?",
                 "why_it_matters": "Purchasing",
                 "answer_source": "page",
-                "draft_answer": "The guide does not provide details on payment gateways.",
+                "draft_answer": "Public pricing does not provide details on payment gateways.",
                 "suggested_location": "Pricing FAQ",
             },
             {
@@ -2604,7 +2604,7 @@ def test_ai_plan_strip_meta_references_paragraphs_and_answers():
                 "question": "What are the refund terms?",
                 "why_it_matters": "Policy",
                 "answer_source": "needs_info",
-                "draft_answer": "This page does not state refund terms, so the team must clarify the refund guarantee.",
+                "draft_answer": "This page does not state refund terms. Customers are entitled to refunds within [EDITOR: refund window — terms of service].",
                 "suggested_location": "Footer FAQ",
             },
         ],
@@ -2651,7 +2651,7 @@ def test_ai_plan_strip_meta_references_paragraphs_and_answers():
         # Check questions:
         # Question 1 ("What is the core benefit?"): "This page details all of them." stripped out, kept as page answer
         # Question 2 ("Where can I find pricing?"): entire draft_answer was meta-reference, so question was discarded
-        # Question 3 ("What are the refund terms?"): answer_source is needs_info, untouched
+        # Question 3 ("What are the refund terms?"): meta-reference stripped, publishable part with editor gap preserved
         questions = data["questions_to_answer"]
         assert len(questions) == 2
 
@@ -2663,7 +2663,8 @@ def test_ai_plan_strip_meta_references_paragraphs_and_answers():
         q1 = questions[1]
         assert q1["question"] == "What are the refund terms?"
         assert q1["answer_source"] == "needs_info"
-        assert "This page does not state refund terms" in q1["draft_answer"]
+        assert "This page does not state refund terms" not in q1["draft_answer"]
+        assert "Customers are entitled to refunds within [EDITOR: refund window — terms of service]." in q1["draft_answer"]
 
         # Discarded question must NOT be in combined_schema (FAQPage)
         if data.get("combined_schema") and data["combined_schema"].get("mainEntity"):
@@ -3811,6 +3812,78 @@ def test_ai_plan_h2_status_deterministic_present():
     q0 = data["questions_to_answer"][0]
     assert q0["answer_source"] == "needs_info"
     assert "[EDITOR: stadium name and capacity — official stadium records]" in q0["draft_answer"]
+
+
+def test_needs_info_meta_reference_and_empty_editor_gaps_discarded():
+    """
+    Test that needs_info answers starting with meta-commentary like 'This guide does not...'
+    are filtered, and questions leaving no substantive publishable sentence are discarded.
+    """
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    mock_llm_result = {
+        "questions_to_answer": [
+            {
+                # Starts with "This guide does not..." and has no publishable sentence left
+                "question": "What is the ranking of stadiums in France?",
+                "draft_answer": "This guide does not rank French stadiums. [EDITOR: national stadium rankings — ministry of sports].",
+                "answer_source": "needs_info"
+            },
+            {
+                # Has a meta-reference sentence AND a valid publishable sentence with an editor gap
+                "question": "What is the largest arena?",
+                "draft_answer": "This article does not specify the largest arena. The Stade Vélodrome holds thousands of fans while the national record belongs to [EDITOR: largest arena name and capacity — national sports authority].",
+                "answer_source": "needs_info"
+            },
+            {
+                # Only has editor gap, no publishable text at all
+                "question": "Who designed the roof?",
+                "draft_answer": "[EDITOR: architect name and firm — official records].",
+                "answer_source": "needs_info"
+            }
+        ],
+        "suggested_h2_structure": [],
+        "suggested_table": None,
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": []
+    }
+
+    req = {
+        "ai_context": {
+            "url": "https://www.socios.com/cepac-velodrome-olympique-de-marseille-stadium/",
+            "title": "CEPAC Vélodrome Guide",
+            "first_paragraph": "The CEPAC Vélodrome is located in Marseille.",
+            "main_text": "The CEPAC Vélodrome is located in Marseille. The Stade Vélodrome holds thousands of fans.",
+            "language": "en",
+            "content_type": "guide_blog",
+        },
+        "query": "CEPAC stadium"
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = mock_llm_result
+        res = client.post("/api/ai/plan", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    questions = data["questions_to_answer"]
+    # Only Question 2 should survive: Question 1 was completely stripped of publishable text; Question 3 had only a gap
+    assert len(questions) == 1
+    assert questions[0]["question"] == "What is the largest arena?"
+    assert "This article does not" not in questions[0]["draft_answer"]
+    assert "Stade Vélodrome holds thousands" in questions[0]["draft_answer"]
+    assert "[EDITOR: largest arena name and capacity — national sports authority]" in questions[0]["draft_answer"]
+
 
 
 

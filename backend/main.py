@@ -1207,7 +1207,7 @@ Generate a JSON object with EXACTLY this structure:
   "questions_to_answer": [
     {{
       "question": "Question text in {lang_instruction}",
-      "draft_answer": "Direct, publishable answer (40-70 words). If answer_source is 'page', must only use facts from page text. If answer_source is 'needs_info', write ready-to-publish copy using facts on the page and represent any missing information as a visible gap in this exact format: [EDITOR: missing information description — source type].",
+      "draft_answer": "Direct, publishable answer (40-70 words). If answer_source is 'page', must only use facts from page text. If answer_source is 'needs_info', write ready-to-publish copy using facts on the page and represent any missing information as a visible gap in this exact format: [EDITOR: missing information description in {lang_instruction} — source type]. A gap can ONLY request data NOT present in the page text.",
       "answer_source": "page" // 'page' ONLY if the page directly answers the question. If the page lacks the necessary data to answer it completely, set to 'needs_info'. NEVER write a meta-explanation stating what the page lacks; write the copy with [EDITOR: ...] gaps.
     }}
   ],
@@ -1251,7 +1251,7 @@ Generate a JSON object with EXACTLY this structure:
 Requirements:
 - suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the missing information is explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type]. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing facts, and NEVER write meta-commentary like "This guide does not confirm...".
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the missing information is explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type]. The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
 - sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
@@ -1262,7 +1262,7 @@ Requirements:
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
 - Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
 - CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all suggested paragraphs ('paragraphs_to_add') and all answers ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'this guide', 'this article', 'the announcement\'s disclaimer', or similar meta-commentary.
-- Language: Strictly {lang_instruction}.
+- Language: Strictly {lang_instruction}. All text, including the descriptions inside [EDITOR: ...], must be strictly in {lang_instruction}.
 """
 
     try:
@@ -1317,11 +1317,16 @@ Requirements:
                         src = "needs_info"
                         break
 
-            # If still marked as page, strip meta-references ("the page", "this page", etc.)
-            if src == "page":
-                draft_ans = strip_page_meta_references(draft_ans)
-                if not draft_ans.strip():
-                    continue
+            # Strip meta-references ("the page", "this page", "this guide", "this article", etc.)
+            draft_ans = strip_page_meta_references(draft_ans)
+            if not draft_ans.strip():
+                continue
+
+            # For needs_info (and page), verify that there is publishable copy left (not just [EDITOR: ...] placeholders)
+            text_without_editor_gaps = re.sub(r'\[EDITOR:[^\]]*\]', '', draft_ans).strip()
+            # If after stripping gaps there is no substantive text left, discard the question
+            if not re.search(r'[a-zA-Z0-9áéíóúÁÉÍÓÚñÑ]', text_without_editor_gaps):
+                continue
 
             # Discard questions about stock prices, share prices, revenue, returns, or investing
             q_raw_text = str(q.get("question") or "")
