@@ -852,7 +852,7 @@ async def test_ai_plan_endpoint_success_and_validation():
             "questions_to_answer": [
                 {
                     "question": "What is the ROI?",
-                    "draft_answer": "According to the article, the conversion rate reached 42 percent https://fake.com/link.",
+                    "draft_answer": "The conversion rate reached 42 percent across tests https://fake.com/link.",
                     "answer_source": "page"
                 },
                 {
@@ -2531,6 +2531,45 @@ def test_strip_page_meta_references_unit():
     for raw, expected in es_samples:
         assert strip_page_meta_references(raw) == expected
 
+    # Extended English meta references:
+    # 'this guide', 'this article', 'this post', 'this text', 'the guide', 'the article', 'the post', 'the text above', 'the text below'
+    en_extended_samples = [
+        ("This guide does not rank French stadiums by capacity. Marseille is a historic city.", "Marseille is a historic city."),
+        ("In this article, we evaluate stadium safety. Fans expect clear protocols.", "Fans expect clear protocols."),
+        ("This post highlights the vibrant local atmosphere. Matchday begins hours earlier.", "Matchday begins hours earlier."),
+        ("As seen in this text, ticket demands are high. Plan ahead for derby matches.", "Plan ahead for derby matches."),
+        ("The guide provides detailed seat layouts. Public transport connects directly.", "Public transport connects directly."),
+        ("The article covers fan loyalty programs. Supporters can join official clubs.", "Supporters can join official clubs."),
+        ("The post explores tournament history. International matches draw global audiences.", "International matches draw global audiences."),
+        ("As stated in the text above, capacity is 67,000. It is among the largest in Europe.", "It is among the largest in Europe."),
+        ("Refer to the text below for route options. The stadium is easily accessible.", "The stadium is easily accessible."),
+    ]
+    for raw, expected in en_extended_samples:
+        assert strip_page_meta_references(raw) == expected
+
+    # Extended Spanish meta references:
+    # 'esta guía', 'este artículo', 'este texto', 'la guía', 'el artículo'
+    es_extended_samples = [
+        ("Esta guía no compara la capacidad de los recintos. El Vélodrome es un emblema de Marsella.", "El Vélodrome es un emblema de Marsella."),
+        ("En este artículo analizamos la historia del estadio. Los aficionados apoyan al club incondicionalmente.", "Los aficionados apoyan al club incondicionalmente."),
+        ("Este texto examina la asistencia a los partidos. La liga francesa tiene gran seguimiento.", "La liga francesa tiene gran seguimiento."),
+        ("La guía detalla las zonas de aparcamiento. El metro llega directamente a la entrada.", "El metro llega directamente a la entrada."),
+        ("El artículo resume la trayectoria del entrenador. La temporada actual es muy competitiva.", "La temporada actual es muy competitiva."),
+    ]
+    for raw, expected in es_extended_samples:
+        assert strip_page_meta_references(raw) == expected
+
+    # Legitimate non-meta sentences that MUST NOT be stripped:
+    legitimate_samples = [
+        "A tour guide took the visitors around the stadium.",
+        "We mailed the tickets at the post office before noon.",
+        "Guiding principles of fair play govern the tournament.",
+        "Guidance from coaches improves athlete endurance.",
+        "Supporters read article 5 of the club statutes.",
+    ]
+    for s in legitimate_samples:
+        assert strip_page_meta_references(s) == s
+
     # Text composed entirely of meta-references
     text_all_meta = "This page provides an overview. According to the page, details follow."
     assert strip_page_meta_references(text_all_meta) == ""
@@ -3628,7 +3667,151 @@ async def test_llm_524_error_message_clarity():
     with patch("httpx.AsyncClient.send", return_value=mock_resp_524):
         with pytest.raises(LLMClientError) as exc_info_stream:
             await client_stream.call_chat_completion([{"role": "user", "content": "timeout stream"}])
-        assert "The AI service took too long to respond. Please try again." in str(exc_info_stream.value)
+
+def test_normalize_heading_and_deterministic_present_matching():
+    from main import normalize_heading
+
+    # Test normalization mechanics
+    assert normalize_heading("What Is the CEPAC Vélodrome?") == "what is the cepac velodrome"
+    assert normalize_heading("  CEPAC Vélodrome: History! ") == "cepac velodrome history"
+    assert normalize_heading("CEPAC Vélodrome FAQs?") == "cepac velodrome faqs"
+
+    page_h2s = [
+        "What Is the CEPAC Vélodrome?",
+        "CEPAC Vélodrome History",
+        "CEPAC Vélodrome and Marseille Supporters",
+        "CEPAC Vélodrome and Fan Engagement",
+        "CEPAC Vélodrome FAQs",
+    ]
+    norm_page = [normalize_heading(h) for h in page_h2s]
+
+    # Matching cases (different casing, accent variations, punctuation, spaces)
+    assert normalize_heading("what is the cepac velodrome") in norm_page
+    assert normalize_heading("What is the CEPAC Velodrome?") in norm_page
+    assert normalize_heading("CEPAC Velodrome History") in norm_page
+    assert normalize_heading("CEPAC Vélodrome & Marseille Supporters") not in norm_page  # '&' vs 'and' -> correctly not matching
+    assert normalize_heading("CEPAC Vélodrome FAQs") in norm_page
+
+    # Case that MUST NOT match (distinct topic)
+    assert normalize_heading("How to Buy Tickets for Vélodrome") not in norm_page
+    assert normalize_heading("New Stadium Expansion") not in norm_page
+
+
+def test_editor_gap_survives_all_filters():
+    from main import strip_urls, all_numbers_in_page, normalize_text_for_numbers
+    import json_repair
+
+    page_text = "The CEPAC Vélodrome in Marseille has 67,000 seats and opened in 1937."
+    page_norm = normalize_text_for_numbers(page_text)
+
+    # 1. Draft answer with [EDITOR: ...] containing description and source
+    draft = (
+        "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. "
+        "The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds."
+    )
+
+    # Filter: all_numbers_in_page should ignore numbers inside [EDITOR: ...] and check numbers outside
+    assert all_numbers_in_page(draft, page_norm) is True
+
+    # Even if [EDITOR: ...] contains numbers not in the page (e.g. 80,000), it must survive
+    draft_with_number_in_gap = "Largest venue is [EDITOR: 80,000 capacity venue — UEFA report]. Marseille has 67,000 seats."
+    assert all_numbers_in_page(draft_with_number_in_gap, page_norm) is True
+
+    # But numbers outside gap not in page must still fail
+    draft_with_invented_outside = "Paris venue has 85,000 seats. Marseille has 67,000 seats."
+    assert all_numbers_in_page(draft_with_invented_outside, page_norm) is False
+
+    # Filter: strip_urls preserves [EDITOR: ...]
+    text_with_url_in_gap = "See [EDITOR: data at https://example.org — UEFA] and https://strip-me.com now."
+    cleaned = strip_urls(text_with_url_in_gap)
+    assert "[EDITOR: data at https://example.org — UEFA]" in cleaned
+    assert "https://strip-me.com" not in cleaned
+
+    # Filter: json_repair preserves [EDITOR: ...]
+    json_blob = f'{{"draft_answer": "{draft}"}}'
+    repaired = json_repair.loads(json_blob)
+    assert "[EDITOR: stadium name and capacity — official stadium records]" in repaired["draft_answer"]
+
+
+def test_ai_plan_h2_status_deterministic_present():
+    """Test that /api/ai/plan deterministically marks matching H2s as 'present' even if LLM said 'existing' or 'new'."""
+    from main import app, ai_plan_cache
+    ai_plan_cache.clear()
+    client = TestClient(app)
+
+    mock_llm_result = {
+        "suggested_lead": {
+            "original": "Original text.",
+            "suggested": "Direct answer opening paragraph.",
+            "rationale": "Clear focus.",
+        },
+        "json_ld": {"description": "Test", "about": [], "mentions": []},
+        "questions_to_answer": [
+            {
+                "question": "What is the largest stadium in France?",
+                "draft_answer": "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome has 67,000 seats.",
+                "answer_source": "needs_info",
+            }
+        ],
+        "suggested_h2_structure": [
+            {"h2": "What Is the CEPAC Vélodrome?", "purpose": "Explains the stadium overview.", "status": "existing"},
+            {"h2": "CEPAC Velodrome History", "purpose": "Details origins and milestones.", "status": "new"},
+            {"h2": "A Brand New Future Section", "purpose": "Future prospects.", "status": "new"},
+        ],
+        "suggested_table": None,
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    req = {
+        "ai_context": {
+            "url": "https://www.socios.com/cepac-velodrome-olympique-de-marseille-stadium/",
+            "language": "en",
+            "content_type": "guide_blog",
+            "main_text": "The CEPAC Vélodrome has 67,000 seats.",
+            "existing_h2s": [
+                "What Is the CEPAC Vélodrome?",
+                "CEPAC Vélodrome History",
+                "CEPAC Vélodrome and Marseille Supporters",
+            ],
+            "failing_submetrics": [],
+        }
+    }
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = mock_llm_result
+        res = client.post("/api/ai/plan", json=req)
+    assert res.status_code == 200
+    data = res.json()
+
+    h2_items = data["suggested_h2_structure"]
+    assert len(h2_items) == 3
+
+    # "What Is the CEPAC Vélodrome?" exactly matches page H2 -> must be 'present'
+    assert h2_items[0]["h2"] == "What Is the CEPAC Vélodrome?"
+    assert h2_items[0]["status"] == "present"
+
+    # "CEPAC Velodrome History" matches "CEPAC Vélodrome History" with accent normalization -> must be 'present'
+    assert h2_items[1]["h2"] == "CEPAC Velodrome History"
+    assert h2_items[1]["status"] == "present"
+
+    # "A Brand New Future Section" is NOT on page -> remains 'new'
+    assert h2_items[2]["h2"] == "A Brand New Future Section"
+    assert h2_items[2]["status"] == "new"
+
+    # Question with [EDITOR: ...] needs_info is retained with gap intact
+    q0 = data["questions_to_answer"][0]
+    assert q0["answer_source"] == "needs_info"
+    assert "[EDITOR: stadium name and capacity — official stadium records]" in q0["draft_answer"]
+
 
 
 

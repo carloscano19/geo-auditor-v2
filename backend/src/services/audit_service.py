@@ -548,6 +548,19 @@ def _build_ai_context(
                     )
                 )
 
+    # Existing H2 headings
+    existing_h2s: list[str] = []
+    for r in detector_results:
+        if getattr(r, "dimension", "") == "aeo_structure":
+            dh = getattr(r, "debug_info", {}).get("detected_headers", [])
+            if isinstance(dh, list):
+                # Filter down to headers from scoped content or extract specifically
+                pass
+    # Extract directly from scoped_html (or fallback to soup) to ensure all H2s on page are captured
+    from src.utils.text_processing import extract_headers
+    headers_list = extract_headers(scoped_html) if scoped_html else extract_headers(page_data.html_rendered or page_data.html_raw or "")
+    existing_h2s = [h["text"] for h in headers_list if h.get("tag") == "h2" and h.get("text")]
+
     return AIContext(
         url=effective_url if effective_url != "text-mode" else None,
         title=title,
@@ -565,5 +578,6 @@ def _build_ai_context(
         detected_image_url=detected_image_url,
         target_query=target_query,
         failing_submetrics=failing_submetrics,
+        existing_h2s=existing_h2s,
     )
 

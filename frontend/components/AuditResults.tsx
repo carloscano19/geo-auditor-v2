@@ -356,9 +356,13 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
         if (aiPlan.suggested_h2_structure && aiPlan.suggested_h2_structure.length > 0) {
             lines.push(`## Suggested H2 Structure`);
-            lines.push(`*Use these headings to organise the page. 'New' means the section has to be written.*\n`);
+            lines.push(`*Use these headings to organise the page. 'Already on the page' means keep it as is. 'Exists — add the heading' means the topic is discussed but needs an H2. 'New' means the section has to be written.*\n`);
             aiPlan.suggested_h2_structure.forEach((h, i) => {
-                const statusBadge = h.status === "existing" ? "[Exists — add the heading]" : "[New — write this section]";
+                const statusBadge = h.status === "present"
+                    ? "[Already on the page — keep it]"
+                    : h.status === "existing"
+                    ? "[Exists — add the heading]"
+                    : "[New — write this section]";
                 lines.push(`- **H2 ${i + 1}: ${h.h2}** ${statusBadge}`);
                 lines.push(`  - *Purpose:* ${h.purpose}`);
             });
@@ -1290,9 +1294,24 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                         </span>
                                                     </div>
                                                 </div>
-                                                <p className="text-xs text-ink-2 leading-relaxed bg-surface p-2.5 rounded-lg border border-hairline">
-                                                    {q.draft_answer}
-                                                </p>
+                                                <div className="text-xs text-ink-2 leading-relaxed bg-surface p-2.5 rounded-lg border border-hairline">
+                                                    {(() => {
+                                                        const parts = q.draft_answer.split(/(\[EDITOR:[^\]]*\])/);
+                                                        return parts.map((part, pIdx) => {
+                                                            if (part.startsWith("[EDITOR:") && part.endsWith("]")) {
+                                                                return (
+                                                                    <span
+                                                                        key={pIdx}
+                                                                        className="font-medium bg-warn-soft border border-warn/30 text-warn px-1.5 py-0.5 rounded mx-0.5 inline-block"
+                                                                    >
+                                                                        {part}
+                                                                    </span>
+                                                                );
+                                                            }
+                                                            return <span key={pIdx}>{part}</span>;
+                                                        });
+                                                    })()}
+                                                </div>
                                             </div>
                                         ))}
                                     </div>
@@ -1308,10 +1327,10 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                             <span className="text-xs font-normal text-ink-3">({aiPlan.suggested_h2_structure.length})</span>
                                         </h4>
                                         <p className="text-xs text-ink-3 mt-0.5">
-                                            Use these headings to organise the page. &apos;New&apos; means the section has to be written.
+                                            Use these headings to organise the page. &apos;Already on the page&apos; means keep it as is. &apos;Exists — add the heading&apos; means the topic is discussed but needs an H2. &apos;New&apos; means the section has to be written.
                                         </p>
                                     </div>
-                                    <div className="divide-y divide-slate-200 rounded-xl border border-hairline overflow-hidden bg-surface">
+                                    <div className="divide-y divide-hairline rounded-xl border border-hairline overflow-hidden bg-surface">
                                         {aiPlan.suggested_h2_structure.map((item, idx) => (
                                             <div key={idx} className="p-3.5 flex items-start justify-between gap-3 text-xs">
                                                 <div className="space-y-1">
@@ -1323,11 +1342,17 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                                     </div>
                                                 </div>
                                                 <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded shrink-0 ${
-                                                    item.status === "existing"
+                                                    item.status === "present"
+                                                        ? "bg-good-soft border border-good/30 text-good"
+                                                        : item.status === "existing"
                                                         ? "bg-surface-2 text-ink-2 border border-hairline"
                                                         : "bg-critical-soft border border-critical/30 text-critical"
                                                 }`}>
-                                                    {item.status === "existing" ? "Exists — add the heading" : "New — write this section"}
+                                                    {item.status === "present"
+                                                        ? "Already on the page — keep it"
+                                                        : item.status === "existing"
+                                                        ? "Exists — add the heading"
+                                                        : "New — write this section"}
                                                 </span>
                                             </div>
                                         ))}

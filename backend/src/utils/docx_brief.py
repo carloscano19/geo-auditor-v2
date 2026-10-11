@@ -23,7 +23,7 @@ from urllib.parse import urlparse
 import docx
 from docx import Document
 from docx.shared import Inches, Pt, RGBColor
-from docx.enum.text import WD_ALIGN_PARAGRAPH
+from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_COLOR_INDEX
 from docx.enum.table import WD_TABLE_ALIGNMENT
 from docx.oxml import OxmlElement, parse_xml
 from docx.oxml.ns import nsdecls, qn
@@ -622,9 +622,24 @@ def generate_editor_brief_docx(
                 else:
                     r_qbadge.font.color.rgb = RGBColor(180, 100, 10)
 
-                r_qans = p_q.add_run(f"A: {q.draft_answer}")
-                r_qans.font.size = Pt(10)
-                r_qans.font.color.rgb = RGBColor(55, 65, 81)
+                # Check if draft answer contains [EDITOR: ...] gaps
+                r_prefix = p_q.add_run("A: ")
+                r_prefix.font.size = Pt(10)
+                r_prefix.font.color.rgb = RGBColor(55, 65, 81)
+
+                import re
+                chunks = re.split(r'(\[EDITOR:[^\]]*\])', q.draft_answer)
+                for chunk in chunks:
+                    if not chunk:
+                        continue
+                    r_chunk = p_q.add_run(chunk)
+                    r_chunk.font.size = Pt(10)
+                    if chunk.startswith("[EDITOR:") and chunk.endswith("]"):
+                        r_chunk.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                        r_chunk.bold = True
+                        r_chunk.font.color.rgb = RGBColor(140, 70, 0)
+                    else:
+                        r_chunk.font.color.rgb = RGBColor(55, 65, 81)
 
         # 4.3 Suggested H2 structure
         if ai_plan.suggested_h2_structure and len(ai_plan.suggested_h2_structure) > 0:
@@ -640,7 +655,7 @@ def generate_editor_brief_docx(
             sub_h2 = doc.add_paragraph()
             sub_h2.paragraph_format.space_after = Pt(8)
             run_sub_h2 = sub_h2.add_run(
-                "Use these headings to organise the page. 'New' means the section has to be written."
+                "Use these headings to organise the page. 'Already on the page' means keep it as is. 'Exists — add the heading' means the topic is discussed but needs an H2. 'New' means the section has to be written."
             )
             run_sub_h2.font.italic = True
             run_sub_h2.font.size = Pt(9.5)
@@ -651,7 +666,16 @@ def generate_editor_brief_docx(
                 p_item.paragraph_format.space_before = Pt(2)
                 p_item.paragraph_format.space_after = Pt(3)
 
-                status_label = "Exists — add the heading" if item.status == "existing" else "New — write this section"
+                if item.status == "present":
+                    status_label = "Already on the page — keep it"
+                    badge_color = RGBColor(16, 120, 70)
+                elif item.status == "existing":
+                    status_label = "Exists — add the heading"
+                    badge_color = RGBColor(107, 114, 128)
+                else:
+                    status_label = "New — write this section"
+                    badge_color = RGBColor(100, 100, 180)
+
                 r_title = p_item.add_run(f"{item.h2} ")
                 r_title.bold = True
                 r_title.font.size = Pt(10)
@@ -660,7 +684,7 @@ def generate_editor_brief_docx(
                 r_st = p_item.add_run(f"[{status_label}]\n")
                 r_st.font.size = Pt(9)
                 r_st.bold = True
-                r_st.font.color.rgb = RGBColor(100, 100, 180) if item.status == "new" else RGBColor(107, 114, 128)
+                r_st.font.color.rgb = badge_color
 
                 r_purp = p_item.add_run(f"Purpose: {item.purpose}")
                 r_purp.font.size = Pt(9.5)

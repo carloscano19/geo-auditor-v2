@@ -62,6 +62,7 @@ export interface AIContext {
     detected_image_url?: string;
     target_query?: string;
     failing_submetrics: FailingSubmetric[];
+    existing_h2s?: string[];
 }
 
 export interface LeadParagraphFix {
@@ -86,7 +87,7 @@ export interface PlanQuestion {
 export interface PlanOutlineItem {
     h2: string;
     purpose: string;
-    status: 'existing' | 'new';
+    status: 'existing' | 'new' | 'present';
 }
 
 export interface PlanTable {

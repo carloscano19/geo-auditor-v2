@@ -789,8 +789,11 @@ def strip_page_meta_references(text: str) -> str:
     """
     Remove sentences containing analysis/audit meta-references from final publishable web copy:
     - English: 'the page states', 'the page says', 'the page mentions', 'the page does not',
-      'the page's disclaimer', 'this page', 'per the page', 'according to the page', 'on the page'
-    - Spanish: 'la página indica', 'la página dice', 'según la página', 'esta página'
+      'the page's disclaimer', 'this page', 'per the page', 'according to the page', 'on the page',
+      'this guide', 'this article', 'this post', 'this text', 'the guide', 'the article', 'the post',
+      'the text above', 'the text below'
+    - Spanish: 'la página indica', 'la página dice', 'según la página', 'esta página',
+      'esta guía', 'este artículo', 'este texto', 'la guía', 'el artículo'
     Preserves legitimate topical sentences like 'Fans can visit the page of each club.'
     """
     if not text:
@@ -811,12 +814,25 @@ def strip_page_meta_references(text: str) -> str:
         r"per\s+the\s+page|"
         r"according\s+to\s+the\s+page|"
         r"on\s+the\s+page|"
+        r"this\s+guide|"
+        r"this\s+article|"
+        r"this\s+post|"
+        r"this\s+text|"
+        r"the\s+guide\b(?!\s+(?:dog|price|rate|tour|book))|"
+        r"the\s+article\b(?!\s+(?:of\s+clothing|\d+))|"
+        r"the\s+post\b(?!\s+(?:office|box|card|stamp|season|operative|modern|war|colonial|secondary|natal|mortem|traumatic|grad|doctoral|script))|"
+        r"the\s+text\s+(?:above|below)|"
         r"la\s+p[aá]gina\s+indica|"
         r"la\s+p[aá]gina\s+dice|"
         r"la\s+p[aá]gina\s+explica|"
         r"la\s+p[aá]gina\s+describe|"
         r"seg[uú]n\s+la\s+p[aá]gina|"
-        r"esta\s+p[aá]gina"
+        r"esta\s+p[aá]gina|"
+        r"esta\s+gu[ií]a|"
+        r"este\s+art[ií]culo|"
+        r"este\s+texto|"
+        r"la\s+gu[ií]a\b(?!\s+(?:michelin|tur[ií]stica|repsol))|"
+        r"el\s+art[ií]culo\b(?!\s+(?:determinado|indeterminado|neutro|\d+))"
         r")\b",
         re.IGNORECASE
     )

@@ -573,9 +573,22 @@ def extract_numbers_with_context(text: str) -> list[str]:
     return [m.strip() for m in matches if m.strip()]
 
 
+def normalize_heading(text: str) -> str:
+    """Normalize heading text by stripping accents/diacritics, punctuation, extra whitespace, and lowercasing."""
+    if not text:
+        return ""
+    import unicodedata
+    decomposed = unicodedata.normalize("NFKD", text)
+    without_accents = "".join(c for c in decomposed if not unicodedata.combining(c))
+    clean = re.sub(r"[^\w\s]", "", without_accents).lower()
+    return re.sub(r"\s+", " ", clean).strip()
+
+
 def all_numbers_in_page(text: str, page_norm: str) -> bool:
-    """Returns True if every number in text is found in page_norm."""
-    tokens = extract_numbers_with_context(text)
+    """Returns True if every number in text is found in page_norm. Ignores numbers inside [EDITOR: ...] placeholders."""
+    # Strip [EDITOR: ...] placeholders so editor gap instructions don't trigger numeric validation failures
+    text_to_check = re.sub(r'\[EDITOR:[^\]]*\]', '', text)
+    tokens = extract_numbers_with_context(text_to_check)
     for tok in tokens:
         escaped = re.escape(tok)
         if not re.search(r'(?<!\d)' + escaped + r'(?!\d)', page_norm):
@@ -584,10 +597,18 @@ def all_numbers_in_page(text: str, page_norm: str) -> bool:
 
 
 def strip_urls(text: str) -> str:
-    """Removes all URLs from text."""
+    """Removes all URLs from text while preserving [EDITOR: ...] placeholders intact."""
     if not text:
         return ""
-    t = re.sub(r'https?://[^\s]+', '', text)
+    placeholders: list[str] = []
+    def repl(m: re.Match) -> str:
+        placeholders.append(m.group(0))
+        return f"___EDITOR_GAP_{len(placeholders)-1}___"
+    
+    t_sub = re.sub(r'\[EDITOR:[^\]]*\]', repl, text)
+    t = re.sub(r'https?://[^\s]+', '', t_sub)
+    for i, p in enumerate(placeholders):
+        t = t.replace(f"___EDITOR_GAP_{i}___", p)
     return re.sub(r'\s+', ' ', t).strip()
 
 
@@ -929,11 +950,14 @@ Rules:
     suggested_lead = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
     rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
 
+    lead_has_unverified_numbers = False
     if suggested_lead:
+        if not all_numbers_in_page(suggested_lead, page_norm):
+            lead_has_unverified_numbers = True
         suggested_lead = remove_financial_advice_phrases(suggested_lead)
         suggested_lead = strip_page_meta_references(suggested_lead)
 
-    if suggested_lead and not all_numbers_in_page(suggested_lead, page_norm):
+    if lead_has_unverified_numbers or (suggested_lead and not all_numbers_in_page(suggested_lead, page_norm)):
         suggested_lead = original_lead
         rationale_lead = "The original lead paragraph was kept because the suggested lead contained unverified figures."
         warnings.append("The suggested lead contained figures not found on the page and was discarded.")
@@ -1183,8 +1207,8 @@ Generate a JSON object with EXACTLY this structure:
   "questions_to_answer": [
     {{
       "question": "Question text in {lang_instruction}",
-      "draft_answer": "Direct answer (40-70 words). If answer_source is 'page', must only use facts from page text.",
-      "answer_source": "page" // ONLY if the page actually answers the question directly. If the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'
+      "draft_answer": "Direct, publishable answer (40-70 words). If answer_source is 'page', must only use facts from page text. If answer_source is 'needs_info', write ready-to-publish copy using facts on the page and represent any missing information as a visible gap in this exact format: [EDITOR: missing information description — source type].",
+      "answer_source": "page" // 'page' ONLY if the page directly answers the question. If the page lacks the necessary data to answer it completely, set to 'needs_info'. NEVER write a meta-explanation stating what the page lacks; write the copy with [EDITOR: ...] gaps.
     }}
   ],
   "suggested_h2_structure": [
@@ -1227,7 +1251,7 @@ Generate a JSON object with EXACTLY this structure:
 Requirements:
 - suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly; if the answer acknowledges or states that the page does not provide that information, answer_source MUST be 'needs_info'.
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the missing information is explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type]. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing facts, and NEVER write meta-commentary like "This guide does not confirm...".
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
 - sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
@@ -1237,7 +1261,7 @@ Requirements:
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
 - Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
-- CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all suggested paragraphs ('paragraphs_to_add') and all answers with answer_source 'page' ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or similar meta-commentary.
+- CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all suggested paragraphs ('paragraphs_to_add') and all answers ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'this guide', 'this article', 'the announcement\'s disclaimer', or similar meta-commentary.
 - Language: Strictly {lang_instruction}.
 """
 
@@ -1337,17 +1361,32 @@ Requirements:
                 break
 
     # 4.2 Suggested H2 structure (Max 7)
+    # Collect real H2 headings from page (from ctx.existing_h2s or extracted from main_text)
+    page_h2_candidates: list[str] = list(getattr(ctx, "existing_h2s", []) or [])
+    if not page_h2_candidates and ctx.main_text:
+        # Fallback to headings extracted if available
+        pass
+    norm_page_h2s = [normalize_heading(h) for h in page_h2_candidates if normalize_heading(h)]
+
     h2_raw = raw_result.get("suggested_h2_structure", [])
     valid_h2: list[dict] = []
     if isinstance(h2_raw, list):
         for h in h2_raw:
             if not isinstance(h, dict) or not h.get("h2"):
                 continue
-            st = h.get("status", "new")
-            if st not in ["existing", "new"]:
-                st = "new"
+            clean_h2 = strip_urls(str(h.get("h2") or "")).strip()
+            norm_sug = normalize_heading(clean_h2)
+            
+            # Deterministic check: if it matches an actual H2 on the page, mark as 'present'
+            if norm_sug and any(norm_sug == ph for ph in norm_page_h2s):
+                st = "present"
+            else:
+                st = h.get("status", "new")
+                if st not in ["existing", "new", "present"]:
+                    st = "new"
+
             valid_h2.append({
-                "h2": strip_urls(str(h.get("h2") or "")).strip(),
+                "h2": clean_h2,
                 "purpose": strip_urls(str(h.get("purpose") or "")).strip(),
                 "status": st,
             })
@@ -1540,11 +1579,14 @@ Requirements:
     suggested_lead_text = lead_data.get("suggested", "").strip() if isinstance(lead_data, dict) else ""
     rationale_lead = lead_data.get("rationale", "").strip() if isinstance(lead_data, dict) else ""
 
+    lead_has_unverified_numbers = False
     if suggested_lead_text:
+        if not all_numbers_in_page(suggested_lead_text, page_norm):
+            lead_has_unverified_numbers = True
         suggested_lead_text = remove_financial_advice_phrases(suggested_lead_text)
         suggested_lead_text = strip_page_meta_references(suggested_lead_text)
 
-    if suggested_lead_text and not all_numbers_in_page(suggested_lead_text, page_norm):
+    if lead_has_unverified_numbers or (suggested_lead_text and not all_numbers_in_page(suggested_lead_text, page_norm)):
         suggested_lead_text = original_lead
         rationale_lead = "The original lead paragraph was kept because the suggested lead contained unverified figures."
         warnings.append("The suggested lead contained figures not found on the page and was discarded.")

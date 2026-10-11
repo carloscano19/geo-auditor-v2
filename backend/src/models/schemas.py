@@ -154,6 +154,7 @@ class AIContext(BaseModel):
     detected_image_url: Optional[str] = None
     target_query: Optional[str] = None
     failing_submetrics: list[FailingSubmetric] = Field(default_factory=list)
+    existing_h2s: list[str] = Field(default_factory=list)
 
 
 class LeadParagraphFix(BaseModel):
@@ -182,7 +183,7 @@ class PlanQuestion(BaseModel):
 class PlanOutlineItem(BaseModel):
     h2: str
     purpose: str
-    status: Literal["existing", "new"]
+    status: Literal["existing", "new", "present"]
 
 
 class PlanTable(BaseModel):
