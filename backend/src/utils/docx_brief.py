@@ -1084,9 +1084,33 @@ def generate_rewrite_draft_docx(
     run_h2d.font.color.rgb = RGBColor(17, 24, 39)
 
     # Parse and write markdown lines
+    def _add_hyperlink(paragraph, text: str, url: str, bold: bool = False):
+        """Append a real clickable hyperlink run to the paragraph."""
+        r_id = paragraph.part.relate_to(url, docx.opc.constants.RELATIONSHIP_TYPE.HYPERLINK, is_external=True)
+        hyperlink = OxmlElement("w:hyperlink")
+        hyperlink.set(qn("r:id"), r_id)
+        new_run = OxmlElement("w:r")
+        r_pr = OxmlElement("w:rPr")
+        r_style = OxmlElement("w:color")
+        r_style.set(qn("w:val"), "0563C1")
+        r_pr.append(r_style)
+        underline = OxmlElement("w:u")
+        underline.set(qn("w:val"), "single")
+        r_pr.append(underline)
+        if bold:
+            r_pr.append(OxmlElement("w:b"))
+        new_run.append(r_pr)
+        t = OxmlElement("w:t")
+        t.text = text
+        t.set(qn("xml:space"), "preserve")
+        new_run.append(t)
+        hyperlink.append(new_run)
+        paragraph._p.append(hyperlink)
+
     def _add_highlighted_text(paragraph, text: str, default_bold: bool = False):
-        """Append runs to paragraph, highlighting [EDITOR: ...] in yellow bold."""
-        pattern = re.compile(r'(\[EDITOR:[^\]]*\])')
+        """Append runs to paragraph, highlighting [EDITOR: ...] in yellow bold and
+        rendering Markdown links [text](url) as real hyperlinks."""
+        pattern = re.compile(r'(\[EDITOR:[^\]]*\]|\[[^\]]*\]\(https?://[^)\s]+\))')
         parts = pattern.split(text)
         for part in parts:
             if not part:
@@ -1096,6 +1120,10 @@ def generate_rewrite_draft_docx(
                 run.bold = True
                 run.font.highlight_color = WD_COLOR_INDEX.YELLOW
                 run.font.color.rgb = RGBColor(146, 64, 14)
+                continue
+            link_m = re.fullmatch(r'\[([^\]]*)\]\((https?://[^)\s]+)\)', part)
+            if link_m:
+                _add_hyperlink(paragraph, link_m.group(1) or link_m.group(2), link_m.group(2), bold=default_bold)
             else:
                 run = paragraph.add_run(part)
                 if default_bold:

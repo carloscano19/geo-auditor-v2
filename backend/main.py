@@ -621,6 +621,83 @@ def strip_urls(text: str) -> str:
     return re.sub(r'\s+', ' ', t).strip()
 
 
+def normalize_link_url(url: str) -> str:
+    """Normalize a URL for comparison: lowercase scheme/host, drop 'www.', fragment and trailing slash."""
+    try:
+        p = urlparse((url or "").strip())
+    except ValueError:
+        return (url or "").strip()
+    host = (p.netloc or "").lower()
+    if host.startswith("www."):
+        host = host[4:]
+    path = p.path.rstrip("/")
+    query = f"?{p.query}" if p.query else ""
+    return f"{(p.scheme or '').lower()}://{host}{path}{query}"
+
+
+def extract_original_links(main_html: str, base_url: Optional[str] = None) -> list[dict]:
+    """
+    Extract unique links (anchor text + absolute href) from the main content HTML.
+    Relative hrefs are resolved against base_url; mailto/tel/javascript/anchor-only links are skipped.
+    Returns [] when main_html is empty (e.g. pasted text).
+    """
+    if not main_html:
+        return []
+    from urllib.parse import urljoin
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(main_html, "lxml")
+    links: list[dict] = []
+    seen: set[str] = set()
+    for a in soup.find_all("a", href=True):
+        href = (a.get("href") or "").strip()
+        if not href or href.startswith("#") or re.match(r'^(mailto|tel|javascript|data):', href, re.I):
+            continue
+        absolute = urljoin(base_url, href) if base_url else href
+        if not re.match(r'^https?://', absolute, re.I):
+            continue
+        key = normalize_link_url(absolute)
+        if key in seen:
+            continue
+        seen.add(key)
+        text = re.sub(r'\s+', ' ', a.get_text(" ", strip=True)).strip() or absolute
+        links.append({"text": text, "url": absolute})
+    return links
+
+
+_MD_LINK_RE = re.compile(r'\[([^\]]*)\]\((https?://[^)\s]+)(?:\s+"[^"]*")?\)')
+
+
+def filter_draft_urls(line: str, allowed: set[str]) -> str:
+    """
+    Remove URLs that are not in `allowed` (normalized). Markdown links to unknown URLs are
+    reduced to their anchor text; unknown bare URLs are deleted. Allowed links are kept intact.
+    """
+    kept: list[str] = []
+
+    def _md(m: re.Match) -> str:
+        if normalize_link_url(m.group(2)) in allowed:
+            kept.append(m.group(0))
+            return f"___KEPT_LINK_{len(kept)-1}___"
+        return m.group(1)
+
+    out = _MD_LINK_RE.sub(_md, line)
+
+    def _bare(m: re.Match) -> str:
+        raw = m.group(0)
+        trail = ""
+        while raw and raw[-1] in ".,;:!?)":
+            trail = raw[-1] + trail
+            raw = raw[:-1]
+        if normalize_link_url(raw) in allowed:
+            return m.group(0)
+        return trail
+
+    out = re.sub(r'https?://[^\s]+', _bare, out)
+    for i, k in enumerate(kept):
+        out = out.replace(f"___KEPT_LINK_{i}___", k)
+    return out
+
+
 def remove_verification_phrases(text: str) -> str:
     """
     Removes sentences containing editorial verification instructions:
@@ -1764,7 +1841,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 3. If an important factual detail is missing to fully answer a topic or section, insert a placeholder strictly in the format: [EDITOR: description of missing data — source type] in {lang_instruction}. Preserve all [EDITOR: ...] placeholders already present in the AI plan.
 4. NEVER invent first-person experience ("we tested", "we saw", "in our experience", "probamos", "visitamos"). If experience signals are needed, use: [EDITOR: add a real first-hand experience — team member who attended] in {lang_instruction}.
 5. SENSITIVE TEXTS INTACT: Any disclaimer, risk warning, "not financial advice", terms and conditions, volatility note, or regulatory compliance statement in the original text MUST BE COPIED LITERALLY and verbatim without modification. Never offer financial advice or investment recommendations.
-6. NO EXTERNAL URLS: Do not write hyperlinked URLs or web addresses.
+6. LINKS: The user message lists the ORIGINAL LINKS of the page. You MUST keep ALL of them as Markdown links [text](url), in the same context or as close as possible to where they were in the original. NEVER add any URL or web address that is not in that list. If the list is empty, write no URLs at all.
 7. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
 8. Structure:
    - Begin with the # Main Title (H1).
@@ -1798,6 +1875,13 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 
     plan_context_text = "\n\n".join(plan_summary_parts)
 
+    original_links = extract_original_links(ctx.main_html or "", ctx.url)
+    allowed_urls = {normalize_link_url(l["url"]) for l in original_links}
+    if original_links:
+        original_links_text = "\n".join(f"- [{l['text']}]({l['url']})" for l in original_links)
+    else:
+        original_links_text = "(none)"
+
     user_prompt = f"""ORIGINAL ARTICLE METADATA:
 Title: {ctx.title or 'N/A'}
 H1: {ctx.h1 or 'N/A'}
@@ -1806,6 +1890,9 @@ Target Query: {request.target_query or ctx.target_query or 'General content'}
 
 ORIGINAL PAGE TEXT CONTENT:
 {ctx.main_text}
+
+ORIGINAL LINKS (keep ALL of them as Markdown links; add no other URLs):
+{original_links_text}
 
 AI IMPROVEMENT PLAN TO APPLY:
 {plan_context_text}
@@ -1889,7 +1976,7 @@ Write the complete rewritten article in Markdown now following all editorial and
     # Find numbers in draft sentences and verify if they exist in original text or plan
     plan_full_text = plan_context_text
     num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
-    orig_and_plan_numbers = set(num_pattern.findall(orig_text + " " + plan_full_text))
+    orig_and_plan_numbers = set(num_pattern.findall(orig_text + " " + plan_full_text + " " + " ".join(l["url"] for l in original_links)))
 
     def _check_and_mark_figures(md_text: str) -> tuple[str, list[str]]:
         flagged_warnings = []
@@ -1945,11 +2032,11 @@ Write the complete rewritten article in Markdown now following all editorial and
             continue
         # If heading or table, don't strip meta-references aggressively
         if line.strip().startswith("#") or line.strip().startswith("|"):
-            l_clean = re.sub(r'https?://[^\s]+', '', line)
+            l_clean = filter_draft_urls(line, allowed_urls)
             processed_lines.append(l_clean)
         else:
-            # Strip URLs
-            l_clean = re.sub(r'https?://[^\s]+', '', line)
+            # Strip URLs that are not in the original links list
+            l_clean = filter_draft_urls(line, allowed_urls)
             l_clean = strip_page_meta_references(l_clean)
             if l_clean.strip():
                 processed_lines.append(l_clean)
@@ -1960,6 +2047,16 @@ Write the complete rewritten article in Markdown now following all editorial and
         stashed = stashed.replace(f"___EDITOR_GAP_PRESERVE_{idx}___", gap)
 
     draft_markdown = stashed.strip()
+
+    # 4. Warn about original links that did not make it into the draft (never re-inserted by force)
+    if original_links:
+        draft_urls = {
+            normalize_link_url(u)
+            for u in re.findall(r'https?://[^\s)\]]+', draft_markdown)
+        }
+        for l in original_links:
+            if normalize_link_url(l["url"]) not in draft_urls:
+                warnings.append(f"Original link not preserved: {l['text']} ({l['url']})")
 
     word_count_original = len(orig_text.split())
     word_count_draft = len(draft_markdown.split())

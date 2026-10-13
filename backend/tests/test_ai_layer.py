@@ -4150,8 +4150,138 @@ def test_rewrite_docx_export_endpoint():
     assert len(res.content) > 1000
 
 
+# ---------------------------------------------------------------------------
+# Original link preservation in /api/ai/rewrite
+# ---------------------------------------------------------------------------
+
+_LINKS_MAIN_HTML = """
+<article>
+  <h1>Stadium Guide</h1>
+  <p>Read the <a href="/stadium-history/">stadium history</a> and the
+     <a href="https://www.UEFA.com/news/arena/">UEFA report</a>.</p>
+  <p>See also <a href="https://uefa.com/news/arena#top">UEFA report again</a>,
+     <a href="mailto:press@club.com">press</a> and <a href="#toc">top</a>.</p>
+</article>
+"""
 
 
+def test_extract_original_links_relative_absolute_and_dedup():
+    from main import extract_original_links
+    links = extract_original_links(_LINKS_MAIN_HTML, "https://club.com/guide/")
+    urls = [l["url"] for l in links]
+    assert urls == ["https://club.com/stadium-history/", "https://www.UEFA.com/news/arena/"]
+    assert links[0]["text"] == "stadium history"
+    assert links[1]["text"] == "UEFA report"
+    assert extract_original_links("", "https://club.com/") == []
 
 
+def test_filter_draft_urls_keeps_original_removes_invented():
+    from main import filter_draft_urls, normalize_link_url
+    allowed = {normalize_link_url("https://www.uefa.com/news/arena/")}
+    kept = filter_draft_urls("See the [UEFA report](https://uefa.com/news/arena) now.", allowed)
+    assert "[UEFA report](https://uefa.com/news/arena)" in kept
+    invented = filter_draft_urls("See [fake source](https://invented.example/x) and https://other.example/y.", allowed)
+    assert "invented.example" not in invented
+    assert "other.example" not in invented
+    assert "fake source" in invented
 
+
+def _rewrite_settings():
+    return Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+
+def test_rewrite_keeps_original_links_strips_invented_and_warns_missing():
+    req = {
+        "ai_context": {
+            "url": "https://club.com/guide/",
+            "main_text": "Read the stadium history and the UEFA report.",
+            "main_html": _LINKS_MAIN_HTML,
+            "language": "en",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+    mock_llm_markdown = (
+        "# Stadium Guide\n"
+        "Read the [UEFA report](https://uefa.com/news/arena/) and "
+        "[a made-up source](https://invented.example/page).\n"
+    )
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (mock_llm_markdown, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    draft = data["draft_markdown"]
+    assert "[UEFA report](https://uefa.com/news/arena/)" in draft
+    assert "invented.example" not in draft
+    assert "a made-up source" in draft
+    # The missing original link is reported, not force-inserted
+    assert "Original link not preserved: stadium history (https://club.com/stadium-history/)" in data["warnings"]
+    assert "club.com/stadium-history" not in draft
+    # The preserved link is not reported
+    assert not any("UEFA report" in w and "not preserved" in w for w in data["warnings"])
+
+    # The prompt sent to the model contains the ORIGINAL LINKS list
+    sent = mock_stream.call_args[0][3]["messages"][1]["content"]
+    assert "ORIGINAL LINKS" in sent
+    assert "[stadium history](https://club.com/stadium-history/)" in sent
+
+
+def test_rewrite_without_main_html_has_no_link_warnings():
+    req = {
+        "ai_context": {"main_text": "Plain pasted text about a stadium.", "language": "en"},
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = ("# Title\nSee [x](https://invented.example/a).\n", "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+    assert res.status_code == 200
+    data = res.json()
+    assert "invented.example" not in data["draft_markdown"]
+    assert not any("Original link not preserved" in w for w in data["warnings"])
+
+
+def test_rewrite_score_links_verifiability_not_lower_with_same_links():
+    client = TestClient(app)
+    orig_html = (
+        "<article><h1>Stadium Guide</h1>"
+        "<p>The arena opened in 1937 and is described by "
+        '<a href="https://www.uefa.com/news/arena/">UEFA</a> and '
+        '<a href="https://www.fifa.com/stadiums/">FIFA</a> in their official reports.</p>'
+        "</article>"
+    )
+    draft_md = (
+        "# Stadium Guide\n\n"
+        "The arena opened in 1937 and is described by "
+        "[UEFA](https://www.uefa.com/news/arena/) and "
+        "[FIFA](https://www.fifa.com/stadiums/) in their official reports.\n"
+    )
+    res = client.post("/api/ai/rewrite/score", json={"original_html": orig_html, "draft_markdown": draft_md})
+    assert res.status_code == 200
+    dim = next(d for d in res.json()["dimensions"] if d["name"] == "links_verifiability")
+    assert dim["score_after"] >= dim["score_before"]
+
+
+def test_rewrite_docx_contains_real_hyperlinks():
+    import io, docx as _docx
+    from src.utils.docx_brief import generate_rewrite_draft_docx
+    data = generate_rewrite_draft_docx(
+        url="https://club.com/guide/",
+        draft_markdown="# T\n\nRead the [UEFA report](https://uefa.com/news/arena/) now.\n",
+        warnings=[],
+        score_comparison=None,
+    )
+    d = _docx.Document(io.BytesIO(data))
+    targets = [r.target_ref for r in d.part.rels.values() if r.is_external]
+    assert "https://uefa.com/news/arena/" in targets
+    body_text = "\n".join(p.text for p in d.paragraphs)
+    assert "[UEFA report]" not in body_text
+    assert "UEFA report" in body_text

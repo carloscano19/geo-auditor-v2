@@ -303,6 +303,21 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
     const handleCopyRewriteHtml = () => {
         if (!rewriteDraft?.draft_markdown) return;
         // Simple client-side Markdown to clean HTML conversion
+        const escapeHtml = (s: string) =>
+            s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+        // Converts inline Markdown links [text](url) to real <a href> anchors; everything else is escaped
+        const inline = (s: string) => {
+            const linkRe = /\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+            let out = "";
+            let last = 0;
+            let m: RegExpExecArray | null;
+            while ((m = linkRe.exec(s)) !== null) {
+                out += escapeHtml(s.slice(last, m.index));
+                out += `<a href="${escapeHtml(m[2])}">${escapeHtml(m[1] || m[2])}</a>`;
+                last = m.index + m[0].length;
+            }
+            return out + escapeHtml(s.slice(last));
+        };
         const lines = rewriteDraft.draft_markdown.split('\n');
         const htmlParts: string[] = [];
         let inTable = false;
@@ -322,10 +337,10 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                     continue;
                 }
                 if (!tableHeaderDone) {
-                    htmlParts.push(`  <thead><tr>${cells.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`);
+                    htmlParts.push(`  <thead><tr>${cells.map(c => `<th>${inline(c)}</th>`).join('')}</tr></thead><tbody>`);
                     tableHeaderDone = true;
                 } else {
-                    htmlParts.push(`  <tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`);
+                    htmlParts.push(`  <tr>${cells.map(c => `<td>${inline(c)}</td>`).join('')}</tr>`);
                 }
                 continue;
             } else if (inTable) {
@@ -335,15 +350,15 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
 
             if (!line) continue;
             if (line.startsWith('# ')) {
-                htmlParts.push(`<h1>${line.slice(2)}</h1>`);
+                htmlParts.push(`<h1>${inline(line.slice(2))}</h1>`);
             } else if (line.startsWith('## ')) {
-                htmlParts.push(`<h2>${line.slice(3)}</h2>`);
+                htmlParts.push(`<h2>${inline(line.slice(3))}</h2>`);
             } else if (line.startsWith('### ')) {
-                htmlParts.push(`<h3>${line.slice(4)}</h3>`);
+                htmlParts.push(`<h3>${inline(line.slice(4))}</h3>`);
             } else if (line.startsWith('- ')) {
-                htmlParts.push(`<li>${line.slice(2)}</li>`);
+                htmlParts.push(`<li>${inline(line.slice(2))}</li>`);
             } else {
-                htmlParts.push(`<p>${line}</p>`);
+                htmlParts.push(`<p>${inline(line)}</p>`);
             }
         }
         if (inTable) {
