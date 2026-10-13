@@ -8,6 +8,7 @@ by both single audit endpoint (/api/audit) and batch audit worker.
 import time
 import asyncio
 import logging
+import re
 from datetime import datetime
 from typing import Optional, Tuple
 from urllib.parse import urlparse
@@ -109,8 +110,29 @@ async def run_single_audit(
     start_time = time.time()
     url = str(request.url) if request.url else "text-mode"
 
-    # Step 1: Acquisition (Scrape or use provided text)
-    if request.content_text:
+    # Step 1: Acquisition (Scrape or use provided HTML/text)
+    if request.content_html:
+        html_input = request.content_html
+        # Derive clean text from HTML
+        from bs4 import BeautifulSoup
+        parsed_soup = BeautifulSoup(html_input, "lxml")
+        derived_text = re.sub(r'\s+', ' ', parsed_soup.get_text(separator=' ')).strip()
+        text_len = len(derived_text.split())
+        page_data = PageData(
+            url=request.url or "https://manual-input.local",
+            final_url=request.url or "https://manual-input.local",
+            html_raw=f"<html><body>{html_input}</body></html>",
+            html_rendered=f"<html><body><div class='content'>{html_input}</div></body></html>",
+            text_content=derived_text,
+            status_code=200,
+            load_time_ms=0,
+            word_count=text_len,
+            is_ssr=True,
+            is_https=True,
+            ttfb_ms=None,
+            robots_txt_content=None
+        )
+    elif request.content_text:
         text_len = len(request.content_text.split())
         page_data = PageData(
             url=request.url or "https://manual-input.local",
@@ -145,10 +167,10 @@ async def run_single_audit(
             target_url_for_robots = page_data.final_url or request.url
             page_data.robots_txt_content = await effective_fetch_robots(target_url_for_robots)
     else:
-        raise ValueError("Must provide either URL or content_text")
+        raise ValueError("Must provide either URL or content_text or content_html")
 
     # Anti-bot challenge verification: a challenge page must never be scored
-    if not request.content_text and is_challenge_page(
+    if not request.content_text and not request.content_html and is_challenge_page(
         text=page_data.text_content,
         html=page_data.html_rendered,
         status_code=page_data.status_code
@@ -166,7 +188,7 @@ async def run_single_audit(
     all_recommendations = []
 
     # --- Layer 1: Technical Infrastructure (10%) ---
-    if not request.content_text:
+    if not request.content_text and not request.content_html:
         try:
             infra_detector = InfrastructureDetector()
             infra_result = await infra_detector.analyze(page_data)
@@ -568,6 +590,7 @@ def _build_ai_context(
         language=detected_lang,
         content_type=content_type,
         main_text=main_text,
+        main_html=scoped_html or page_data.html_rendered or "",
         first_paragraph=first_paragraph,
         existing_json_ld=existing_json_ld,
         detected_author=detected_author,

@@ -5,11 +5,14 @@ import {
     type AuditResponse,
     type AIPlanResponse,
     type AhrefsOffpageResponse,
+    type AIRewriteResponse,
+    type AIRewriteScoreResponse,
     getDimensionDisplayName,
     apiClient,
 } from "@/lib/api";
 import ScoreDisplay from "./ScoreDisplay";
 import ScoreBreakdown from "./ScoreBreakdown";
+import { StatTile } from "./ui/stat-tile";
 
 export function formatMarketInWords(market?: string | null): string {
     if (!market) return "";
@@ -115,7 +118,7 @@ interface AuditResultsProps {
     hideAiFixes?: boolean;
 }
 
-export default function AuditResults({ results, hideAiFixes = false }: AuditResultsProps) {
+export default function AuditResults({ results, originalText, hideAiFixes = false }: AuditResultsProps) {
     const [activeTab, setActiveTab] = useState<"overview" | "dimensions" | "ai_plan">("overview");
     const [openDimensions, setOpenDimensions] = useState<Record<string, boolean>>({});
 
@@ -132,6 +135,16 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
     const [isAhrefsLoading, setIsAhrefsLoading] = useState(false);
     const [ahrefsData, setAhrefsData] = useState<AhrefsOffpageResponse | null>(null);
     const [ahrefsError, setAhrefsError] = useState<string | null>(null);
+
+    // AI Rewrite state
+    const [isRewriting, setIsRewriting] = useState(false);
+    const [rewriteDraft, setRewriteDraft] = useState<AIRewriteResponse | null>(null);
+    const [rewriteScore, setRewriteScore] = useState<AIRewriteScoreResponse | null>(null);
+    const [rewriteError, setRewriteError] = useState<string | null>(null);
+    const [showOriginalText, setShowOriginalText] = useState(false);
+    const [copiedMarkdown, setCopiedMarkdown] = useState(false);
+    const [copiedHtml, setCopiedHtml] = useState(false);
+    const [isDraftDownloading, setIsDraftDownloading] = useState(false);
 
     useEffect(() => {
         apiClient.getVersion().then((v) => {
@@ -245,6 +258,118 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
             setAiPlanError(errorMsg);
         } finally {
             setIsPlanLoading(false);
+        }
+    };
+
+    const handleRewriteArticle = async () => {
+        if (!results.ai_context || !aiPlan) return;
+        setIsRewriting(true);
+        setRewriteError(null);
+        try {
+            const rewriteResp = await apiClient.rewriteArticle({
+                ai_context: results.ai_context,
+                ai_plan: aiPlan,
+                target_query: customQuery || undefined,
+            });
+            setRewriteDraft(rewriteResp);
+
+            // Audit & score rewrite
+            const origHtml = results.ai_context.main_html || `<p>${results.ai_context.main_text || ""}</p>`;
+            try {
+                const scoreResp = await apiClient.scoreRewrite({
+                    original_html: origHtml,
+                    draft_markdown: rewriteResp.draft_markdown,
+                    target_query: customQuery || undefined,
+                });
+                setRewriteScore(scoreResp);
+            } catch (scoreErr) {
+                console.error("Failed to calculate score comparison:", scoreErr);
+            }
+        } catch (err: unknown) {
+            const errorMsg = err instanceof Error ? err.message : "Failed to generate rewrite draft";
+            setRewriteError(errorMsg);
+        } finally {
+            setIsRewriting(false);
+        }
+    };
+
+    const handleCopyRewriteMarkdown = () => {
+        if (!rewriteDraft?.draft_markdown) return;
+        navigator.clipboard.writeText(rewriteDraft.draft_markdown);
+        setCopiedMarkdown(true);
+        setTimeout(() => setCopiedMarkdown(false), 2000);
+    };
+
+    const handleCopyRewriteHtml = () => {
+        if (!rewriteDraft?.draft_markdown) return;
+        // Simple client-side Markdown to clean HTML conversion
+        const lines = rewriteDraft.draft_markdown.split('\n');
+        const htmlParts: string[] = [];
+        let inTable = false;
+        let tableHeaderDone = false;
+
+        for (let i = 0; i < lines.length; i++) {
+            const line = lines[i].trim();
+            if (line.startsWith('|') && line.endsWith('|')) {
+                if (!inTable) {
+                    inTable = true;
+                    tableHeaderDone = false;
+                    htmlParts.push('<table border="1" style="border-collapse: collapse; width: 100%;">');
+                }
+                const cells = line.slice(1, -1).split('|').map(c => c.trim());
+                if (cells.every(c => /^:?-+:?$/.test(c))) {
+                    tableHeaderDone = true;
+                    continue;
+                }
+                if (!tableHeaderDone) {
+                    htmlParts.push(`  <thead><tr>${cells.map(c => `<th>${c}</th>`).join('')}</tr></thead><tbody>`);
+                    tableHeaderDone = true;
+                } else {
+                    htmlParts.push(`  <tr>${cells.map(c => `<td>${c}</td>`).join('')}</tr>`);
+                }
+                continue;
+            } else if (inTable) {
+                inTable = false;
+                htmlParts.push('</tbody></table>');
+            }
+
+            if (!line) continue;
+            if (line.startsWith('# ')) {
+                htmlParts.push(`<h1>${line.slice(2)}</h1>`);
+            } else if (line.startsWith('## ')) {
+                htmlParts.push(`<h2>${line.slice(3)}</h2>`);
+            } else if (line.startsWith('### ')) {
+                htmlParts.push(`<h3>${line.slice(4)}</h3>`);
+            } else if (line.startsWith('- ')) {
+                htmlParts.push(`<li>${line.slice(2)}</li>`);
+            } else {
+                htmlParts.push(`<p>${line}</p>`);
+            }
+        }
+        if (inTable) {
+            htmlParts.push('</tbody></table>');
+        }
+
+        navigator.clipboard.writeText(htmlParts.join('\n'));
+        setCopiedHtml(true);
+        setTimeout(() => setCopiedHtml(false), 2000);
+    };
+
+    const handleDownloadRewriteDocx = async () => {
+        if (!rewriteDraft?.draft_markdown) return;
+        setIsDraftDownloading(true);
+        try {
+            await apiClient.downloadRewriteDraft({
+                url: results.url,
+                draft_markdown: rewriteDraft.draft_markdown,
+                warnings: rewriteDraft.warnings || [],
+                score_comparison: rewriteScore,
+            });
+        } catch (err: unknown) {
+            const msg = err instanceof Error ? err.message : "Failed to download Word document";
+            alert(`Error: ${msg}`);
+        } finally {
+            setIsDraftDownloading(false);
         }
     };
 
@@ -1538,7 +1663,7 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
 
                             {/* Combined schema */}
                             {aiPlan.combined_schema && (
-                                <div className="space-y-2">
+                                <div className="space-y-2 pb-6 border-b border-hairline">
                                     <div className="flex items-center justify-between">
                                         <div>
                                             <h4 className="text-sm font-semibold text-ink">
@@ -1561,6 +1686,323 @@ export default function AuditResults({ results, hideAiFixes = false }: AuditResu
                                     </div>
                                 </div>
                             )}
+
+                            {/* Section: Rewrite Article with AI Plan */}
+                            <div className="pt-2 space-y-6">
+                                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 p-5 rounded-2xl bg-surface-2 border border-hairline">
+                                    <div>
+                                        <h4 className="text-sm font-bold text-ink flex items-center gap-2">
+                                            <span>✍️</span> Rewrite the article with this plan
+                                        </h4>
+                                        <p className="text-xs text-ink-3 mt-1 max-w-xl">
+                                            Generate a complete, publication-ready draft applying the opening lead, heading hierarchy, FAQ block, and tables. Review side-by-side with before and after scores.
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={handleRewriteArticle}
+                                        disabled={isRewriting}
+                                        className="btn-primary text-xs px-4 py-2.5 shrink-0 flex items-center gap-2 shadow-sm font-medium"
+                                    >
+                                        {isRewriting ? (
+                                            <>
+                                                <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
+                                                <span>Rewriting &amp; Auditing… (takes ~30-60s)</span>
+                                            </>
+                                        ) : (
+                                            <>
+                                                <span>🚀</span>
+                                                <span>Rewrite the article with this plan</span>
+                                            </>
+                                        )}
+                                    </button>
+                                </div>
+
+                                {rewriteError && (
+                                    <div className="p-4 rounded-xl border border-critical/30 bg-critical-soft text-critical text-xs flex items-center gap-2">
+                                        <span>⚠️</span>
+                                        <span>{rewriteError}</span>
+                                    </div>
+                                )}
+
+                                {rewriteDraft && (
+                                    <div className="space-y-6 animate-fade-in">
+                                        {/* Score comparison StatTiles */}
+                                        {rewriteScore && (
+                                            <div className="space-y-4">
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                    <StatTile
+                                                        figure={`${Math.round(rewriteScore.total_score_before)}`}
+                                                        label="Original Content Score"
+                                                        hint="On-page content before applying AI plan"
+                                                        tone="neutral"
+                                                    />
+                                                    <StatTile
+                                                        figure={`${Math.round(rewriteScore.total_score_after)}`}
+                                                        label="Rewritten Draft Score"
+                                                        hint="On-page content with AI plan applied"
+                                                        tone={rewriteScore.difference >= 0 ? "good" : "critical"}
+                                                        change={{
+                                                            value: `${rewriteScore.difference > 0 ? "+" : ""}${Math.round(rewriteScore.difference)} pts`,
+                                                            direction: rewriteScore.difference > 0 ? "up" : rewriteScore.difference < 0 ? "down" : "flat",
+                                                        }}
+                                                    />
+                                                </div>
+
+                                                {/* Excluded dimensions notice */}
+                                                <p className="text-xs text-ink-3 italic">
+                                                    Content-only comparison: technical, metadata and schema dimensions are not included.
+                                                </p>
+
+                                                {/* Dimension comparison table */}
+                                                {rewriteScore.dimensions && rewriteScore.dimensions.length > 0 && (
+                                                    <div className="border border-hairline rounded-xl overflow-hidden bg-surface">
+                                                        <div className="px-4 py-3 bg-surface-2 border-b border-hairline">
+                                                            <h5 className="text-xs font-bold text-ink uppercase tracking-wider">
+                                                                Dimension Comparison
+                                                            </h5>
+                                                        </div>
+                                                        <div className="overflow-x-auto">
+                                                            <table className="w-full text-xs text-left">
+                                                                <thead className="bg-surface-2/60 text-ink-2 font-semibold border-b border-hairline">
+                                                                    <tr>
+                                                                        <th className="py-2.5 px-4">Dimension</th>
+                                                                        <th className="py-2.5 px-4 text-center">Original</th>
+                                                                        <th className="py-2.5 px-4 text-center">Draft</th>
+                                                                        <th className="py-2.5 px-4 text-right">Change</th>
+                                                                    </tr>
+                                                                </thead>
+                                                                <tbody className="divide-y divide-hairline">
+                                                                    {rewriteScore.dimensions.map((dim, idx) => (
+                                                                        <tr key={idx} className="hover:bg-surface-2/30 transition-colors">
+                                                                            <td className="py-2.5 px-4 font-medium text-ink">
+                                                                                {getDimensionDisplayName(dim.name)}
+                                                                            </td>
+                                                                            <td className="py-2.5 px-4 text-center font-mono text-ink-2">
+                                                                                {Math.round(dim.score_before)}/100
+                                                                            </td>
+                                                                            <td className="py-2.5 px-4 text-center font-mono text-ink font-semibold">
+                                                                                {Math.round(dim.score_after)}/100
+                                                                            </td>
+                                                                            <td className="py-2.5 px-4 text-right">
+                                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                                                                                    dim.difference > 0
+                                                                                        ? "bg-good-soft text-good"
+                                                                                        : dim.difference < 0
+                                                                                        ? "bg-critical-soft text-critical"
+                                                                                        : "bg-surface-2 text-ink-3"
+                                                                                }`}>
+                                                                                    {dim.difference > 0 ? "+" : ""}{Math.round(dim.difference)}
+                                                                                </span>
+                                                                            </td>
+                                                                        </tr>
+                                                                    ))}
+                                                                </tbody>
+                                                            </table>
+                                                        </div>
+                                                    </div>
+                                                )}
+                                            </div>
+                                        )}
+
+                                        {/* Warnings callout box */}
+                                        {rewriteDraft.warnings && rewriteDraft.warnings.length > 0 && (
+                                            <div className="p-4 rounded-xl border border-warn/30 bg-warn-soft/60 space-y-2">
+                                                <div className="flex items-center gap-2 text-xs font-bold text-warn">
+                                                    <span>⚠️</span>
+                                                    <span>Editorial Warnings ({rewriteDraft.warnings.length})</span>
+                                                </div>
+                                                <ul className="text-xs text-ink leading-relaxed space-y-1 list-disc pl-5">
+                                                    {rewriteDraft.warnings.map((warn, wIdx) => (
+                                                        <li key={wIdx}>{warn}</li>
+                                                    ))}
+                                                </ul>
+                                            </div>
+                                        )}
+
+                                        {/* Action buttons & Word counts bar */}
+                                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-surface-2 rounded-xl border border-hairline">
+                                            <div className="flex items-center gap-3 text-xs text-ink-3 font-medium">
+                                                <span>Original: {rewriteDraft.word_count_original} words</span>
+                                                <span>·</span>
+                                                <span>Draft: {rewriteDraft.word_count_draft} words</span>
+                                            </div>
+                                            <div className="flex flex-wrap items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setShowOriginalText(!showOriginalText)}
+                                                    className="btn-default text-xs h-8 px-3 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                >
+                                                    <span>{showOriginalText ? "👁️ Hide Original" : "👁️ Show Original"}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleCopyRewriteMarkdown}
+                                                    className="btn-default text-xs h-8 px-3 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                >
+                                                    <span>{copiedMarkdown ? "✓ Copied" : "📋 Copy as Markdown"}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleCopyRewriteHtml}
+                                                    className="btn-default text-xs h-8 px-3 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                >
+                                                    <span>{copiedHtml ? "✓ Copied" : "🌐 Copy as HTML"}</span>
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={handleDownloadRewriteDocx}
+                                                    disabled={isDraftDownloading}
+                                                    className="btn-primary text-xs h-8 px-3.5 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                >
+                                                    {isDraftDownloading ? (
+                                                        <>
+                                                            <span className="animate-spin inline-block w-3 h-3 border-2 border-white border-t-transparent rounded-full" />
+                                                            <span>Downloading...</span>
+                                                        </>
+                                                    ) : (
+                                                        <>
+                                                            <span>📥</span>
+                                                            <span>Download draft (.docx)</span>
+                                                        </>
+                                                    )}
+                                                </button>
+                                            </div>
+                                        </div>
+
+                                        {/* Side by side comparison or Original toggle */}
+                                        {showOriginalText && (
+                                            <div className="p-5 rounded-2xl bg-surface-2 border border-hairline space-y-2">
+                                                <h5 className="text-xs font-bold text-ink uppercase tracking-wider">
+                                                    Original Scraped Content
+                                                </h5>
+                                                <div className="text-xs text-ink-2 whitespace-pre-wrap leading-relaxed max-h-96 overflow-y-auto p-4 bg-surface rounded-xl border border-hairline font-serif">
+                                                    {results.ai_context?.main_text || originalText || "No original text available."}
+                                                </div>
+                                            </div>
+                                        )}
+
+                                        {/* Rendered Draft Content */}
+                                        <div className="p-6 sm:p-8 rounded-2xl bg-surface border border-hairline space-y-5 shadow-sm">
+                                            <div className="flex items-center justify-between pb-3 border-b border-hairline">
+                                                <h4 className="text-base font-bold text-ink">
+                                                    Rewritten Draft
+                                                </h4>
+                                                <span className="text-xs text-ink-3">
+                                                    Editor review recommended before publishing
+                                                </span>
+                                            </div>
+
+                                            <div className="prose prose-sm dark:prose-invert max-w-none space-y-4">
+                                                {rewriteDraft.draft_markdown.split('\n\n').map((block, bIdx) => {
+                                                    const trimmed = block.trim();
+                                                    if (!trimmed) return null;
+
+                                                    // Markdown table block
+                                                    if (trimmed.startsWith('|') && trimmed.includes('\n|')) {
+                                                        const lines = trimmed.split('\n').filter(l => l.trim().startsWith('|'));
+                                                        const headers = lines[0].slice(1, -1).split('|').map(c => c.trim());
+                                                        const rows = lines.slice(2).map(l => l.slice(1, -1).split('|').map(c => c.trim()));
+                                                        return (
+                                                            <div key={bIdx} className="overflow-x-auto my-4 border border-hairline rounded-xl">
+                                                                <table className="w-full text-xs text-left">
+                                                                    <thead className="bg-surface-2 text-ink font-semibold border-b border-hairline">
+                                                                        <tr>
+                                                                            {headers.map((h, hIdx) => (
+                                                                                <th key={hIdx} className="py-2 px-3 border-r border-hairline last:border-r-0">{h}</th>
+                                                                            ))}
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody className="divide-y divide-hairline bg-surface">
+                                                                        {rows.map((r, rIdx) => (
+                                                                            <tr key={rIdx}>
+                                                                                {r.map((cell, cIdx) => (
+                                                                                    <td key={cIdx} className="py-2 px-3 border-r border-hairline last:border-r-0 text-ink-2">
+                                                                                        {cell}
+                                                                                    </td>
+                                                                                ))}
+                                                                            </tr>
+                                                                        ))}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        );
+                                                    }
+
+                                                    // Heading 1
+                                                    if (trimmed.startsWith('# ')) {
+                                                        return (
+                                                            <h1 key={bIdx} className="text-xl sm:text-2xl font-extrabold text-ink tracking-tight pt-2">
+                                                                {trimmed.slice(2)}
+                                                            </h1>
+                                                        );
+                                                    }
+
+                                                    // Heading 2
+                                                    if (trimmed.startsWith('## ')) {
+                                                        return (
+                                                            <h2 key={bIdx} className="text-lg font-bold text-ink tracking-tight pt-3 border-t border-hairline/60">
+                                                                {trimmed.slice(3)}
+                                                            </h2>
+                                                        );
+                                                    }
+
+                                                    // Heading 3
+                                                    if (trimmed.startsWith('### ')) {
+                                                        return (
+                                                            <h3 key={bIdx} className="text-sm font-bold text-ink pt-1">
+                                                                {trimmed.slice(4)}
+                                                            </h3>
+                                                        );
+                                                    }
+
+                                                    // Bullet lists
+                                                    if (trimmed.startsWith('- ')) {
+                                                        const items = trimmed.split('\n').filter(l => l.trim().startsWith('- '));
+                                                        return (
+                                                            <ul key={bIdx} className="list-disc pl-5 space-y-1 text-xs text-ink-2 leading-relaxed">
+                                                                {items.map((item, iIdx) => (
+                                                                    <li key={iIdx}>
+                                                                        {item.slice(2).split(/(\[EDITOR:[^\]]+\])/g).map((part, pIdx) => {
+                                                                            if (part.startsWith('[EDITOR:') && part.endsWith(']')) {
+                                                                                return (
+                                                                                    <span key={pIdx} className="inline-block bg-warn-soft border border-warn/30 text-warn font-medium px-1.5 py-0.5 rounded text-[11px] mx-0.5">
+                                                                                        {part}
+                                                                                    </span>
+                                                                                );
+                                                                            }
+                                                                            return part;
+                                                                        })}
+                                                                    </li>
+                                                                ))}
+                                                            </ul>
+                                                        );
+                                                    }
+
+                                                    // Standard paragraph with [EDITOR: ...] tokens highlighted in yellow bold
+                                                    return (
+                                                        <p key={bIdx} className="text-xs sm:text-sm text-ink leading-relaxed">
+                                                            {trimmed.split(/(\[EDITOR:[^\]]+\])/g).map((part, pIdx) => {
+                                                                if (part.startsWith('[EDITOR:') && part.endsWith(']')) {
+                                                                    return (
+                                                                        <span
+                                                                            key={pIdx}
+                                                                            className="inline-block bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 font-bold px-1.5 py-0.5 rounded text-xs mx-0.5 shadow-2xs"
+                                                                        >
+                                                                            {part}
+                                                                        </span>
+                                                                    );
+                                                                }
+                                                                return part;
+                                                            })}
+                                                        </p>
+                                                    );
+                                                })}
+                                            </div>
+                                        </div>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     )}
                 </div>

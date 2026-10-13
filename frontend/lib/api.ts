@@ -52,6 +52,7 @@ export interface AIContext {
     language: string;
     content_type: string;
     main_text: string;
+    main_html?: string;
     first_paragraph?: string;
     existing_json_ld: Record<string, unknown>[];
     detected_author?: string;
@@ -175,6 +176,47 @@ export interface BriefExportRequest {
     ai_fixes?: AIFixesResponse | null;
     ai_plan?: AIPlanResponse | null;
     ahrefs_offpage?: AhrefsOffpageResponse | null;
+}
+
+export interface AIRewriteRequest {
+    ai_context: AIContext;
+    ai_plan: AIPlanResponse;
+    target_query?: string;
+}
+
+export interface AIRewriteResponse {
+    draft_markdown: string;
+    warnings: string[];
+    word_count_original: number;
+    word_count_draft: number;
+}
+
+export interface AIRewriteScoreRequest {
+    original_html: string;
+    draft_markdown: string;
+    target_query?: string;
+}
+
+export interface DimensionScoreComparison {
+    name: string;
+    score_before: number;
+    score_after: number;
+    difference: number;
+}
+
+export interface AIRewriteScoreResponse {
+    total_score_before: number;
+    total_score_after: number;
+    difference: number;
+    dimensions: DimensionScoreComparison[];
+    excluded_dimensions: string[];
+}
+
+export interface RewriteBriefExportRequest {
+    url?: string;
+    draft_markdown: string;
+    warnings: string[];
+    score_comparison?: AIRewriteScoreResponse | null;
 }
 
 export interface AuditResponse {
@@ -647,6 +689,73 @@ class ApiClient {
             body: JSON.stringify({ url, language: language || 'en' }),
         });
         return this.parseResponse<AhrefsOffpageResponse>(response, 'Failed to fetch Ahrefs off-page signals');
+    }
+
+    /**
+     * Rewrite the article based on AI plan
+     */
+    async rewriteArticle(request: AIRewriteRequest): Promise<AIRewriteResponse> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/rewrite`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(request),
+        });
+        return this.parseResponse<AIRewriteResponse>(response, 'Failed to rewrite article');
+    }
+
+    /**
+     * Compare content scores before vs after rewrite
+     */
+    async scoreRewrite(request: AIRewriteScoreRequest): Promise<AIRewriteScoreResponse> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/rewrite/score`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(request),
+        });
+        return this.parseResponse<AIRewriteScoreResponse>(response, 'Failed to score article rewrite');
+    }
+
+    /**
+     * Download article rewrite draft as Word (.docx)
+     */
+    async downloadRewriteDraft(request: RewriteBriefExportRequest): Promise<void> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/export/rewrite`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify(request),
+        });
+
+        if (!response.ok) {
+            const contentType = response.headers.get('content-type') || '';
+            if (contentType.includes('application/json')) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err?.detail || 'Failed to download rewrite draft');
+            }
+            throw new Error(SERVER_BUSY_MESSAGE);
+        }
+
+        const blob = await response.blob();
+        const disposition = response.headers.get('content-disposition');
+        let filename = 'rewrite-draft.docx';
+        if (disposition && disposition.includes('filename=')) {
+            const match = disposition.match(/filename="?([^"]+)"?/);
+            if (match && match[1]) filename = match[1];
+        }
+
+        const blobUrl = window.URL.createObjectURL(blob);
+        const link = document.createElement('a');
+        link.href = blobUrl;
+        link.download = filename;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+        window.URL.revokeObjectURL(blobUrl);
     }
 }
 

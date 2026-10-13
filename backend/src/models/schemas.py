@@ -21,6 +21,7 @@ class AuditRequest(BaseModel):
     """
     url: Optional[str] = Field(None, description="URL to audit")
     content_text: Optional[str] = Field(None, description="Raw text content to analyze directly")
+    content_html: Optional[str] = Field(None, description="Raw HTML content snippet to analyze directly without scraping")
     target_query: Optional[str] = Field(
         default=None,
         description="Optional target search query to evaluate relevance"
@@ -144,6 +145,7 @@ class AIContext(BaseModel):
     language: str = "en"
     content_type: str = "guide_blog"
     main_text: str = ""
+    main_html: Optional[str] = None
     first_paragraph: Optional[str] = None
     existing_json_ld: list[dict] = Field(default_factory=list)
     detected_author: Optional[str] = None
@@ -276,6 +278,47 @@ class BriefExportRequest(BaseModel):
     ai_fixes: Optional[AIFixesResponse] = None
     ai_plan: Optional[AIPlanResponse] = None
     ahrefs_offpage: Optional[AhrefsOffpageResponse] = None
+
+
+class AIRewriteRequest(BaseModel):
+    ai_context: AIContext
+    ai_plan: AIPlanResponse
+    target_query: Optional[str] = None
+
+
+class AIRewriteResponse(BaseModel):
+    draft_markdown: str
+    warnings: list[str] = Field(default_factory=list)
+    word_count_original: int
+    word_count_draft: int
+
+
+class AIRewriteScoreRequest(BaseModel):
+    original_html: str
+    draft_markdown: str
+    target_query: Optional[str] = None
+
+
+class DimensionScoreComparison(BaseModel):
+    name: str
+    score_before: float
+    score_after: float
+    difference: float
+
+
+class AIRewriteScoreResponse(BaseModel):
+    total_score_before: float
+    total_score_after: float
+    difference: float
+    dimensions: list[DimensionScoreComparison] = Field(default_factory=list)
+    excluded_dimensions: list[str] = Field(default_factory=list)
+
+
+class RewriteBriefExportRequest(BaseModel):
+    url: Optional[str] = None
+    draft_markdown: str
+    warnings: list[str] = Field(default_factory=list)
+    score_comparison: Optional[AIRewriteScoreResponse] = None
 
 
 class AuditResponse(BaseModel):

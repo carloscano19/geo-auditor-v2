@@ -658,6 +658,45 @@ DISCARD_QUESTION_KEYWORDS: Dict[str, List[str]] = {
     ],
 }
 
+# Sensitive legal, regulatory, and financial risk keywords (must be preserved verbatim in article rewrites)
+SENSITIVE_LEGAL_KEYWORDS: Dict[str, List[str]] = {
+    "en": [
+        "not financial advice",
+        "financial advice",
+        "risk warning",
+        "capital at risk",
+        "past performance",
+        "terms and conditions",
+        "terms of service",
+        "disclaimer",
+        "volatility",
+        "volatile",
+        "regulatory",
+        "regulated by",
+        "investment advice",
+        "at your own risk",
+        "seek independent",
+    ],
+    "es": [
+        "no es asesoramiento financiero",
+        "asesoramiento financiero",
+        "aviso de riesgo",
+        "advertencia de riesgo",
+        "capital en riesgo",
+        "rentabilidad pasada",
+        "términos y condiciones",
+        "terminos y condiciones",
+        "descargo de responsabilidad",
+        "volatilidad",
+        "volátil",
+        "volatil",
+        "regulatorio",
+        "regulado por",
+        "bajo su propio riesgo",
+        "consulte con un profesional",
+    ],
+}
+
 
 def _format_score_number(val: Any) -> str:
     """Format numeric score (e.g. 50.0 -> '50', 52.5 -> '52.5')."""

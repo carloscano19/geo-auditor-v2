@@ -935,3 +935,277 @@ def generate_editor_brief_docx(
     doc.save(buffer)
     buffer.seek(0)
     return buffer.getvalue()
+
+
+def generate_rewrite_draft_docx(
+    url: Optional[str],
+    draft_markdown: str,
+    warnings: list[str],
+    score_comparison: Optional[Any] = None,
+) -> bytes:
+    """
+    Generate Word (.docx) document for an AI article rewrite draft:
+    1. Title with domain / URL and date.
+    2. Before/After score comparison table (if provided).
+    3. Warnings callout box (if warnings present).
+    4. Rendered draft with real headings (H1, H2, H3), paragraphs, Markdown tables,
+       and [EDITOR: ...] placeholders highlighted in yellow bold.
+    """
+    import re
+    doc = Document()
+
+    for section in doc.sections:
+        section.top_margin = Inches(1)
+        section.bottom_margin = Inches(1)
+        section.left_margin = Inches(1)
+        section.right_margin = Inches(1)
+
+    # 1. Title
+    title_p = doc.add_paragraph()
+    title_p.paragraph_format.space_before = Pt(0)
+    title_p.paragraph_format.space_after = Pt(2)
+    run_title = title_p.add_run("Article Rewrite Draft")
+    run_title.font.name = "Arial"
+    run_title.font.size = Pt(24)
+    run_title.bold = True
+    run_title.font.color.rgb = RGBColor(17, 24, 39)
+
+    meta_p = doc.add_paragraph()
+    meta_p.paragraph_format.space_after = Pt(14)
+    r_sub = meta_p.add_run(f"Generated draft for {url or 'manual input'} • {datetime.now(timezone.utc).strftime('%B %d, %Y')}")
+    r_sub.font.size = Pt(10)
+    r_sub.font.color.rgb = RGBColor(107, 114, 128)
+
+    # 2. Score comparison table
+    if score_comparison:
+        h2_score = doc.add_heading(level=2)
+        h2_score.paragraph_format.space_before = Pt(12)
+        h2_score.paragraph_format.space_after = Pt(4)
+        run_h2s = h2_score.add_run("Content Score Comparison (Before vs After)")
+        run_h2s.font.name = "Arial"
+        run_h2s.font.size = Pt(14)
+        run_h2s.bold = True
+        run_h2s.font.color.rgb = RGBColor(31, 41, 55)
+
+        note_p = doc.add_paragraph()
+        note_p.paragraph_format.space_after = Pt(6)
+        r_note = note_p.add_run("Content-only comparison: technical, metadata and schema dimensions are not included.")
+        r_note.font.italic = True
+        r_note.font.size = Pt(9)
+        r_note.font.color.rgb = RGBColor(107, 114, 128)
+
+        dims = getattr(score_comparison, "dimensions", [])
+        table = doc.add_table(rows=1 + len(dims) + 1, cols=4)
+        table.alignment = WD_TABLE_ALIGNMENT.CENTER
+        table.autofit = False
+
+        headers = ["Dimension", "Original", "Draft", "Change"]
+        col_widths = [Inches(2.8), Inches(1.2), Inches(1.2), Inches(1.3)]
+        for i, (title, width) in enumerate(zip(headers, col_widths)):
+            cell = table.cell(0, i)
+            cell.width = width
+            set_cell_background(cell, "1F2937")
+            set_cell_margins(cell, top=100, bottom=100, left=140, right=140)
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if i > 0 else WD_ALIGN_PARAGRAPH.LEFT
+            run = p.add_run(title)
+            run.font.name = "Arial"
+            run.font.size = Pt(9.5)
+            run.bold = True
+            run.font.color.rgb = RGBColor(255, 255, 255)
+
+        for row_idx, dim in enumerate(dims, start=1):
+            dim_name = getattr(dim, "name", "")
+            s_before = getattr(dim, "score_before", 0.0)
+            s_after = getattr(dim, "score_after", 0.0)
+            diff = getattr(dim, "difference", 0.0)
+
+            diff_str = f"+{diff:.1f}" if diff > 0 else f"{diff:.1f}"
+            row_data = [dim_name, f"{s_before:.1f}", f"{s_after:.1f}", diff_str]
+            bg_color = "F9FAFB" if row_idx % 2 == 1 else "FFFFFF"
+
+            for i, (val, width) in enumerate(zip(row_data, col_widths)):
+                cell = table.cell(row_idx, i)
+                cell.width = width
+                set_cell_background(cell, bg_color)
+                set_cell_margins(cell, top=80, bottom=80, left=140, right=140)
+                p = cell.paragraphs[0]
+                p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if i > 0 else WD_ALIGN_PARAGRAPH.LEFT
+                run = p.add_run(val)
+                run.font.name = "Arial"
+                run.font.size = Pt(9)
+                if i == 3:
+                    run.bold = True
+                    if diff > 0:
+                        run.font.color.rgb = RGBColor(16, 149, 106)
+                    elif diff < 0:
+                        run.font.color.rgb = RGBColor(230, 57, 70)
+
+        # Total row
+        tot_idx = len(dims) + 1
+        t_before = getattr(score_comparison, "total_score_before", 0.0)
+        t_after = getattr(score_comparison, "total_score_after", 0.0)
+        t_diff = getattr(score_comparison, "difference", 0.0)
+        t_diff_str = f"+{t_diff:.1f}" if t_diff > 0 else f"{t_diff:.1f}"
+
+        tot_data = ["Total Citation Score (Normalized)", f"{t_before:.1f}", f"{t_after:.1f}", t_diff_str]
+        for i, (val, width) in enumerate(zip(tot_data, col_widths)):
+            cell = table.cell(tot_idx, i)
+            cell.width = width
+            set_cell_background(cell, "E5E7EB")
+            set_cell_margins(cell, top=100, bottom=100, left=140, right=140)
+            p = cell.paragraphs[0]
+            p.alignment = WD_ALIGN_PARAGRAPH.RIGHT if i > 0 else WD_ALIGN_PARAGRAPH.LEFT
+            run = p.add_run(val)
+            run.font.name = "Arial"
+            run.font.size = Pt(9.5)
+            run.bold = True
+            if i == 3:
+                if t_diff > 0:
+                    run.font.color.rgb = RGBColor(16, 149, 106)
+                elif t_diff < 0:
+                    run.font.color.rgb = RGBColor(230, 57, 70)
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(12)
+
+    # 3. Warnings
+    if warnings:
+        warn_text = "\n".join(f"• {w}" for w in warnings)
+        add_callout(doc, warn_text, title="Editorial Warnings:")
+
+    # 4. Article Draft Heading
+    h2_draft = doc.add_heading(level=1)
+    h2_draft.paragraph_format.space_before = Pt(16)
+    h2_draft.paragraph_format.space_after = Pt(6)
+    run_h2d = h2_draft.add_run("Draft Article Content")
+    run_h2d.font.name = "Arial"
+    run_h2d.font.size = Pt(16)
+    run_h2d.bold = True
+    run_h2d.font.color.rgb = RGBColor(17, 24, 39)
+
+    # Parse and write markdown lines
+    def _add_highlighted_text(paragraph, text: str, default_bold: bool = False):
+        """Append runs to paragraph, highlighting [EDITOR: ...] in yellow bold."""
+        pattern = re.compile(r'(\[EDITOR:[^\]]*\])')
+        parts = pattern.split(text)
+        for part in parts:
+            if not part:
+                continue
+            if part.startswith("[EDITOR:") and part.endswith("]"):
+                run = paragraph.add_run(part)
+                run.bold = True
+                run.font.highlight_color = WD_COLOR_INDEX.YELLOW
+                run.font.color.rgb = RGBColor(146, 64, 14)
+            else:
+                run = paragraph.add_run(part)
+                if default_bold:
+                    run.bold = True
+
+    lines = draft_markdown.split("\n")
+    i = 0
+    in_table = False
+    table_lines: list[str] = []
+
+    def _flush_table(t_lines: list[str]):
+        if not t_lines:
+            return
+        # Parse markdown table
+        rows_data = []
+        for tl in t_lines:
+            tl = tl.strip()
+            if not tl.startswith("|"):
+                continue
+            cols = [c.strip() for c in tl.strip("|").split("|")]
+            # Skip separator line |---|---|
+            if all(re.match(r'^-+$', c) for c in cols):
+                continue
+            rows_data.append(cols)
+
+        if not rows_data:
+            return
+
+        max_cols = max(len(r) for r in rows_data)
+        doc_tbl = doc.add_table(rows=len(rows_data), cols=max_cols)
+        doc_tbl.alignment = WD_TABLE_ALIGNMENT.CENTER
+        col_w = Inches(6.5 / max(max_cols, 1))
+
+        for r_idx, row in enumerate(rows_data):
+            for c_idx in range(max_cols):
+                val = row[c_idx] if c_idx < len(row) else ""
+                cell = doc_tbl.cell(r_idx, c_idx)
+                cell.width = col_w
+                set_cell_margins(cell, top=70, bottom=70, left=100, right=100)
+                if r_idx == 0:
+                    set_cell_background(cell, "F3F4F6")
+                p = cell.paragraphs[0]
+                _add_highlighted_text(p, val, default_bold=(r_idx == 0))
+
+        doc.add_paragraph().paragraph_format.space_after = Pt(6)
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Check table
+        if stripped.startswith("|") and stripped.endswith("|"):
+            in_table = True
+            table_lines.append(stripped)
+            i += 1
+            continue
+        elif in_table:
+            in_table = False
+            _flush_table(table_lines)
+            table_lines = []
+
+        if not stripped:
+            i += 1
+            continue
+
+        if stripped.startswith("# "):
+            h1 = doc.add_heading(level=1)
+            h1.paragraph_format.space_before = Pt(14)
+            h1.paragraph_format.space_after = Pt(4)
+            _add_highlighted_text(h1, stripped[2:].strip())
+        elif stripped.startswith("## "):
+            h2 = doc.add_heading(level=2)
+            h2.paragraph_format.space_before = Pt(12)
+            h2.paragraph_format.space_after = Pt(4)
+            _add_highlighted_text(h2, stripped[3:].strip())
+        elif stripped.startswith("### "):
+            h3 = doc.add_heading(level=3)
+            h3.paragraph_format.space_before = Pt(10)
+            h3.paragraph_format.space_after = Pt(3)
+            _add_highlighted_text(h3, stripped[4:].strip())
+        elif stripped.startswith("- ") or stripped.startswith("* "):
+            p = doc.add_paragraph(style='List Bullet')
+            p.paragraph_format.space_after = Pt(3)
+            _add_highlighted_text(p, stripped[2:].strip())
+        else:
+            p = doc.add_paragraph()
+            p.paragraph_format.space_after = Pt(6)
+            p.paragraph_format.line_spacing = 1.15
+            _add_highlighted_text(p, stripped)
+
+        i += 1
+
+    if in_table and table_lines:
+        _flush_table(table_lines)
+
+    # Footer
+    for sec in doc.sections:
+        footer = sec.footer
+        p_foot = footer.paragraphs[0]
+        p_foot.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p_foot.paragraph_format.space_before = Pt(6)
+        r_foot = p_foot.add_run(
+            "AI-generated draft for editorial review before publishing."
+        )
+        r_foot.font.name = "Arial"
+        r_foot.font.size = Pt(8.5)
+        r_foot.font.italic = True
+        r_foot.font.color.rgb = RGBColor(156, 163, 175)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    buffer.seek(0)
+    return buffer.getvalue()

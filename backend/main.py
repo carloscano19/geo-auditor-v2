@@ -28,6 +28,7 @@ import hmac
 from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+import httpx
 
 import hashlib
 from config.settings import get_settings
@@ -54,6 +55,12 @@ from src.models.schemas import (
     BriefExportRequest,
     AhrefsOffpageRequest,
     AhrefsOffpageResponse,
+    AIRewriteRequest,
+    AIRewriteResponse,
+    AIRewriteScoreRequest,
+    AIRewriteScoreResponse,
+    DimensionScoreComparison,
+    RewriteBriefExportRequest,
 )
 from src.services.llm_client import (
     LLMClient,
@@ -80,11 +87,13 @@ from src.utils.lang_patterns import (
     TECHNICAL_DATA_OPP_PHRASES,
     MISSING_INFO_ANSWER_PHRASES,
     DISCARD_QUESTION_KEYWORDS,
+    SENSITIVE_LEGAL_KEYWORDS,
     generate_ahrefs_recommendations,
     strip_page_meta_references,
 )
 from src.utils.docx_brief import (
     generate_editor_brief_docx,
+    generate_rewrite_draft_docx,
     sanitize_domain_for_filename,
 )
 from src.services.ahrefs_client import (
@@ -751,11 +760,11 @@ async def get_scoring_weights():
 @app.post("/api/audit", response_model=AuditResponse, response_model_exclude_none=True)
 async def audit_url(request: AuditRequest):
     """
-    Analyze a URL or text for LLM citability.
+    Analyze a URL, raw text, or HTML content fragment for LLM citability.
     """
     global scraper
-    if not request.url and not request.content_text:
-        raise HTTPException(status_code=400, detail="Must provide either URL or content_text")
+    if not request.url and not request.content_text and not request.content_html:
+        raise HTTPException(status_code=400, detail="Must provide either URL, content_text, or content_html")
 
     try:
         return await run_single_audit(
@@ -1715,6 +1724,352 @@ async def export_editor_brief(request: BriefExportRequest):
     domain = sanitize_domain_for_filename(request.audit_result.url)
     date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     filename = f"geo-report-{domain}-{date_str}.docx"
+
+    return Response(
+        content=docx_bytes,
+        media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"'
+        },
+    )
+
+
+@app.post("/api/ai/rewrite", response_model=AIRewriteResponse)
+async def rewrite_article(request: AIRewriteRequest):
+    """
+    Generate complete draft article rewrite based on the audited page context and AI plan.
+    Applies safety rules: preserves all original facts/legal phrases, flags invented figures,
+    keeps [EDITOR: ...] placeholders, and removes meta-references/URLs.
+    """
+    current_settings = get_settings()
+    if not current_settings.ai_enabled:
+        raise HTTPException(status_code=503, detail="AI layer is not configured")
+
+    ctx = request.ai_context
+    plan = request.ai_plan
+
+    llm = LLMClient()
+    lang = ctx.language or "es"
+    lang_instruction = "Spanish (Español)" if lang == "es" else "English"
+
+    # Build prompt
+    system_prompt = f"""You are a master editorial copywriter and search optimizer.
+Your objective is to rewrite the full article into an exhaustive, highly citable web guide in Markdown.
+The output must be strictly in {lang_instruction}.
+Do NOT output explanations, introductory comments, or markdown fences. Output ONLY the raw Markdown article starting with the main # Title.
+
+CRITICAL EDITORIAL & INTEGRITY RULES:
+1. Retain ALL factual information, numbers, dates, and background from the original text. Do not compress, summarize, or remove details. Reorganize and expand logically.
+2. Only use facts present in the original page text snippet or the AI improvement plan. NEVER invent figures, statistics, dates, names, or quotes.
+3. If an important factual detail is missing to fully answer a topic or section, insert a placeholder strictly in the format: [EDITOR: description of missing data — source type] in {lang_instruction}. Preserve all [EDITOR: ...] placeholders already present in the AI plan.
+4. NEVER invent first-person experience ("we tested", "we saw", "in our experience", "probamos", "visitamos"). If experience signals are needed, use: [EDITOR: add a real first-hand experience — team member who attended] in {lang_instruction}.
+5. SENSITIVE TEXTS INTACT: Any disclaimer, risk warning, "not financial advice", terms and conditions, volatility note, or regulatory compliance statement in the original text MUST BE COPIED LITERALLY and verbatim without modification. Never offer financial advice or investment recommendations.
+6. NO EXTERNAL URLS: Do not write hyperlinked URLs or web addresses.
+7. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
+8. Structure:
+   - Begin with the # Main Title (H1).
+   - Opening Lead Paragraph: Use the suggested lead paragraph from the plan.
+   - Use the H2 structure from the plan in order. Retain existing content under 'present' sections, write headings for 'existing' sections, and develop comprehensive content for 'new' sections.
+   - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
+   - Incorporate the suggested actionable paragraphs from the plan in their appropriate sections.
+   - For FAQ / Questions to answer: Include them with their answers under an H2 FAQ section.
+"""
+
+    plan_summary_parts = []
+    if plan.suggested_lead and plan.suggested_lead.suggested:
+        plan_summary_parts.append(f"SUGGESTED LEAD PARAGRAPH:\n{plan.suggested_lead.suggested}")
+
+    if plan.suggested_h2_structure:
+        h2_lines = [f"- {item.h2} (status: {item.status}) -> Purpose: {item.purpose}" for item in plan.suggested_h2_structure]
+        plan_summary_parts.append("SUGGESTED H2 STRUCTURE:\n" + "\n".join(h2_lines))
+
+    if plan.suggested_table and plan.suggested_table.headers and plan.suggested_table.rows:
+        headers_str = " | ".join(plan.suggested_table.headers)
+        rows_str = "\n".join([" | ".join(r) for r in plan.suggested_table.rows])
+        plan_summary_parts.append(f"SUGGESTED TABLE:\nHeaders: {headers_str}\nRows:\n{rows_str}")
+
+    if plan.questions_to_answer:
+        q_lines = [f"- Q: {q.question}\n  A: {q.draft_answer} (source: {q.answer_source})" for q in plan.questions_to_answer]
+        plan_summary_parts.append("QUESTIONS TO ANSWER (FAQ):\n" + "\n".join(q_lines))
+
+    if plan.paragraphs_to_add:
+        p_lines = [f"- Location: {p.placement}\n  Content: {p.suggested_text}" for p in plan.paragraphs_to_add]
+        plan_summary_parts.append("NEW PARAGRAPHS TO INTEGRATE:\n" + "\n".join(p_lines))
+
+    plan_context_text = "\n\n".join(plan_summary_parts)
+
+    user_prompt = f"""ORIGINAL ARTICLE METADATA:
+Title: {ctx.title or 'N/A'}
+H1: {ctx.h1 or 'N/A'}
+Language: {lang_instruction}
+Target Query: {request.target_query or ctx.target_query or 'General content'}
+
+ORIGINAL PAGE TEXT CONTENT:
+{ctx.main_text}
+
+AI IMPROVEMENT PLAN TO APPLY:
+{plan_context_text}
+
+Write the complete rewritten article in Markdown now following all editorial and verification rules strictly in {lang_instruction}.
+"""
+
+    try:
+        # Use call_chat_completion with streaming
+        # Note: call_chat_completion extracts JSON if possible, but our output is markdown.
+        # Let's call chat completion directly or using the client's internal methods:
+        url = f"{llm.base_url}/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {llm.api_key}",
+            "Content-Type": "application/json",
+        }
+        payload = {
+            "model": llm.model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+            "temperature": 0.2,
+        }
+        if llm.max_tokens:
+            payload["max_tokens"] = llm.max_tokens
+
+        # Check and increment daily counter
+        from src.services.llm_client import daily_tracker
+        daily_tracker.check_and_increment(llm.daily_limit)
+
+        timeout_config = httpx.Timeout(llm.timeout, read=60.0) if llm.streaming else httpx.Timeout(llm.timeout)
+        async with httpx.AsyncClient(timeout=timeout_config) as http_client:
+            if llm.streaming:
+                content, _ = await llm._stream_and_extract_content(http_client, url, headers, payload)
+            else:
+                content, _ = await llm._post_and_extract_content(http_client, url, headers, payload)
+
+    except DailyLimitExceededError as e:
+        raise HTTPException(status_code=429, detail=str(e))
+    except Exception as e:
+        logger.error(f"LLM rewrite error: {traceback.format_exc()}")
+        raise HTTPException(status_code=502, detail=f"AI rewrite generation failed: {str(e)}")
+
+    draft_markdown = content.strip()
+    # Strip markdown code fences if model wrapped it in ```markdown ... ```
+    fence_m = re.match(r"^```(?:markdown)?\s*\n?([\s\S]*?)\n?```$", draft_markdown, re.I)
+    if fence_m:
+        draft_markdown = fence_m.group(1).strip()
+
+    warnings: list[str] = []
+
+    # 1. Verification of sensitive phrases (financial risk / disclaimers / T&C)
+    # Detect sensitive sentences in original text and ensure they are literally present in the draft
+    orig_text = ctx.main_text or ""
+    orig_sentences = re.split(r'(?<=[.!?])\s+', orig_text)
+    
+    sens_keywords = SENSITIVE_LEGAL_KEYWORDS.get(lang if lang in ("en", "es") else "en", SENSITIVE_LEGAL_KEYWORDS["en"])
+    missing_sensitive: list[str] = []
+
+    for s in orig_sentences:
+        s_clean = s.strip()
+        if len(s_clean) < 15:
+            continue
+        s_lower = s_clean.lower()
+        if any(kw in s_lower for kw in sens_keywords):
+            # Check if this sentence appears in draft_markdown (case-insensitive or partial)
+            # Remove punctuation for matching
+            s_clean_norm = re.sub(r'[^\w\s]', '', s_clean.lower())
+            draft_norm = re.sub(r'[^\w\s]', '', draft_markdown.lower())
+            if s_clean_norm not in draft_norm:
+                missing_sensitive.append(s_clean)
+
+    if missing_sensitive:
+        # Re-attach missing sensitive sentences at the end of the draft
+        draft_markdown += "\n\n" + " ".join(missing_sensitive)
+        for ms in missing_sensitive:
+            warnings.append(f"Restored required sensitive legal disclaimer: \"{ms[:80]}...\"")
+
+    # 2. Verification of figures / numbers
+    # Find numbers in draft sentences and verify if they exist in original text or plan
+    plan_full_text = plan_context_text
+    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
+    orig_and_plan_numbers = set(num_pattern.findall(orig_text + " " + plan_full_text))
+
+    def _check_and_mark_figures(md_text: str) -> tuple[str, list[str]]:
+        flagged_warnings = []
+        lines = md_text.split("\n")
+        new_lines = []
+        for line in lines:
+            # Skip heading lines or table borders
+            if line.strip().startswith("#") or line.strip().startswith("|---"):
+                new_lines.append(line)
+                continue
+            
+            # Split line into sentences
+            parts = re.split(r'(?<=[.!?])\s+', line)
+            new_parts = []
+            for part in parts:
+                p_clean = part.strip()
+                if not p_clean:
+                    new_parts.append(part)
+                    continue
+                # If part already has an editor tag, skip
+                if "[EDITOR:" in p_clean:
+                    new_parts.append(part)
+                    continue
+                
+                # Check figures in part
+                figs = num_pattern.findall(p_clean)
+                unverified_figs = [f for f in figs if f not in orig_and_plan_numbers and len(f) > 1 and not re.match(r'^(?:19\d\d|20\d\d)$', f)]
+                if unverified_figs:
+                    flag_note = f" [EDITOR: verify this figure ({', '.join(unverified_figs)}) — not in the original page]"
+                    new_parts.append(part + flag_note)
+                    flagged_warnings.append(f"Unverified figure detected ({', '.join(unverified_figs)}) — editor verification flag added.")
+                else:
+                    new_parts.append(part)
+            new_lines.append(" ".join(new_parts))
+        return "\n".join(new_lines), flagged_warnings
+
+    draft_markdown, fig_warnings = _check_and_mark_figures(draft_markdown)
+    warnings.extend(fig_warnings)
+
+    # 3. Apply strip_urls and strip_page_meta_references without breaking [EDITOR: ...]
+    # Protect editor gaps before running filters, and process line by line to preserve markdown formatting
+    gaps: list[str] = []
+    def _gap_stash(m: re.Match) -> str:
+        gaps.append(m.group(0))
+        return f"___EDITOR_GAP_PRESERVE_{len(gaps)-1}___"
+
+    stashed = re.sub(r'\[EDITOR:[^\]]*\]', _gap_stash, draft_markdown)
+
+    processed_lines = []
+    for line in stashed.split("\n"):
+        if not line.strip():
+            processed_lines.append(line)
+            continue
+        # If heading or table, don't strip meta-references aggressively
+        if line.strip().startswith("#") or line.strip().startswith("|"):
+            l_clean = re.sub(r'https?://[^\s]+', '', line)
+            processed_lines.append(l_clean)
+        else:
+            # Strip URLs
+            l_clean = re.sub(r'https?://[^\s]+', '', line)
+            l_clean = strip_page_meta_references(l_clean)
+            if l_clean.strip():
+                processed_lines.append(l_clean)
+
+    stashed = "\n".join(processed_lines)
+
+    for idx, gap in enumerate(gaps):
+        stashed = stashed.replace(f"___EDITOR_GAP_PRESERVE_{idx}___", gap)
+
+    draft_markdown = stashed.strip()
+
+    word_count_original = len(orig_text.split())
+    word_count_draft = len(draft_markdown.split())
+
+    return AIRewriteResponse(
+        draft_markdown=draft_markdown,
+        warnings=warnings,
+        word_count_original=word_count_original,
+        word_count_draft=word_count_draft,
+    )
+
+
+@app.post("/api/ai/rewrite/score", response_model=AIRewriteScoreResponse)
+async def score_rewrite_comparison(request: AIRewriteScoreRequest):
+    """
+    Fair content-only audit comparison between original HTML and rewritten draft Markdown.
+    Excludes whole-page technical and metadata dimensions (technical_infrastructure, metadata_schema, freshness)
+    and renormalizes scores across active content dimensions.
+    """
+    import markdown
+    draft_html = markdown.markdown(request.draft_markdown, extensions=['tables', 'fenced_code'])
+
+    # Audit both using content_html
+    orig_req = AuditRequest(content_html=request.original_html, target_query=request.target_query)
+    draft_req = AuditRequest(content_html=draft_html, target_query=request.target_query)
+
+    orig_audit = await run_single_audit(
+        orig_req,
+        scraper,
+        scrape_semaphore,
+        fetch_robots_fn=fetch_robots_txt,
+        measure_ttfb_fn=measure_ttfb
+    )
+    draft_audit = await run_single_audit(
+        draft_req,
+        scraper,
+        scrape_semaphore,
+        fetch_robots_fn=fetch_robots_txt,
+        measure_ttfb_fn=measure_ttfb
+    )
+
+    # Dimensions to exclude: technical_infrastructure, metadata_schema, freshness
+    # technical_infrastructure: depends on server TTFB, HTTP headers, robots.txt, SSL.
+    # metadata_schema: depends on <head> title, meta tags, and JSON-LD schema.
+    # freshness: depends on article meta dates and ISO time tags not in content body.
+    EXCLUDED_DIMENSIONS = {"technical_infrastructure", "metadata_schema", "freshness"}
+
+    orig_dims = {d.name: d for d in orig_audit.dimensions}
+    draft_dims = {d.name: d for d in draft_audit.dimensions}
+
+    # Filter dimensions
+    included_names = [d.name for d in orig_audit.dimensions if d.name not in EXCLUDED_DIMENSIONS and d.name in draft_dims]
+
+    comp_list: list[DimensionScoreComparison] = []
+    weight_sum = 0.0
+    weighted_orig_sum = 0.0
+    weighted_draft_sum = 0.0
+
+    for name in included_names:
+        od = orig_dims[name]
+        dd = draft_dims[name]
+        diff = round(dd.score - od.score, 1)
+        comp_list.append(DimensionScoreComparison(
+            name=name,
+            score_before=round(od.score, 1),
+            score_after=round(dd.score, 1),
+            difference=diff,
+        ))
+        w = od.weight
+        weight_sum += w
+        weighted_orig_sum += (od.score * w)
+        weighted_draft_sum += (dd.score * w)
+
+    if weight_sum > 0:
+        total_before = round(weighted_orig_sum / weight_sum, 1)
+        total_after = round(weighted_draft_sum / weight_sum, 1)
+    else:
+        total_before = 0.0
+        total_after = 0.0
+
+    total_diff = round(total_after - total_before, 1)
+
+    return AIRewriteScoreResponse(
+        total_score_before=total_before,
+        total_score_after=total_after,
+        difference=total_diff,
+        dimensions=comp_list,
+        excluded_dimensions=sorted(list(EXCLUDED_DIMENSIONS)),
+    )
+
+
+@app.post("/api/export/rewrite")
+async def export_rewrite_draft_endpoint(request: RewriteBriefExportRequest):
+    """
+    Generate and download the AI article rewrite draft as a Word (.docx) document.
+    """
+    try:
+        docx_bytes = generate_rewrite_draft_docx(
+            url=request.url,
+            draft_markdown=request.draft_markdown,
+            warnings=request.warnings,
+            score_comparison=request.score_comparison,
+        )
+    except Exception as e:
+        logger.error(f"Failed to generate rewrite draft .docx: {traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail="Failed to generate rewrite draft document")
+
+    domain = sanitize_domain_for_filename(request.url or "manual-input")
+    date_str = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"rewrite-{domain}-{date_str}.docx"
 
     return Response(
         content=docx_bytes,

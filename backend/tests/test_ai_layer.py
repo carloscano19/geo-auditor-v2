@@ -3885,6 +3885,271 @@ def test_needs_info_meta_reference_and_empty_editor_gaps_discarded():
     assert "[EDITOR: largest arena name and capacity — national sports authority]" in questions[0]["draft_answer"]
 
 
+def test_markdown_to_html_conversion_and_elements():
+    """Verify markdown library converts headings, tables, and lists correctly."""
+    import markdown
+    md = """# Main Title
+An introductory paragraph with information.
+
+## Overview
+What is this stadium?
+
+| Year | Capacity |
+|---|---|
+| 1937 | 35,000 |
+| 2026 | 67,000 |
+
+- Item 1
+- Item 2
+"""
+    html = markdown.markdown(md, extensions=['tables', 'fenced_code'])
+    assert "<h1>Main Title</h1>" in html
+    assert "<h2>Overview</h2>" in html
+    assert "<table>" in html
+    assert "<th>Capacity</th>" in html
+    assert "<td>67,000</td>" in html
+    assert "<ul>" in html
+    assert "<li>Item 1</li>" in html
+
+
+def test_content_html_audits_headings_and_tables_and_preserves_content_text():
+    """
+    Test that AuditRequest with content_html correctly audits H2 and tables without scraping,
+    while content_text continues to work unchanged.
+    """
+    client = TestClient(app)
+
+    # 1. Test content_html detects H2, tables, lists
+    rich_html = """
+    <article>
+        <h1>Complete Guide to Football Arenas</h1>
+        <p>This guide provides comprehensive facts, seating capacities, and transport details for modern football arenas.</p>
+        <h2>What is the stadium history?</h2>
+        <p>The stadium was built in 1937 and serves as the primary home ground for the local club in Ligue 1.</p>
+        <table>
+            <thead><tr><th>Year</th><th>Capacity</th></tr></thead>
+            <tbody><tr><td>1937</td><td>35,000</td></tr><tr><td>2026</td><td>67,000</td></tr></tbody>
+        </table>
+        <ul>
+            <li>Metro Line 2</li>
+            <li>Bus line 21</li>
+        </ul>
+    </article>
+    """
+    res_html = client.post("/api/audit", json={"content_html": rich_html})
+    assert res_html.status_code == 200
+    data_html = res_html.json()
+    assert data_html["total_score"] > 0
+    # Verify aeo_structure detected headers
+    aeo_dim = next((d for d in data_html["dimensions"] if d["name"] == "aeo_structure"), None)
+    assert aeo_dim is not None
+    assert aeo_dim["score"] > 0
+
+    # 2. Test content_text continues to function as before
+    plain_text = "This is a simple plain text article about sports stadiums with sufficient length to test."
+    res_text = client.post("/api/audit", json={"content_text": plain_text})
+    assert res_text.status_code == 200
+    data_text = res_text.json()
+    assert data_text["total_score"] > 0
+
+
+def test_rewrite_marks_unverified_figures_and_keeps_existing():
+    """Test that numbers not present in original page or plan get flagged with [EDITOR: verify this figure ...]."""
+    from main import rewrite_article
+    from src.models.schemas import AIRewriteRequest, AIContext, AIPlanResponse
+
+    req = AIRewriteRequest(
+        ai_context=AIContext(
+            main_text="The stadium was built in 1937 and holds 67,000 spectators.",
+            language="en"
+        ),
+        ai_plan=AIPlanResponse(
+            combined_schema={},
+            warnings=[]
+        )
+    )
+
+    mock_llm_markdown = """# Stadium Guide
+The stadium holds 67,000 spectators and had an attendance record of 99,999 in recent years.
+"""
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (mock_llm_markdown, "stop")
+        res = client.post("/api/ai/rewrite", json=req.model_dump())
+
+    assert res.status_code == 200
+    data = res.json()
+    draft = data["draft_markdown"]
+    warnings = data["warnings"]
+    assert "67,000" in draft
+    assert "[EDITOR: verify this figure (99,999) — not in the original page]" in draft
+    assert any("99,999" in w for w in warnings)
+
+
+def test_rewrite_restores_missing_sensitive_legal_phrases():
+    """Test that missing legal/risk disclaimers from original text are restored verbatim."""
+    req = {
+        "ai_context": {
+            "main_text": "The club fan tokens allow voting on team polls. Risk warning: Crypto assets are volatile and your capital is at risk. Not financial advice.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+
+    mock_llm_markdown = """# Fan Token Guide
+Fan tokens allow voting on official team polls and accessing club rewards.
+"""
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (mock_llm_markdown, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    draft = data["draft_markdown"]
+    warnings = data["warnings"]
+    assert "Risk warning: Crypto assets are volatile and your capital is at risk." in draft or "capital is at risk" in draft
+    assert "Not financial advice" in draft
+    assert any("Restored required sensitive legal disclaimer" in w for w in warnings)
+
+
+def test_rewrite_preserves_editor_gaps_across_filters():
+    """Test that [EDITOR: ...] placeholders survive strip_urls and strip_page_meta_references."""
+    req = {
+        "ai_context": {
+            "main_text": "Marseille stadium information.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+
+    mock_llm_markdown = """# Marseille Guide
+This guide details all stadium info https://example.com/stadium.
+The official architect was [EDITOR: architect name — municipal archives].
+"""
+
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (mock_llm_markdown, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    draft = data["draft_markdown"]
+    assert "https://example.com/stadium" not in draft
+    assert "This guide" not in draft
+    assert "[EDITOR: architect name — municipal archives]" in draft
+
+
+def test_rewrite_score_excludes_same_dimensions_both_sides():
+    """Test that /api/ai/rewrite/score excludes technical_infrastructure, metadata_schema, freshness."""
+    client = TestClient(app)
+    orig_html = """
+    <article>
+        <h1>Original Guide</h1>
+        <p>Short paragraph about the arena in France.</p>
+    </article>
+    """
+    draft_md = """# Improved Guide
+An extensive detailed opening paragraph explaining the history, architecture, and matchday experience of the arena.
+
+## Matchday Logistics
+Visitors can reach the stadium using public transit.
+
+| Metro | Line |
+|---|---|
+| Marseille Metro | Line 2 |
+
+- Gate A
+- Gate B
+"""
+
+    req = {
+        "original_html": orig_html,
+        "draft_markdown": draft_md,
+        "target_query": "stadium guide"
+    }
+
+    res = client.post("/api/ai/rewrite/score", json=req)
+    assert res.status_code == 200
+    data = res.json()
+    assert "total_score_before" in data
+    assert "total_score_after" in data
+    assert "difference" in data
+    assert "excluded_dimensions" in data
+
+    excluded = data["excluded_dimensions"]
+    assert "technical_infrastructure" in excluded
+    assert "metadata_schema" in excluded
+    assert "freshness" in excluded
+
+    # Dimension comparison items must only contain content dimensions
+    dim_names = [d["name"] for d in data["dimensions"]]
+    assert "technical_infrastructure" not in dim_names
+    assert "metadata_schema" not in dim_names
+    assert "freshness" not in dim_names
+    assert "aeo_structure" in dim_names
+    assert "format_citability" in dim_names
+
+
+def test_rewrite_docx_export_endpoint():
+    """Test downloading the rewrite draft .docx."""
+    client = TestClient(app)
+    req = {
+        "url": "https://www.socios.com/stadium",
+        "draft_markdown": "# Title\n\nContent paragraph with [EDITOR: fact — source].\n\n| H1 | H2 |\n|---|---|\n| A | B |\n",
+        "warnings": ["Unverified figure detected (123)"],
+        "score_comparison": {
+            "total_score_before": 60.0,
+            "total_score_after": 82.5,
+            "difference": 22.5,
+            "dimensions": [
+                {
+                    "name": "aeo_structure",
+                    "score_before": 50.0,
+                    "score_after": 90.0,
+                    "difference": 40.0
+                }
+            ],
+            "excluded_dimensions": ["technical_infrastructure", "metadata_schema", "freshness"]
+        }
+    }
+    res = client.post("/api/export/rewrite", json=req)
+    assert res.status_code == 200
+    assert res.headers["content-type"] == "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    assert "rewrite-socios.com-" in res.headers["content-disposition"]
+    assert len(res.content) > 1000
+
+
 
 
 
