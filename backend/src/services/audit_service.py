@@ -111,9 +111,11 @@ async def run_single_audit(
     url = str(request.url) if request.url else "text-mode"
 
     # Step 1: Acquisition (Scrape or use provided HTML/text)
+    from src.utils.text_processing import sanitize_pasted_html
     if request.content_html:
-        html_input = request.content_html
-        # Derive clean text from HTML
+        # Sanitize pasted HTML using tag whitelist and Google Docs / Word cleaning
+        html_input = sanitize_pasted_html(request.content_html)
+        # Derive clean text from sanitized HTML
         from bs4 import BeautifulSoup
         parsed_soup = BeautifulSoup(html_input, "lxml")
         derived_text = re.sub(r'\s+', ' ', parsed_soup.get_text(separator=' ')).strip()
@@ -133,21 +135,64 @@ async def run_single_audit(
             robots_txt_content=None
         )
     elif request.content_text:
-        text_len = len(request.content_text.split())
-        page_data = PageData(
-            url=request.url or "https://manual-input.local",
-            final_url=request.url or "https://manual-input.local",
-            html_raw=f"<html><body><h1>Analysis</h1><p>{request.content_text}</p></body></html>",
-            html_rendered=f"<html><body><h1>Analysis</h1><div class='content'>{request.content_text}</div></body></html>",
-            text_content=request.content_text,
-            status_code=200,
-            load_time_ms=0,
-            word_count=text_len,
-            is_ssr=True,
-            is_https=True,
-            ttfb_ms=None,
-            robots_txt_content=None
-        )
+        raw_text = request.content_text.strip()
+        # Check if content_text contains Markdown syntax (headings, lists, tables)
+        has_markdown_headings = bool(re.search(r'(?m)^#{1,6}\s+\S', raw_text))
+        has_markdown_lists = bool(re.search(r'(?m)^(?:\*|-|\d+\.)\s+\S', raw_text))
+        has_markdown_tables = bool(re.search(r'(?m)^\|.+\|', raw_text))
+
+        if has_markdown_headings or has_markdown_lists or has_markdown_tables:
+            import markdown
+            converted_html = markdown.markdown(raw_text, extensions=['tables', 'fenced_code'])
+            cleaned_html = sanitize_pasted_html(converted_html)
+            from bs4 import BeautifulSoup
+            parsed_soup = BeautifulSoup(cleaned_html, "lxml")
+            derived_text = re.sub(r'\s+', ' ', parsed_soup.get_text(separator=' ')).strip()
+            text_len = len(derived_text.split())
+            page_data = PageData(
+                url=request.url or "https://manual-input.local",
+                final_url=request.url or "https://manual-input.local",
+                html_raw=f"<html><body>{cleaned_html}</body></html>",
+                html_rendered=f"<html><body><div class='content'>{cleaned_html}</div></body></html>",
+                text_content=derived_text,
+                status_code=200,
+                load_time_ms=0,
+                word_count=text_len,
+                is_ssr=True,
+                is_https=True,
+                ttfb_ms=None,
+                robots_txt_content=None
+            )
+        else:
+            # Plain text: separate by blank lines into multiple <p> tags, no fake 'Analysis' H1
+            paragraphs = [p.strip() for p in re.split(r'\n\s*\n', raw_text) if p.strip()]
+            if not paragraphs:
+                paragraphs = [raw_text] if raw_text else [""]
+            
+            # First line as H1 if short (< 120 chars) and multiple paragraphs exist
+            first_p = paragraphs[0]
+            if len(paragraphs) > 1 and len(first_p) <= 120 and "\n" not in first_p:
+                h1_chunk = f"<h1>{first_p}</h1>"
+                p_chunks = "\n".join(f"<p>{p}</p>" for p in paragraphs[1:])
+                body_content = f"{h1_chunk}\n{p_chunks}"
+            else:
+                body_content = "\n".join(f"<p>{p}</p>" for p in paragraphs)
+
+            text_len = len(raw_text.split())
+            page_data = PageData(
+                url=request.url or "https://manual-input.local",
+                final_url=request.url or "https://manual-input.local",
+                html_raw=f"<html><body>{body_content}</body></html>",
+                html_rendered=f"<html><body><div class='content'>{body_content}</div></body></html>",
+                text_content=raw_text,
+                status_code=200,
+                load_time_ms=0,
+                word_count=text_len,
+                is_ssr=True,
+                is_https=True,
+                ttfb_ms=None,
+                robots_txt_content=None
+            )
     elif request.url:
         async with scrape_semaphore:
             effective_measure_ttfb = measure_ttfb_fn or measure_ttfb

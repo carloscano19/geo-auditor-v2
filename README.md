@@ -18,7 +18,9 @@ Built for **SEO, content, and editorial teams** who need to adapt their content 
 
 ## 2. Features
 
-- **Single URL & Pasted Text Audits:** Audit any live web page by URL (rendered via headless Playwright) or paste raw HTML/plain text directly to analyze staging content or pages behind strict anti-bot protections.
+- **Single URL & Pasted Text Audits:** Audit any live web page by URL (rendered via headless Playwright) or paste raw content directly. Formatted text pasted from Google Docs, Microsoft Word, or rich web sources automatically preserves headings (H1-H3), lists, tables, links, and images while sanitizing styling and wrappers. Plain text and Markdown syntax are also detected and handled without artificial headings.
+- **Article Rewrite with AI Plan (`POST /api/ai/rewrite` & `/api/ai/rewrite/score`):** Generates a complete rewritten draft applying the opening lead, heading hierarchy, FAQ section, comparison tables, and new paragraphs. Strictly preserves original links, images, facts, and legal disclaimers, marks unverified figures with `[EDITOR: ...]` flags, and compares normalized content scores before/after (excluding technical, metadata, freshness, and authority dimensions).
+- **Article Rewrite Export (`POST /api/export/rewrite`):** Generates and downloads the complete rewritten draft as a formatted Word (.docx) document, including before/after score comparisons, editorial warnings, formatted tables, embedded images, real hyperlinks, and yellow-highlighted editor action tags.
 - **Target Query Optimization:** Optional query input that adds the **Query Match** dimension and determines the Google search query used for competitive discovery.
 - **Batch Audits:** Analyze up to 20 URLs concurrently with background job processing, progress reporting, aggregated issues grouped by topic, site-wide recurring issues by domain, CSV exports, and direct "Analyze with AI" triggers.
 - **AI Recommendations in One Call (`POST /api/ai/plan`):** Generates a complete editorial action plan in a single AI roundtrip:
@@ -252,11 +254,14 @@ All endpoints except `/api/health` and `/api/version` enforce `X-Access-Code` au
 | `GET` | `/api/version` | Reports app version, AI enabled, and SERP enabled status | **No** (exempt) |
 | `POST` | `/api/auth/check` | Validates provided access code | Yes |
 | `GET` | `/api/scoring-weights` | Returns current scoring weights configuration JSON | Yes |
-| `POST` | `/api/audit` | Executes full on-page analysis for a URL or text | Yes |
+| `POST` | `/api/audit` | Executes full on-page analysis for a URL, plain text, or pasted HTML | Yes |
 | `POST` | `/api/ai/plan` | Generates unified editorial improvement plan (used by the frontend) | Yes |
+| `POST` | `/api/ai/rewrite` | Generates complete draft rewrite applying the AI plan | Yes |
+| `POST` | `/api/ai/rewrite/score` | Fair before/after content score comparison for rewrites | Yes |
 | `POST` | `/api/ai/fixes` | Legacy quick fixes endpoint (kept for backward compatibility) | Yes |
 | `POST` | `/api/offpage` | Retrieves Ahrefs off-page authority metrics | Yes |
 | `POST` | `/api/export/brief` | Generates downloadable Word document (.docx) report | Yes |
+| `POST` | `/api/export/rewrite` | Generates downloadable Word document (.docx) of rewritten draft | Yes |
 | `POST` | `/api/batch` | Initiates asynchronous batch audit (max 20 URLs) | Yes |
 | `GET` | `/api/batch/{job_id}` | Polls progress and results for a batch audit job | Yes |
 | `GET` | `/api/batch/{job_id}/csv` | Downloads CSV summary of batch results | Yes |

@@ -664,24 +664,84 @@ def extract_original_links(main_html: str, base_url: Optional[str] = None) -> li
     return links
 
 
+def extract_original_images(main_html: str, base_url: Optional[str] = None) -> list[dict]:
+    """
+    Extract unique images (src absolute + alt) from the main content HTML.
+    Ignores icons, tracking pixels (1x1 or keywords), and data: URIs.
+    Returns [] when main_html is empty.
+    """
+    if not main_html:
+        return []
+    from urllib.parse import urljoin
+    from bs4 import BeautifulSoup
+    soup = BeautifulSoup(main_html, "lxml")
+    images: list[dict] = []
+    seen: set[str] = set()
+
+    for img in soup.find_all("img"):
+        src = (img.get("src") or img.get("data-src") or img.get("data-lazy-src") or "").strip()
+        if not src or src.startswith("data:"):
+            continue
+
+        absolute = urljoin(base_url, src) if base_url else src
+        if not re.match(r'^https?://', absolute, re.I):
+            continue
+
+        # Check for tracking pixel / icon
+        width = str(img.get("width") or "").strip()
+        height = str(img.get("height") or "").strip()
+        if (width == "1" and height == "1") or (width == "0" or height == "0"):
+            continue
+
+        src_lower = absolute.lower()
+        if any(kw in src_lower for kw in ["pixel", "tracking", "/favicon", "icon-16", "icon-32", "1x1"]):
+            continue
+
+        key = normalize_link_url(absolute)
+        if key in seen:
+            continue
+        seen.add(key)
+
+        alt = (img.get("alt") or "").strip()
+        images.append({"alt": alt, "src": absolute})
+
+    return images
+
+
+_MD_IMG_RE = re.compile(r'!\[([^\]]*)\]\((https?://[^)\s]+)(?:\s+"[^"]*")?\)')
 _MD_LINK_RE = re.compile(r'\[([^\]]*)\]\((https?://[^)\s]+)(?:\s+"[^"]*")?\)')
 
 
 def filter_draft_urls(line: str, allowed: set[str]) -> str:
     """
-    Remove URLs that are not in `allowed` (normalized). Markdown links to unknown URLs are
-    reduced to their anchor text; unknown bare URLs are deleted. Allowed links are kept intact.
+    Remove URLs that are not in `allowed` (normalized).
+    Markdown images ![alt](src) and Markdown links [text](url) to allowed URLs are kept intact.
+    Markdown images to unknown URLs are removed or reduced to alt text;
+    Markdown links to unknown URLs are reduced to their anchor text; unknown bare URLs are deleted.
     """
     kept: list[str] = []
 
+    # 1. Protect allowed Markdown images
+    def _img(m: re.Match) -> str:
+        if normalize_link_url(m.group(2)) in allowed:
+            kept.append(m.group(0))
+            return f"___KEPT_LINK_{len(kept)-1}___"
+        # If image not in allowed list, drop it (or keep alt if present)
+        alt = m.group(1).strip()
+        return f"[Image: {alt}]" if alt else ""
+
+    out = _MD_IMG_RE.sub(_img, line)
+
+    # 2. Protect allowed Markdown links
     def _md(m: re.Match) -> str:
         if normalize_link_url(m.group(2)) in allowed:
             kept.append(m.group(0))
             return f"___KEPT_LINK_{len(kept)-1}___"
         return m.group(1)
 
-    out = _MD_LINK_RE.sub(_md, line)
+    out = _MD_LINK_RE.sub(_md, out)
 
+    # 3. Strip unknown bare URLs
     def _bare(m: re.Match) -> str:
         raw = m.group(0)
         trail = ""
@@ -1842,8 +1902,9 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 4. NEVER invent first-person experience ("we tested", "we saw", "in our experience", "probamos", "visitamos"). If experience signals are needed, use: [EDITOR: add a real first-hand experience — team member who attended] in {lang_instruction}.
 5. SENSITIVE TEXTS INTACT: Any disclaimer, risk warning, "not financial advice", terms and conditions, volatility note, or regulatory compliance statement in the original text MUST BE COPIED LITERALLY and verbatim without modification. Never offer financial advice or investment recommendations.
 6. LINKS: The user message lists the ORIGINAL LINKS of the page. You MUST keep ALL of them as Markdown links [text](url), in the same context or as close as possible to where they were in the original. NEVER add any URL or web address that is not in that list. If the list is empty, write no URLs at all.
-7. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
-8. Structure:
+7. IMAGES: The user message lists the ORIGINAL IMAGES of the page. You MUST keep ALL of them as Markdown images ![alt](url), placed in the most appropriate section or as close as possible to their original position. Do NOT invent new images or alter the URLs. If the list is empty, include no images.
+8. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
+9. Structure:
    - Begin with the # Main Title (H1).
    - Opening Lead Paragraph: Use the suggested lead paragraph from the plan.
    - Use the H2 structure from the plan in order. Retain existing content under 'present' sections, write headings for 'existing' sections, and develop comprehensive content for 'new' sections.
@@ -1877,10 +1938,20 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 
     original_links = extract_original_links(ctx.main_html or "", ctx.url)
     allowed_urls = {normalize_link_url(l["url"]) for l in original_links}
+
+    original_images = extract_original_images(ctx.main_html or "", ctx.url)
+    allowed_image_urls = {normalize_link_url(img["src"]) for img in original_images}
+    allowed_urls.update(allowed_image_urls)
+
     if original_links:
         original_links_text = "\n".join(f"- [{l['text']}]({l['url']})" for l in original_links)
     else:
         original_links_text = "(none)"
+
+    if original_images:
+        original_images_text = "\n".join(f"- ![{img['alt']}]({img['src']})" for img in original_images)
+    else:
+        original_images_text = "(none)"
 
     user_prompt = f"""ORIGINAL ARTICLE METADATA:
 Title: {ctx.title or 'N/A'}
@@ -1893,6 +1964,9 @@ ORIGINAL PAGE TEXT CONTENT:
 
 ORIGINAL LINKS (keep ALL of them as Markdown links; add no other URLs):
 {original_links_text}
+
+ORIGINAL IMAGES (keep ALL of them as Markdown images ![alt](src); add no other images):
+{original_images_text}
 
 AI IMPROVEMENT PLAN TO APPLY:
 {plan_context_text}
@@ -1976,15 +2050,25 @@ Write the complete rewritten article in Markdown now following all editorial and
     # Find numbers in draft sentences and verify if they exist in original text or plan
     plan_full_text = plan_context_text
     num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
-    orig_and_plan_numbers = set(num_pattern.findall(orig_text + " " + plan_full_text + " " + " ".join(l["url"] for l in original_links)))
+    orig_and_plan_numbers = set(
+        num_pattern.findall(
+            orig_text
+            + " "
+            + plan_full_text
+            + " "
+            + " ".join(l["url"] for l in original_links)
+            + " "
+            + " ".join(img["src"] for img in original_images)
+        )
+    )
 
     def _check_and_mark_figures(md_text: str) -> tuple[str, list[str]]:
         flagged_warnings = []
         lines = md_text.split("\n")
         new_lines = []
         for line in lines:
-            # Skip heading lines or table borders
-            if line.strip().startswith("#") or line.strip().startswith("|---"):
+            # Skip heading lines, table borders, or image lines
+            if line.strip().startswith("#") or line.strip().startswith("|---") or line.strip().startswith("!["):
                 new_lines.append(line)
                 continue
             
@@ -2031,7 +2115,7 @@ Write the complete rewritten article in Markdown now following all editorial and
             processed_lines.append(line)
             continue
         # If heading or table, don't strip meta-references aggressively
-        if line.strip().startswith("#") or line.strip().startswith("|"):
+        if line.strip().startswith("#") or line.strip().startswith("|") or line.strip().startswith("!["):
             l_clean = filter_draft_urls(line, allowed_urls)
             processed_lines.append(l_clean)
         else:
@@ -2058,6 +2142,17 @@ Write the complete rewritten article in Markdown now following all editorial and
             if normalize_link_url(l["url"]) not in draft_urls:
                 warnings.append(f"Original link not preserved: {l['text']} ({l['url']})")
 
+    # 5. Warn about original images that did not make it into the draft (never re-inserted by force)
+    if original_images:
+        draft_image_urls = {
+            normalize_link_url(m.group(2))
+            for m in _MD_IMG_RE.finditer(draft_markdown)
+        }
+        for img in original_images:
+            if normalize_link_url(img["src"]) not in draft_image_urls:
+                alt_desc = img["alt"] if img["alt"] else "unnamed image"
+                warnings.append(f"Original image not preserved: {alt_desc} ({img['src']})")
+
     word_count_original = len(orig_text.split())
     word_count_draft = len(draft_markdown.split())
 
@@ -2073,7 +2168,7 @@ Write the complete rewritten article in Markdown now following all editorial and
 async def score_rewrite_comparison(request: AIRewriteScoreRequest):
     """
     Fair content-only audit comparison between original HTML and rewritten draft Markdown.
-    Excludes whole-page technical and metadata dimensions (technical_infrastructure, metadata_schema, freshness)
+    Excludes whole-page technical and metadata dimensions (technical_infrastructure, metadata_schema, freshness, eeat_authority)
     and renormalizes scores across active content dimensions.
     """
     import markdown
@@ -2098,11 +2193,17 @@ async def score_rewrite_comparison(request: AIRewriteScoreRequest):
         measure_ttfb_fn=measure_ttfb
     )
 
-    # Dimensions to exclude: technical_infrastructure, metadata_schema, freshness
+    # Dimensions to exclude: technical_infrastructure, metadata_schema, freshness, eeat_authority
     # technical_infrastructure: depends on server TTFB, HTTP headers, robots.txt, SSL.
     # metadata_schema: depends on <head> title, meta tags, and JSON-LD schema.
     # freshness: depends on article meta dates and ISO time tags not in content body.
-    EXCLUDED_DIMENSIONS = {"technical_infrastructure", "metadata_schema", "freshness"}
+    # eeat_authority: author bios and publisher credentials reside in site template / author pages, not article content body.
+    EXCLUDED_DIMENSIONS = {
+        "technical_infrastructure",
+        "metadata_schema",
+        "freshness",
+        "eeat_authority",
+    }
 
     orig_dims = {d.name: d for d in orig_audit.dimensions}
     draft_dims = {d.name: d for d in draft_audit.dimensions}

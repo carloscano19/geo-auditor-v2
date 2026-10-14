@@ -272,7 +272,12 @@ export default function Home() {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
   };
 
-  const handleAudit = async (url: string | null, text: string | null, targetQuery?: string) => {
+  const handleAudit = async (
+    url: string | null,
+    text: string | null,
+    targetQuery?: string,
+    contentHtml?: string
+  ) => {
     if (pollIntervalRef.current) clearInterval(pollIntervalRef.current);
     setIsLoading(true);
     setError(null);
@@ -284,6 +289,7 @@ export default function Home() {
       const response = await apiClient.audit({
         url: url || undefined,
         content_text: text || undefined,
+        content_html: contentHtml || undefined,
         target_query: targetQuery || undefined,
       });
       setResults(response);

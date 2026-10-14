@@ -4285,3 +4285,185 @@ def test_rewrite_docx_contains_real_hyperlinks():
     body_text = "\n".join(p.text for p in d.paragraphs)
     assert "[UEFA report]" not in body_text
     assert "UEFA report" in body_text
+
+
+def test_sanitize_pasted_html_google_docs():
+    from src.utils.text_processing import sanitize_pasted_html
+    raw_docs = (
+        '<b id="docs-internal-guid-abcdef12-3456">'
+        '<h1>Main Title</h1>'
+        '<p style="color: red;" class="c1">First paragraph of text.</p>'
+        '<h2>Subheading</h2>'
+        '<p>Second paragraph with <a href="https://example.com/source">link</a>.</p>'
+        '</b>'
+    )
+    cleaned = sanitize_pasted_html(raw_docs)
+    assert "docs-internal-guid" not in cleaned
+    assert "<h1>Main Title</h1>" in cleaned
+    assert "<h2>Subheading</h2>" in cleaned
+    assert '<a href="https://example.com/source">link</a>' in cleaned
+    assert "style=" not in cleaned
+    assert "class=" not in cleaned
+
+
+def test_sanitize_pasted_html_word_headings():
+    from src.utils.text_processing import sanitize_pasted_html
+    raw_word = (
+        '<p class="MsoTitle">Document Title</p>'
+        '<p class="MsoNormal">Introductory text from Microsoft Word.</p>'
+        '<p class="MsoHeading2">Section Heading</p>'
+        '<p class="MsoNormal">More detailed content.</p>'
+    )
+    cleaned = sanitize_pasted_html(raw_word)
+    assert "<h1>Document Title</h1>" in cleaned
+    assert "<h2>Section Heading</h2>" in cleaned
+    assert "<p>Introductory text from Microsoft Word.</p>" in cleaned
+    assert "Mso" not in cleaned
+
+
+def test_sanitize_pasted_html_security_and_h1_fallback():
+    from src.utils.text_processing import sanitize_pasted_html
+    dirty = (
+        '<script>alert("xss")</script>'
+        '<style>body { background: red; }</style>'
+        '<p><a href="javascript:alert(1)">bad link</a> and <a href="https://safe.com">good link</a></p>'
+        '<!-- HTML comment -->'
+        '<h2>Promoted Heading</h2>'
+        '<p>Paragraph content.</p>'
+    )
+    cleaned = sanitize_pasted_html(dirty)
+    assert "script" not in cleaned
+    assert "style" not in cleaned
+    assert "javascript:" not in cleaned
+    assert "comment" not in cleaned
+    assert "<h1>Promoted Heading</h1>" in cleaned
+    assert "Analysis" not in cleaned
+    assert '<a href="https://safe.com">good link</a>' in cleaned
+
+
+def test_audit_markdown_and_plain_content_text():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        # 1. Markdown in content_text
+        md_content = "# Guide Title\n\nIntro text.\n\n## Section One\n\n- Point A\n- Point B\n\n| H1 | H2 |\n|---|---|\n| V1 | V2 |\n"
+        res_md = client.post("/api/audit", json={"content_text": md_content})
+        assert res_md.status_code == 200
+        data_md = res_md.json()
+        assert data_md["ai_context"]["h1"] == "Guide Title"
+        assert data_md["ai_context"]["h1"] != "Analysis"
+        assert "Section One" in data_md["ai_context"]["main_html"]
+
+        # 2. Plain text in content_text
+        plain_content = "Plain Article Title\n\nFirst substantive paragraph.\n\nSecond substantive paragraph."
+        res_plain = client.post("/api/audit", json={"content_text": plain_content})
+        assert res_plain.status_code == 200
+        data_plain = res_plain.json()
+        assert data_plain["ai_context"]["h1"] == "Plain Article Title"
+        assert data_plain["ai_context"]["h1"] != "Analysis"
+
+
+def test_extract_original_images():
+    from main import extract_original_images
+    html = (
+        '<article>'
+        '<img src="https://example.com/hero.jpg" alt="Hero Banner" width="800" height="400" />'
+        '<img src="/relative/diagram.png" alt="Architecture" />'
+        '<img src="data:image/png;base64,iVBORw0KGgo..." alt="Data URI" />'
+        '<img src="https://tracking.com/pixel.gif" alt="" width="1" height="1" />'
+        '<img src="https://example.com/icon-16.png" alt="Icon" />'
+        '</article>'
+    )
+    images = extract_original_images(html, base_url="https://example.com")
+    assert len(images) == 2
+    assert images[0] == {"alt": "Hero Banner", "src": "https://example.com/hero.jpg"}
+    assert images[1] == {"alt": "Architecture", "src": "https://example.com/relative/diagram.png"}
+
+
+def test_filter_draft_urls_with_images_and_links():
+    from main import filter_draft_urls, normalize_link_url
+    allowed = {
+        normalize_link_url("https://example.com/image.png"),
+        normalize_link_url("https://example.com/link"),
+    }
+    line1 = "See ![Hero Chart](https://example.com/image.png) and read [Guide](https://example.com/link)."
+    line2 = "Unknown ![Bad Image](https://bad.com/img.png) and unknown [Bad Link](https://bad.com/page)."
+
+    filtered1 = filter_draft_urls(line1, allowed)
+    filtered2 = filter_draft_urls(line2, allowed)
+
+    assert "https://example.com/image.png" in filtered1
+    assert "https://example.com/link" in filtered1
+    assert "https://bad.com" not in filtered2
+    assert "Bad Link" in filtered2
+
+
+def test_rewrite_score_excludes_eeat_authority():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    orig_html = "<h1>Guide</h1><p>Content text about soccer.</p>"
+    draft_md = "# Guide\n\nContent text about soccer with expansions."
+
+    res = client.post("/api/ai/rewrite/score", json={"original_html": orig_html, "draft_markdown": draft_md})
+    assert res.status_code == 200
+    data = res.json()
+    assert "eeat_authority" in data["excluded_dimensions"]
+    assert "technical_infrastructure" in data["excluded_dimensions"]
+    assert "metadata_schema" in data["excluded_dimensions"]
+    assert "freshness" in data["excluded_dimensions"]
+    dim_names = [d["name"] for d in data["dimensions"]]
+    assert "eeat_authority" not in dim_names
+
+
+def test_rewrite_missing_original_image_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    req = {
+        "ai_context": {
+            "url": "https://club.com/guide/",
+            "main_text": "Guide with images.",
+            "main_html": '<article><p>Text</p><img src="https://club.com/stadium.jpg" alt="Stadium Photo" /></article>',
+            "language": "en",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        # LLM omits the image
+        mock_stream.return_value = ("# Stadium Guide\n\nGuide content without image.\n", "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+    assert res.status_code == 200
+    data = res.json()
+    assert any("Original image not preserved: Stadium Photo (https://club.com/stadium.jpg)" in w for w in data["warnings"])
+
+
+def test_rewrite_docx_renders_images_and_note():
+    import io, docx as _docx
+    from src.utils.docx_brief import generate_rewrite_draft_docx
+    from src.models.schemas import AIRewriteScoreResponse, DimensionScoreComparison
+    score_comp = AIRewriteScoreResponse(
+        total_score_before=85.0,
+        total_score_after=90.0,
+        difference=5.0,
+        dimensions=[
+            DimensionScoreComparison(name="content_depth", score_before=80.0, score_after=90.0, difference=10.0),
+        ],
+        excluded_dimensions=["technical_infrastructure", "metadata_schema", "freshness", "eeat_authority"],
+    )
+    data = generate_rewrite_draft_docx(
+        url="https://club.com/guide/",
+        draft_markdown="# Guide\n\n![Stadium Chart](https://invalid-host-for-testing.local/chart.png)\n\nParagraph.",
+        warnings=["Test warning"],
+        score_comparison=score_comp,
+    )
+    d = _docx.Document(io.BytesIO(data))
+    text = "\n".join(p.text for p in d.paragraphs)
+    assert "Content-only comparison: technical, metadata, freshness and authority dimensions are not included." in text
+    assert "[Image: Stadium Chart — https://invalid-host-for-testing.local/chart.png]" in text
+
+

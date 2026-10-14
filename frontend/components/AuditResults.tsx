@@ -1,3 +1,4 @@
+/* eslint-disable @next/next/no-img-element */
 "use client";
 
 import React, { useState, useEffect, useMemo } from "react";
@@ -305,15 +306,19 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
         // Simple client-side Markdown to clean HTML conversion
         const escapeHtml = (s: string) =>
             s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-        // Converts inline Markdown links [text](url) to real <a href> anchors; everything else is escaped
+        // Converts inline Markdown images and links to HTML; everything else is escaped
         const inline = (s: string) => {
-            const linkRe = /\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)/g;
+            const tokenRe = /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|\[([^\]]*)\]\((https?:\/\/[^)\s]+)\))/g;
             let out = "";
             let last = 0;
             let m: RegExpExecArray | null;
-            while ((m = linkRe.exec(s)) !== null) {
+            while ((m = tokenRe.exec(s)) !== null) {
                 out += escapeHtml(s.slice(last, m.index));
-                out += `<a href="${escapeHtml(m[2])}">${escapeHtml(m[1] || m[2])}</a>`;
+                if (m[0].startsWith('!')) {
+                    out += `<img src="${escapeHtml(m[3])}" alt="${escapeHtml(m[2])}" />`;
+                } else {
+                    out += `<a href="${escapeHtml(m[5])}">${escapeHtml(m[4] || m[5])}</a>`;
+                }
                 last = m.index + m[0].length;
             }
             return out + escapeHtml(s.slice(last));
@@ -349,6 +354,13 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             }
 
             if (!line) continue;
+
+            const imgLineMatch = line.match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)$/);
+            if (imgLineMatch) {
+                htmlParts.push(`<p><img src="${escapeHtml(imgLineMatch[2])}" alt="${escapeHtml(imgLineMatch[1])}" /></p>`);
+                continue;
+            }
+
             if (line.startsWith('# ')) {
                 htmlParts.push(`<h1>${inline(line.slice(2))}</h1>`);
             } else if (line.startsWith('## ')) {
@@ -1148,7 +1160,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                     {isPlanLoading ? (
                                         <>
                                             <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
-                                            <span>Generating with AI… this can take up to a minute.</span>
+                                            <span>Generating with AI… this can take a few minutes.</span>
                                         </>
                                     ) : (
                                         <>
@@ -1710,7 +1722,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                             <span>✍️</span> Rewrite the article with this plan
                                         </h4>
                                         <p className="text-xs text-ink-3 mt-1 max-w-xl">
-                                            Generate a complete, publication-ready draft applying the opening lead, heading hierarchy, FAQ block, and tables. Review side-by-side with before and after scores.
+                                            Generate a complete draft for editor review applying the opening lead, heading hierarchy, FAQ block, and tables. Review side-by-side with before and after scores.
                                         </p>
                                     </div>
                                     <button
@@ -1722,7 +1734,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                         {isRewriting ? (
                                             <>
                                                 <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
-                                                <span>Rewriting &amp; Auditing… (takes ~30-60s)</span>
+                                                <span>Rewriting &amp; Auditing… (this can take a few minutes)</span>
                                             </>
                                         ) : (
                                             <>
@@ -1743,82 +1755,92 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                 {rewriteDraft && (
                                     <div className="space-y-6 animate-fade-in">
                                         {/* Score comparison StatTiles */}
-                                        {rewriteScore && (
-                                            <div className="space-y-4">
-                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
-                                                    <StatTile
-                                                        figure={`${Math.round(rewriteScore.total_score_before)}`}
-                                                        label="Original Content Score"
-                                                        hint="On-page content before applying AI plan"
-                                                        tone="neutral"
-                                                    />
-                                                    <StatTile
-                                                        figure={`${Math.round(rewriteScore.total_score_after)}`}
-                                                        label="Rewritten Draft Score"
-                                                        hint="On-page content with AI plan applied"
-                                                        tone={rewriteScore.difference >= 0 ? "good" : "critical"}
-                                                        change={{
-                                                            value: `${rewriteScore.difference > 0 ? "+" : ""}${Math.round(rewriteScore.difference)} pts`,
-                                                            direction: rewriteScore.difference > 0 ? "up" : rewriteScore.difference < 0 ? "down" : "flat",
-                                                        }}
-                                                    />
-                                                </div>
-
-                                                {/* Excluded dimensions notice */}
-                                                <p className="text-xs text-ink-3 italic">
-                                                    Content-only comparison: technical, metadata and schema dimensions are not included.
-                                                </p>
-
-                                                {/* Dimension comparison table */}
-                                                {rewriteScore.dimensions && rewriteScore.dimensions.length > 0 && (
-                                                    <div className="border border-hairline rounded-xl overflow-hidden bg-surface">
-                                                        <div className="px-4 py-3 bg-surface-2 border-b border-hairline">
-                                                            <h5 className="text-xs font-bold text-ink uppercase tracking-wider">
-                                                                Dimension Comparison
-                                                            </h5>
-                                                        </div>
-                                                        <div className="overflow-x-auto">
-                                                            <table className="w-full text-xs text-left">
-                                                                <thead className="bg-surface-2/60 text-ink-2 font-semibold border-b border-hairline">
-                                                                    <tr>
-                                                                        <th className="py-2.5 px-4">Dimension</th>
-                                                                        <th className="py-2.5 px-4 text-center">Original</th>
-                                                                        <th className="py-2.5 px-4 text-center">Draft</th>
-                                                                        <th className="py-2.5 px-4 text-right">Change</th>
-                                                                    </tr>
-                                                                </thead>
-                                                                <tbody className="divide-y divide-hairline">
-                                                                    {rewriteScore.dimensions.map((dim, idx) => (
-                                                                        <tr key={idx} className="hover:bg-surface-2/30 transition-colors">
-                                                                            <td className="py-2.5 px-4 font-medium text-ink">
-                                                                                {getDimensionDisplayName(dim.name)}
-                                                                            </td>
-                                                                            <td className="py-2.5 px-4 text-center font-mono text-ink-2">
-                                                                                {Math.round(dim.score_before)}/100
-                                                                            </td>
-                                                                            <td className="py-2.5 px-4 text-center font-mono text-ink font-semibold">
-                                                                                {Math.round(dim.score_after)}/100
-                                                                            </td>
-                                                                            <td className="py-2.5 px-4 text-right">
-                                                                                <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
-                                                                                    dim.difference > 0
-                                                                                        ? "bg-good-soft text-good"
-                                                                                        : dim.difference < 0
-                                                                                        ? "bg-critical-soft text-critical"
-                                                                                        : "bg-surface-2 text-ink-3"
-                                                                                }`}>
-                                                                                    {dim.difference > 0 ? "+" : ""}{Math.round(dim.difference)}
-                                                                                </span>
-                                                                            </td>
-                                                                        </tr>
-                                                                    ))}
-                                                                </tbody>
-                                                            </table>
-                                                        </div>
+                                        {rewriteScore && (() => {
+                                            const totalBefore = Math.round(rewriteScore.total_score_before);
+                                            const totalAfter = Math.round(rewriteScore.total_score_after);
+                                            const totalDiff = totalAfter - totalBefore;
+                                            return (
+                                                <div className="space-y-4">
+                                                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
+                                                        <StatTile
+                                                            figure={`${totalBefore}`}
+                                                            label="Original Content Score"
+                                                            hint="On-page content before applying AI plan"
+                                                            tone="neutral"
+                                                        />
+                                                        <StatTile
+                                                            figure={`${totalAfter}`}
+                                                            label="Rewritten Draft Score"
+                                                            hint="On-page content with AI plan applied"
+                                                            tone={totalDiff > 0 ? "good" : totalDiff < 0 ? "critical" : "neutral"}
+                                                            change={{
+                                                                value: `${totalDiff > 0 ? "+" : ""}${totalDiff} pts`,
+                                                                direction: totalDiff > 0 ? "up" : totalDiff < 0 ? "down" : "flat",
+                                                            }}
+                                                        />
                                                     </div>
-                                                )}
-                                            </div>
-                                        )}
+
+                                                    {/* Excluded dimensions notice */}
+                                                    <p className="text-xs text-ink-3 italic">
+                                                        Content-only comparison: technical, metadata, freshness and authority dimensions are not included.
+                                                    </p>
+
+                                                    {/* Dimension comparison table */}
+                                                    {rewriteScore.dimensions && rewriteScore.dimensions.length > 0 && (
+                                                        <div className="border border-hairline rounded-xl overflow-hidden bg-surface">
+                                                            <div className="px-4 py-3 bg-surface-2 border-b border-hairline">
+                                                                <h5 className="text-xs font-bold text-ink uppercase tracking-wider">
+                                                                    Dimension Comparison
+                                                                </h5>
+                                                            </div>
+                                                            <div className="overflow-x-auto">
+                                                                <table className="w-full text-xs text-left">
+                                                                    <thead className="bg-surface-2/60 text-ink-2 font-semibold border-b border-hairline">
+                                                                        <tr>
+                                                                            <th className="py-2.5 px-4">Dimension</th>
+                                                                            <th className="py-2.5 px-4 text-center">Original</th>
+                                                                            <th className="py-2.5 px-4 text-center">Draft</th>
+                                                                            <th className="py-2.5 px-4 text-right">Change</th>
+                                                                        </tr>
+                                                                    </thead>
+                                                                    <tbody className="divide-y divide-hairline">
+                                                                        {rewriteScore.dimensions.map((dim, idx) => {
+                                                                            const sBefore = Math.round(dim.score_before);
+                                                                            const sAfter = Math.round(dim.score_after);
+                                                                            const diff = sAfter - sBefore;
+                                                                            return (
+                                                                                <tr key={idx} className="hover:bg-surface-2/30 transition-colors">
+                                                                                    <td className="py-2.5 px-4 font-medium text-ink">
+                                                                                        {getDimensionDisplayName(dim.name)}
+                                                                                    </td>
+                                                                                    <td className="py-2.5 px-4 text-center font-mono text-ink-2">
+                                                                                        {sBefore}/100
+                                                                                    </td>
+                                                                                    <td className="py-2.5 px-4 text-center font-mono text-ink font-semibold">
+                                                                                        {sAfter}/100
+                                                                                    </td>
+                                                                                    <td className="py-2.5 px-4 text-right">
+                                                                                        <span className={`inline-flex items-center px-2 py-0.5 rounded text-[11px] font-bold font-mono ${
+                                                                                            diff > 0
+                                                                                                ? "bg-good-soft text-good"
+                                                                                                : diff < 0
+                                                                                                ? "bg-critical-soft text-critical"
+                                                                                                : "bg-surface-2 text-ink-3"
+                                                                                        }`}>
+                                                                                            {diff > 0 ? "+" : ""}{diff}
+                                                                                        </span>
+                                                                                    </td>
+                                                                                </tr>
+                                                                            );
+                                                                        })}
+                                                                    </tbody>
+                                                                </table>
+                                                            </div>
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()}
 
                                         {/* Warnings callout box */}
                                         {rewriteDraft.warnings && rewriteDraft.warnings.length > 0 && (
@@ -1909,110 +1931,170 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                             </div>
 
                                             <div className="prose prose-sm dark:prose-invert max-w-none space-y-4">
-                                                {rewriteDraft.draft_markdown.split('\n\n').map((block, bIdx) => {
-                                                    const trimmed = block.trim();
-                                                    if (!trimmed) return null;
-
-                                                    // Markdown table block
-                                                    if (trimmed.startsWith('|') && trimmed.includes('\n|')) {
-                                                        const lines = trimmed.split('\n').filter(l => l.trim().startsWith('|'));
-                                                        const headers = lines[0].slice(1, -1).split('|').map(c => c.trim());
-                                                        const rows = lines.slice(2).map(l => l.slice(1, -1).split('|').map(c => c.trim()));
-                                                        return (
-                                                            <div key={bIdx} className="overflow-x-auto my-4 border border-hairline rounded-xl">
-                                                                <table className="w-full text-xs text-left">
-                                                                    <thead className="bg-surface-2 text-ink font-semibold border-b border-hairline">
-                                                                        <tr>
-                                                                            {headers.map((h, hIdx) => (
-                                                                                <th key={hIdx} className="py-2 px-3 border-r border-hairline last:border-r-0">{h}</th>
-                                                                            ))}
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody className="divide-y divide-hairline bg-surface">
-                                                                        {rows.map((r, rIdx) => (
-                                                                            <tr key={rIdx}>
-                                                                                {r.map((cell, cIdx) => (
-                                                                                    <td key={cIdx} className="py-2 px-3 border-r border-hairline last:border-r-0 text-ink-2">
-                                                                                        {cell}
-                                                                                    </td>
-                                                                                ))}
-                                                                            </tr>
-                                                                        ))}
-                                                                    </tbody>
-                                                                </table>
-                                                            </div>
-                                                        );
-                                                    }
-
-                                                    // Heading 1
-                                                    if (trimmed.startsWith('# ')) {
-                                                        return (
-                                                            <h1 key={bIdx} className="text-xl sm:text-2xl font-extrabold text-ink tracking-tight pt-2">
-                                                                {trimmed.slice(2)}
-                                                            </h1>
-                                                        );
-                                                    }
-
-                                                    // Heading 2
-                                                    if (trimmed.startsWith('## ')) {
-                                                        return (
-                                                            <h2 key={bIdx} className="text-lg font-bold text-ink tracking-tight pt-3 border-t border-hairline/60">
-                                                                {trimmed.slice(3)}
-                                                            </h2>
-                                                        );
-                                                    }
-
-                                                    // Heading 3
-                                                    if (trimmed.startsWith('### ')) {
-                                                        return (
-                                                            <h3 key={bIdx} className="text-sm font-bold text-ink pt-1">
-                                                                {trimmed.slice(4)}
-                                                            </h3>
-                                                        );
-                                                    }
-
-                                                    // Bullet lists
-                                                    if (trimmed.startsWith('- ')) {
-                                                        const items = trimmed.split('\n').filter(l => l.trim().startsWith('- '));
-                                                        return (
-                                                            <ul key={bIdx} className="list-disc pl-5 space-y-1 text-xs text-ink-2 leading-relaxed">
-                                                                {items.map((item, iIdx) => (
-                                                                    <li key={iIdx}>
-                                                                        {item.slice(2).split(/(\[EDITOR:[^\]]+\])/g).map((part, pIdx) => {
-                                                                            if (part.startsWith('[EDITOR:') && part.endsWith(']')) {
-                                                                                return (
-                                                                                    <span key={pIdx} className="inline-block bg-warn-soft border border-warn/30 text-warn font-medium px-1.5 py-0.5 rounded text-[11px] mx-0.5">
-                                                                                        {part}
-                                                                                    </span>
-                                                                                );
-                                                                            }
-                                                                            return part;
-                                                                        })}
-                                                                    </li>
-                                                                ))}
-                                                            </ul>
-                                                        );
-                                                    }
-
-                                                    // Standard paragraph with [EDITOR: ...] tokens highlighted in yellow bold
-                                                    return (
-                                                        <p key={bIdx} className="text-xs sm:text-sm text-ink leading-relaxed">
-                                                            {trimmed.split(/(\[EDITOR:[^\]]+\])/g).map((part, pIdx) => {
-                                                                if (part.startsWith('[EDITOR:') && part.endsWith(']')) {
+                                                {(() => {
+                                                    const renderDraftInline = (text: string) => {
+                                                        const tokenRegex = /(\[EDITOR:[^\]]+\]|!\[[^\]]*\]\(https?:\/\/[^)\s]+\)|\[[^\]]*\]\(https?:\/\/[^)\s]+\))/g;
+                                                        const parts = text.split(tokenRegex);
+                                                        return parts.map((part, idx) => {
+                                                            if (!part) return null;
+                                                            if (part.startsWith('[EDITOR:') && part.endsWith(']')) {
+                                                                return (
+                                                                    <span
+                                                                        key={idx}
+                                                                        className="inline-block bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 font-bold px-1.5 py-0.5 rounded text-xs mx-0.5 shadow-2xs"
+                                                                    >
+                                                                        {part}
+                                                                    </span>
+                                                                );
+                                                            }
+                                                            const imgMatch = part.match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/);
+                                                            if (imgMatch) {
+                                                                const alt = imgMatch[1];
+                                                                const src = imgMatch[2];
+                                                                if (/^https?:\/\//i.test(src)) {
                                                                     return (
-                                                                        <span
-                                                                            key={pIdx}
-                                                                            className="inline-block bg-amber-100 dark:bg-amber-950/60 border border-amber-300 dark:border-amber-700/60 text-amber-900 dark:text-amber-200 font-bold px-1.5 py-0.5 rounded text-xs mx-0.5 shadow-2xs"
-                                                                        >
-                                                                            {part}
-                                                                        </span>
+                                                                        <img
+                                                                            key={idx}
+                                                                            src={src}
+                                                                            alt={alt}
+                                                                            className="inline-block max-h-48 rounded border border-hairline my-1"
+                                                                            loading="lazy"
+                                                                        />
                                                                     );
                                                                 }
-                                                                return part;
-                                                            })}
-                                                        </p>
-                                                    );
-                                                })}
+                                                            }
+                                                            const linkMatch = part.match(/^\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)$/);
+                                                            if (linkMatch) {
+                                                                const anchorText = linkMatch[1] || linkMatch[2];
+                                                                const href = linkMatch[2];
+                                                                if (/^https?:\/\//i.test(href)) {
+                                                                    return (
+                                                                        <a
+                                                                            key={idx}
+                                                                            href={href}
+                                                                            target="_blank"
+                                                                            rel="noopener noreferrer"
+                                                                            className="underline text-accent hover:text-critical font-medium transition-colors"
+                                                                        >
+                                                                            {anchorText}
+                                                                        </a>
+                                                                    );
+                                                                }
+                                                            }
+                                                            return <span key={idx}>{part}</span>;
+                                                        });
+                                                    };
+
+                                                    return rewriteDraft.draft_markdown.split('\n\n').map((block, bIdx) => {
+                                                        const trimmed = block.trim();
+                                                        if (!trimmed) return null;
+
+                                                        // Standalone Markdown image block
+                                                        const imgBlockMatch = trimmed.match(/^!\[([^\]]*)\]\((https?:\/\/[^)\s]+)(?:\s+"[^"]*")?\)$/);
+                                                        if (imgBlockMatch) {
+                                                            const alt = imgBlockMatch[1];
+                                                            const src = imgBlockMatch[2];
+                                                            if (/^https?:\/\//i.test(src)) {
+                                                                return (
+                                                                    <figure key={bIdx} className="my-4">
+                                                                        <img
+                                                                            src={src}
+                                                                            alt={alt}
+                                                                            className="max-w-full h-auto rounded-xl border border-hairline shadow-sm"
+                                                                            loading="lazy"
+                                                                        />
+                                                                        {alt && (
+                                                                            <figcaption className="text-xs text-ink-3 italic mt-1.5 text-center">
+                                                                                {alt}
+                                                                            </figcaption>
+                                                                        )}
+                                                                    </figure>
+                                                                );
+                                                            }
+                                                        }
+
+                                                        // Markdown table block
+                                                        if (trimmed.startsWith('|') && trimmed.includes('\n|')) {
+                                                            const lines = trimmed.split('\n').filter(l => l.trim().startsWith('|'));
+                                                            const headers = lines[0].slice(1, -1).split('|').map(c => c.trim());
+                                                            const rows = lines.slice(2).map(l => l.slice(1, -1).split('|').map(c => c.trim()));
+                                                            return (
+                                                                <div key={bIdx} className="overflow-x-auto my-4 border border-hairline rounded-xl">
+                                                                    <table className="w-full text-xs text-left">
+                                                                        <thead className="bg-surface-2 text-ink font-semibold border-b border-hairline">
+                                                                            <tr>
+                                                                                {headers.map((h, hIdx) => (
+                                                                                    <th key={hIdx} className="py-2 px-3 border-r border-hairline last:border-r-0">
+                                                                                        {renderDraftInline(h)}
+                                                                                    </th>
+                                                                                ))}
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody className="divide-y divide-hairline bg-surface">
+                                                                            {rows.map((r, rIdx) => (
+                                                                                <tr key={rIdx}>
+                                                                                    {r.map((cell, cIdx) => (
+                                                                                        <td key={cIdx} className="py-2 px-3 border-r border-hairline last:border-r-0 text-ink-2">
+                                                                                            {renderDraftInline(cell)}
+                                                                                        </td>
+                                                                                    ))}
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                </div>
+                                                            );
+                                                        }
+
+                                                        // Heading 1
+                                                        if (trimmed.startsWith('# ')) {
+                                                            return (
+                                                                <h1 key={bIdx} className="text-xl sm:text-2xl font-extrabold text-ink tracking-tight pt-2">
+                                                                    {renderDraftInline(trimmed.slice(2))}
+                                                                </h1>
+                                                            );
+                                                        }
+
+                                                        // Heading 2
+                                                        if (trimmed.startsWith('## ')) {
+                                                            return (
+                                                                <h2 key={bIdx} className="text-lg font-bold text-ink tracking-tight pt-3 border-t border-hairline/60">
+                                                                    {renderDraftInline(trimmed.slice(3))}
+                                                                </h2>
+                                                            );
+                                                        }
+
+                                                        // Heading 3
+                                                        if (trimmed.startsWith('### ')) {
+                                                            return (
+                                                                <h3 key={bIdx} className="text-sm font-bold text-ink pt-1">
+                                                                    {renderDraftInline(trimmed.slice(4))}
+                                                                </h3>
+                                                            );
+                                                        }
+
+                                                        // Bullet lists
+                                                        if (trimmed.startsWith('- ')) {
+                                                            const items = trimmed.split('\n').filter(l => l.trim().startsWith('- '));
+                                                            return (
+                                                                <ul key={bIdx} className="list-disc pl-5 space-y-1 text-xs text-ink-2 leading-relaxed">
+                                                                    {items.map((item, iIdx) => (
+                                                                        <li key={iIdx}>
+                                                                            {renderDraftInline(item.slice(2))}
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            );
+                                                        }
+
+                                                        // Standard paragraph with [EDITOR: ...], images and links
+                                                        return (
+                                                            <p key={bIdx} className="text-xs sm:text-sm text-ink leading-relaxed">
+                                                                {renderDraftInline(trimmed)}
+                                                            </p>
+                                                        );
+                                                    });
+                                                })()}
                                             </div>
                                         </div>
                                     </div>

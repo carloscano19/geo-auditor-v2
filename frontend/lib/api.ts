@@ -9,6 +9,7 @@ const API_BASE_URL = process.env.NEXT_PUBLIC_API_URL || 'http://localhost:8000';
 export interface AuditRequest {
     url?: string;
     content_text?: string;
+    content_html?: string;
     target_query?: string;
 }
 

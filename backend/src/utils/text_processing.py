@@ -289,3 +289,129 @@ def extract_substantive_paragraphs(html: str, min_words: int = 10) -> list[str]:
             paragraphs.append(text)
             
     return paragraphs
+
+
+def sanitize_pasted_html(raw_html: str) -> str:
+    """
+    Clean and normalize HTML pasted from editors (Google Docs, Word, web):
+    - Google Docs: unwraps <b id="docs-internal-guid-..."> wrappers without losing headers/paragraphs.
+    - Word: converts <p class="MsoHeading1/2/3"> or "MsoTitle" to real h1/h2/h3.
+    - Whitelist tags: h1-h6, p, ul, ol, li, table, thead, tbody, tr, th, td,
+      a (href http/https), img (src http/https, alt), strong, b, em, i, br, blockquote.
+    - Strips all scripts, styles, comments, attributes (except whitelisted), and empty spans preserving text.
+    - Ensures an H1 exists: if no H1, converts the first heading or the first short substantive line into an H1.
+      Never uses 'Analysis'.
+    """
+    if not raw_html or not raw_html.strip():
+        return ""
+
+    soup = BeautifulSoup(raw_html, "lxml")
+
+    # 1. Remove dangerous / non-content tags completely
+    for tag in soup.find_all(["script", "style", "noscript", "iframe", "svg", "form", "button", "input", "textarea", "select", "option", "meta", "link", "head"]):
+        tag.decompose()
+
+    # Remove HTML comments
+    from bs4 import Comment
+    for comment in soup.find_all(string=lambda t: isinstance(t, Comment)):
+        comment.extract()
+
+    # 2. Word handling: convert MsoHeading / MsoTitle paragraphs into real headings
+    for p in soup.find_all(["p", "div"]):
+        classes = p.get("class", [])
+        if isinstance(classes, str):
+            classes = [classes]
+        classes_str = " ".join(classes).lower()
+        if "msotitle" in classes_str or "msoheading1" in classes_str:
+            p.name = "h1"
+            p.attrs = {}
+        elif "msoheading2" in classes_str:
+            p.name = "h2"
+            p.attrs = {}
+        elif "msoheading3" in classes_str:
+            p.name = "h3"
+            p.attrs = {}
+        elif "msoheading4" in classes_str:
+            p.name = "h4"
+            p.attrs = {}
+
+    # 3. Google Docs: unwrap docs-internal-guid bold tags or wrapper spans
+    for b in soup.find_all(["b", "span", "div"]):
+        el_id = str(b.get("id") or "").lower()
+        if "docs-internal-guid" in el_id:
+            b.unwrap()
+
+    # 4. Whitelist filtering
+    ALLOWED_TAGS = {
+        "h1", "h2", "h3", "h4", "h5", "h6",
+        "p", "ul", "ol", "li", "table", "thead", "tbody", "tr", "th", "td",
+        "a", "img", "strong", "b", "em", "i", "br", "blockquote"
+    }
+
+    # Process all elements
+    for el in list(soup.find_all(True)):
+        tag_name = el.name.lower()
+        if tag_name in ["html", "body"]:
+            continue
+
+        if tag_name not in ALLOWED_TAGS:
+            # Unwrap tag, keeping inner content
+            el.unwrap()
+            continue
+
+        # Tag is allowed, clean its attributes
+        if tag_name == "a":
+            href = (el.get("href") or "").strip()
+            if href and re.match(r"^https?://", href, re.I):
+                el.attrs = {"href": href}
+            else:
+                el.unwrap()
+        elif tag_name == "img":
+            src = (el.get("src") or el.get("data-src") or "").strip()
+            alt = (el.get("alt") or "").strip()
+            if src and re.match(r"^https?://", src, re.I):
+                el.attrs = {"src": src, "alt": alt}
+            else:
+                el.decompose()
+        else:
+            # Strip all attributes from other allowed tags
+            el.attrs = {}
+
+    # 5. Extract inner body content if body exists
+    container = soup.body if soup.body else soup
+
+    # 6. Ensure an H1 exists
+    h1_tag = container.find("h1")
+    if not h1_tag:
+        # Check if another heading exists to promote
+        other_heading = container.find(["h2", "h3", "h4", "h5", "h6"])
+        if other_heading and other_heading.get_text(strip=True):
+            other_heading.name = "h1"
+        else:
+            # Find the first paragraph or block with short text (< 120 chars) to promote to H1
+            first_p = container.find("p")
+            if first_p:
+                txt = first_p.get_text(strip=True)
+                if txt and len(txt) <= 120 and "\n" not in txt:
+                    first_p.name = "h1"
+                elif txt:
+                    # Split first line
+                    lines = [ln.strip() for ln in txt.split("\n") if ln.strip()]
+                    if lines and len(lines[0]) <= 120:
+                        new_h1 = soup.new_tag("h1")
+                        new_h1.string = lines[0]
+                        first_p.insert_before(new_h1)
+                        if len(lines) > 1:
+                            first_p.string = " ".join(lines[1:])
+                        else:
+                            first_p.decompose()
+
+    # Output clean inner HTML
+    clean_parts = []
+    for child in container.children:
+        child_str = str(child).strip()
+        if child_str:
+            clean_parts.append(child_str)
+
+    return "\n".join(clean_parts).strip()
+

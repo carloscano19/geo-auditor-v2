@@ -989,7 +989,7 @@ def generate_rewrite_draft_docx(
 
         note_p = doc.add_paragraph()
         note_p.paragraph_format.space_after = Pt(6)
-        r_note = note_p.add_run("Content-only comparison: technical, metadata and schema dimensions are not included.")
+        r_note = note_p.add_run("Content-only comparison: technical, metadata, freshness and authority dimensions are not included.")
         r_note.font.italic = True
         r_note.font.size = Pt(9)
         r_note.font.color.rgb = RGBColor(107, 114, 128)
@@ -1110,7 +1110,7 @@ def generate_rewrite_draft_docx(
     def _add_highlighted_text(paragraph, text: str, default_bold: bool = False):
         """Append runs to paragraph, highlighting [EDITOR: ...] in yellow bold and
         rendering Markdown links [text](url) as real hyperlinks."""
-        pattern = re.compile(r'(\[EDITOR:[^\]]*\]|\[[^\]]*\]\(https?://[^)\s]+\))')
+        pattern = re.compile(r'(\[EDITOR:[^\]]*\]|!\[[^\]]*\]\(https?://[^)\s]+\)|\[[^\]]*\]\(https?://[^)\s]+\))')
         parts = pattern.split(text)
         for part in parts:
             if not part:
@@ -1120,6 +1120,12 @@ def generate_rewrite_draft_docx(
                 run.bold = True
                 run.font.highlight_color = WD_COLOR_INDEX.YELLOW
                 run.font.color.rgb = RGBColor(146, 64, 14)
+                continue
+            img_m = re.fullmatch(r'!\[([^\]]*)\]\((https?://[^)\s]+)\)', part)
+            if img_m:
+                run = paragraph.add_run(f"[Image: {img_m.group(1) or 'Image'} — {img_m.group(2)}]")
+                run.italic = True
+                run.font.color.rgb = RGBColor(107, 114, 128)
                 continue
             link_m = re.fullmatch(r'\[([^\]]*)\]\((https?://[^)\s]+)\)', part)
             if link_m:
@@ -1186,6 +1192,38 @@ def generate_rewrite_draft_docx(
             table_lines = []
 
         if not stripped:
+            i += 1
+            continue
+
+        # Check standalone markdown image
+        img_match = re.match(r'^!\[([^\]]*)\]\((https?://[^)\s]+)(?:\s+"[^"]*")?\)$', stripped)
+        if img_match:
+            alt_text = img_match.group(1).strip()
+            img_url = img_match.group(2).strip()
+            inserted = False
+            try:
+                import httpx
+                resp = httpx.get(img_url, timeout=4.0, follow_redirects=True)
+                if resp.status_code == 200 and len(resp.content) > 100:
+                    img_stream = io.BytesIO(resp.content)
+                    doc.add_picture(img_stream, width=Inches(5.5))
+                    inserted = True
+            except Exception:
+                inserted = False
+
+            p_img = doc.add_paragraph()
+            p_img.paragraph_format.space_after = Pt(6)
+            if inserted:
+                if alt_text:
+                    r_caption = p_img.add_run(f"Figure: {alt_text}")
+                    r_caption.font.size = Pt(8.5)
+                    r_caption.font.italic = True
+                    r_caption.font.color.rgb = RGBColor(107, 114, 128)
+            else:
+                r_fallback = p_img.add_run(f"[Image: {alt_text or 'Image'} — {img_url}]")
+                r_fallback.font.size = Pt(9)
+                r_fallback.font.italic = True
+                r_fallback.font.color.rgb = RGBColor(107, 114, 128)
             i += 1
             continue
 
