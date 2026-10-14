@@ -4593,4 +4593,188 @@ def test_docx_rewrite_respects_max_15_images():
     assert "[Image: Image 17 — https://example.com/img17.png]" in all_text
 
 
+def test_rewrite_empty_content_retries_and_returns_502():
+    """Test that empty content triggers 1 retry and then returns 502 with clear message."""
+    req = {
+        "ai_context": {
+            "main_text": "Here is an original article with about twenty words to test the rewrite retry mechanism thoroughly in our test suite.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [("", "stop"), ("", "stop")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 502
+    assert "The AI returned an empty or incomplete draft (finish reason: stop). Please try again." in res.json()["detail"]
+    assert mock_stream.call_count == 2
+
+
+def test_rewrite_empty_first_attempt_then_succeeds_without_false_link_warnings():
+    """Test that if attempt 1 is empty, retry succeeds without generating false missing link warnings."""
+    req = {
+        "ai_context": {
+            "url": "https://example.com/stadium",
+            "main_html": '<p>Visit <a href="https://example.com/tickets">tickets</a> for details.</p>',
+            "main_text": "Visit tickets for details about matchday attendance and seating.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    valid_draft = "# Stadium Guide\nVisit [tickets](https://example.com/tickets) for details about matchday attendance and seating."
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [("", "stop"), (valid_draft, "stop")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    assert mock_stream.call_count == 2
+    data = res.json()
+    assert not any("Original link not preserved" in w for w in data["warnings"])
+    assert "https://example.com/tickets" in data["draft_markdown"]
+
+
+def test_rewrite_finish_reason_length_over_50_percent_success_with_warning():
+    """Test that finish_reason 'length' with >50% words retries once and returns draft with length warning."""
+    orig_words = "Word " * 50  # 50 words
+    req = {
+        "ai_context": {
+            "main_text": orig_words,
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    draft_35_words = "# Title\n" + ("Word " * 35)  # 36 words, >50% of 50
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [(draft_35_words, "length"), (draft_35_words, "length")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    assert mock_stream.call_count == 2
+    data = res.json()
+    assert "The draft may be incomplete: the AI reached its length limit. Check the end of the article." in data["warnings"]
+
+
+def test_rewrite_under_50_percent_twice_returns_502():
+    """Test that draft under 50% words on both attempts returns 502 with clear message."""
+    orig_text = "Word " * 100  # 100 words
+    req = {
+        "ai_context": {
+            "main_text": orig_text,
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    short_draft = "# Title\nJust ten words here that are way below fifty percent."
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [(short_draft, "stop"), (short_draft, "stop")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 502
+    assert "The AI returned an empty or incomplete draft (finish reason: stop). Please try again." in res.json()["detail"]
+    assert mock_stream.call_count == 2
+
+
+def test_rewrite_settings_applied_only_to_rewrite():
+    """Test that GEO_AUDITOR_LLM_REWRITE_MODEL and GEO_AUDITOR_LLM_REWRITE_MAX_TOKENS apply only to /api/ai/rewrite."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+        llm_max_tokens=16000,
+        llm_rewrite_model="custom-rewrite-model",
+        llm_rewrite_max_tokens=28000,
+    )
+    client = TestClient(app)
+
+    # 1. Check /api/ai/rewrite uses custom-rewrite-model and 28000
+    rewrite_req = {
+        "ai_context": {
+            "main_text": "A brief article about testing configurations and settings.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = ("# Config Test\nA brief article about testing configurations and settings.", "stop")
+        res = client.post("/api/ai/rewrite", json=rewrite_req)
+        assert res.status_code == 200
+        assert mock_stream.call_count == 1
+        passed_payload = mock_stream.call_args[0][3]
+        assert passed_payload["model"] == "custom-rewrite-model"
+        assert passed_payload["max_tokens"] == 28000
+
+    # 2. Check /api/ai/plan does NOT use custom-rewrite-model or 28000
+    plan_req = {
+        "ai_context": {
+            "url": "https://example.com/test",
+            "title": "Test Title",
+            "h1": "Test H1",
+            "language": "en",
+            "content_type": "article",
+            "main_text": "Some text to analyze for planning purposes.",
+        }
+    }
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm_plan:
+        mock_llm_plan.return_value = {
+            "suggested_lead": {"suggested": "Lead"},
+            "questions_to_answer": [],
+            "suggested_h2_structure": [],
+            "paragraphs_to_add": [],
+            "sources_to_cite": [],
+            "data_opportunities": [],
+            "combined_schema": {},
+        }
+        res_plan = client.post("/api/ai/plan", json=plan_req)
+        assert res_plan.status_code == 200
+        assert mock_settings.llm_model == "gpt-4o"
+        assert mock_settings.llm_max_tokens == 16000
+
+
+
 

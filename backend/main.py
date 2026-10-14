@@ -1974,50 +1974,108 @@ AI IMPROVEMENT PLAN TO APPLY:
 Write the complete rewritten article in Markdown now following all editorial and verification rules strictly in {lang_instruction}.
 """
 
-    try:
-        # Use call_chat_completion with streaming
-        # Note: call_chat_completion extracts JSON if possible, but our output is markdown.
-        # Let's call chat completion directly or using the client's internal methods:
-        url = f"{llm.base_url}/chat/completions"
-        headers = {
-            "Authorization": f"Bearer {llm.api_key}",
-            "Content-Type": "application/json",
-        }
-        payload = {
-            "model": llm.model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            "temperature": 0.2,
-        }
-        if llm.max_tokens:
-            payload["max_tokens"] = llm.max_tokens
+    orig_text = ctx.main_text or ""
+    orig_words = len(orig_text.split())
 
-        # Check and increment daily counter
-        from src.services.llm_client import daily_tracker
-        daily_tracker.check_and_increment(llm.daily_limit)
+    # Build prompt payload
+    url = f"{llm.base_url}/chat/completions"
+    headers = {
+        "Authorization": f"Bearer {llm.api_key}",
+        "Content-Type": "application/json",
+    }
+    rewrite_model = current_settings.llm_rewrite_model or llm.model
+    rewrite_max_tokens = current_settings.llm_rewrite_max_tokens or 32000
+    payload = {
+        "model": rewrite_model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.2,
+        "max_tokens": rewrite_max_tokens,
+    }
 
-        timeout_config = httpx.Timeout(llm.timeout, read=60.0) if llm.streaming else httpx.Timeout(llm.timeout)
-        async with httpx.AsyncClient(timeout=timeout_config) as http_client:
-            if llm.streaming:
-                content, _ = await llm._stream_and_extract_content(http_client, url, headers, payload)
-            else:
-                content, _ = await llm._post_and_extract_content(http_client, url, headers, payload)
+    # Check and increment daily counter
+    from src.services.llm_client import daily_tracker
+    daily_tracker.check_and_increment(llm.daily_limit)
 
-    except DailyLimitExceededError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except Exception as e:
-        logger.error(f"LLM rewrite error: {traceback.format_exc()}")
-        raise HTTPException(status_code=502, detail=f"AI rewrite generation failed: {str(e)}")
+    timeout_config = httpx.Timeout(llm.timeout, read=60.0) if llm.streaming else httpx.Timeout(llm.timeout)
 
-    draft_markdown = content.strip()
-    # Strip markdown code fences if model wrapped it in ```markdown ... ```
-    fence_m = re.match(r"^```(?:markdown)?\s*\n?([\s\S]*?)\n?```$", draft_markdown, re.I)
-    if fence_m:
-        draft_markdown = fence_m.group(1).strip()
+    max_attempts = 2
+    final_content = ""
+    final_finish_reason: Optional[str] = None
+    attempt = 0
+
+    while attempt < max_attempts:
+        attempt += 1
+        try:
+            async with httpx.AsyncClient(timeout=timeout_config) as http_client:
+                if llm.streaming:
+                    content, finish_reason = await llm._stream_and_extract_content(http_client, url, headers, payload)
+                else:
+                    content, finish_reason = await llm._post_and_extract_content(http_client, url, headers, payload)
+        except DailyLimitExceededError as e:
+            raise HTTPException(status_code=429, detail=str(e))
+        except Exception as e:
+            logger.error(f"LLM rewrite error on attempt {attempt}: {traceback.format_exc()}")
+            if attempt < max_attempts:
+                logger.warning(f"Retrying AI rewrite after error on attempt {attempt}...")
+                await asyncio.sleep(1.0)
+                continue
+            raise HTTPException(status_code=502, detail=f"AI rewrite generation failed: {str(e)}")
+
+        clean_content = content.strip()
+        fence_m = re.match(r"^```(?:markdown)?\s*\n?([\s\S]*?)\n?```$", clean_content, re.I)
+        if fence_m:
+            clean_content = fence_m.group(1).strip()
+
+        draft_words = len(clean_content.split())
+        logger.info(
+            f"AI rewrite attempt {attempt}/{max_attempts}: length={len(clean_content)} chars, "
+            f"words={draft_words} (original={orig_words}), finish_reason={finish_reason}"
+        )
+
+        final_content = clean_content
+        final_finish_reason = finish_reason
+
+        is_empty = (not clean_content) or draft_words == 0
+        is_under_50 = (orig_words > 0 and draft_words < orig_words * 0.5)
+        is_length = (finish_reason == "length")
+
+        if is_empty or is_under_50 or is_length:
+            if attempt < max_attempts:
+                logger.warning(
+                    f"AI rewrite attempt {attempt} returned empty or incomplete draft "
+                    f"(empty={is_empty}, words={draft_words}/{orig_words}, finish_reason={finish_reason}). "
+                    f"Retrying once..."
+                )
+                await asyncio.sleep(1.0)
+                continue
+
+        break
+
+    draft_words = len(final_content.split())
+    is_empty = (not final_content) or draft_words == 0
+    is_under_50 = (orig_words > 0 and draft_words < orig_words * 0.5)
+
+    if is_empty or is_under_50:
+        reason_str = final_finish_reason if final_finish_reason else "none"
+        logger.error(
+            f"AI rewrite failed quality check after attempt {attempt}: empty={is_empty}, "
+            f"words={draft_words}/{orig_words}, finish_reason={reason_str}"
+        )
+        raise HTTPException(
+            status_code=502,
+            detail=f"The AI returned an empty or incomplete draft (finish reason: {reason_str}). Please try again."
+        )
 
     warnings: list[str] = []
+
+    # If the draft finished due to length limit on attempt 2 (or kept), but exceeded 50%, add prominent warning
+    if final_finish_reason == "length":
+        warnings.append("The draft may be incomplete: the AI reached its length limit. Check the end of the article.")
+
+    draft_markdown = final_content
 
     # 1. Verification of sensitive phrases (financial risk / disclaimers / T&C)
     # Detect sensitive sentences in original text and ensure they are literally present in the draft

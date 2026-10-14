@@ -142,10 +142,13 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
     const [rewriteDraft, setRewriteDraft] = useState<AIRewriteResponse | null>(null);
     const [rewriteScore, setRewriteScore] = useState<AIRewriteScoreResponse | null>(null);
     const [rewriteError, setRewriteError] = useState<string | null>(null);
+    const [rewriteScoreError, setRewriteScoreError] = useState<string | null>(null);
+    const [draftDownloadError, setDraftDownloadError] = useState<string | null>(null);
     const [showOriginalText, setShowOriginalText] = useState(false);
     const [copiedMarkdown, setCopiedMarkdown] = useState(false);
     const [copiedHtml, setCopiedHtml] = useState(false);
     const [isDraftDownloading, setIsDraftDownloading] = useState(false);
+    const hasDraftContent = Boolean(rewriteDraft?.draft_markdown && rewriteDraft.draft_markdown.trim().length > 0);
 
     useEffect(() => {
         apiClient.getVersion().then((v) => {
@@ -266,6 +269,8 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
         if (!results.ai_context || !aiPlan) return;
         setIsRewriting(true);
         setRewriteError(null);
+        setRewriteScoreError(null);
+        setDraftDownloadError(null);
         try {
             const rewriteResp = await apiClient.rewriteArticle({
                 ai_context: results.ai_context,
@@ -283,12 +288,19 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                     target_query: customQuery || undefined,
                 });
                 setRewriteScore(scoreResp);
+                setRewriteScoreError(null);
             } catch (scoreErr) {
                 console.error("Failed to calculate score comparison:", scoreErr);
+                const scoreMsg = scoreErr instanceof Error ? scoreErr.message : "Failed to calculate score comparison";
+                setRewriteScoreError(scoreMsg);
+                setRewriteScore(null);
             }
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Failed to generate rewrite draft";
             setRewriteError(errorMsg);
+            setRewriteDraft(null);
+            setRewriteScore(null);
+            setRewriteScoreError(null);
         } finally {
             setIsRewriting(false);
         }
@@ -383,8 +395,9 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
     };
 
     const handleDownloadRewriteDocx = async () => {
-        if (!rewriteDraft?.draft_markdown) return;
+        if (!rewriteDraft?.draft_markdown?.trim()) return;
         setIsDraftDownloading(true);
+        setDraftDownloadError(null);
         try {
             await apiClient.downloadRewriteDraft({
                 url: results.url,
@@ -394,7 +407,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             });
         } catch (err: unknown) {
             const msg = err instanceof Error ? err.message : "Failed to download Word document";
-            alert(`Error: ${msg}`);
+            setDraftDownloadError(msg);
         } finally {
             setIsDraftDownloading(false);
         }
@@ -1746,16 +1759,26 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                 </div>
 
                                 {rewriteError && (
-                                    <div className="p-4 rounded-xl border border-critical/30 bg-critical-soft text-critical text-xs flex items-center gap-2">
-                                        <span>⚠️</span>
-                                        <span>{rewriteError}</span>
+                                    <div className="p-4 rounded-xl border border-critical/30 bg-critical-soft text-critical text-xs flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 animate-fade-in">
+                                        <div className="flex items-center gap-2">
+                                            <span className="text-base">⚠️</span>
+                                            <span>{rewriteError}</span>
+                                        </div>
+                                        <button
+                                            type="button"
+                                            onClick={handleRewriteArticle}
+                                            disabled={isRewriting}
+                                            className="btn-primary text-xs h-8 px-4 shrink-0 cursor-pointer font-medium"
+                                        >
+                                            {isRewriting ? "Retrying..." : "Try again"}
+                                        </button>
                                     </div>
                                 )}
 
-                                {rewriteDraft && (
+                                {!rewriteError && rewriteDraft && (
                                     <div className="space-y-6 animate-fade-in">
                                         {/* Score comparison StatTiles */}
-                                        {rewriteScore && (() => {
+                                        {rewriteScore ? (() => {
                                             const totalBefore = Math.round(rewriteScore.total_score_before);
                                             const totalAfter = Math.round(rewriteScore.total_score_after);
                                             const totalDiff = totalAfter - totalBefore;
@@ -1840,7 +1863,17 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                     )}
                                                 </div>
                                             );
-                                        })()}
+                                        })() : rewriteScoreError ? (
+                                            <div className="p-4 rounded-xl border border-warn/30 bg-warn-soft/60 text-xs text-ink space-y-1">
+                                                <div className="flex items-center gap-2 font-bold text-warn">
+                                                    <span>⚠️</span>
+                                                    <span>Score comparison failed: {rewriteScoreError}</span>
+                                                </div>
+                                                <p className="text-ink-2">
+                                                    The draft was generated successfully, but automated re-scoring could not be completed. You can still review and export the draft below.
+                                                </p>
+                                            </div>
+                                        ) : null}
 
                                         {/* Warnings callout box */}
                                         {rewriteDraft.warnings && rewriteDraft.warnings.length > 0 && (
@@ -1854,6 +1887,23 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                         <li key={wIdx}>{warn}</li>
                                                     ))}
                                                 </ul>
+                                            </div>
+                                        )}
+
+                                        {/* Download error display */}
+                                        {draftDownloadError && (
+                                            <div className="p-3.5 rounded-xl border border-critical/30 bg-critical-soft text-critical text-xs flex items-center justify-between gap-2 animate-fade-in">
+                                                <div className="flex items-center gap-2">
+                                                    <span>⚠️</span>
+                                                    <span>Failed to download Word draft: {draftDownloadError}</span>
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setDraftDownloadError(null)}
+                                                    className="text-critical hover:text-critical/80 text-xs font-bold px-1.5 py-0.5 rounded cursor-pointer"
+                                                >
+                                                    ✕
+                                                </button>
                                             </div>
                                         )}
 
@@ -1875,22 +1925,24 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                 <button
                                                     type="button"
                                                     onClick={handleCopyRewriteMarkdown}
-                                                    className="btn-default text-xs h-8 px-3 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                    disabled={!hasDraftContent}
+                                                    className={`btn-default text-xs h-8 px-3 flex items-center gap-1.5 font-medium ${!hasDraftContent ? "opacity-50 cursor-not-allowed pointer-events-none" : "cursor-pointer"}`}
                                                 >
                                                     <span>{copiedMarkdown ? "✓ Copied" : "📋 Copy as Markdown"}</span>
                                                 </button>
                                                 <button
                                                     type="button"
                                                     onClick={handleCopyRewriteHtml}
-                                                    className="btn-default text-xs h-8 px-3 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                    disabled={!hasDraftContent}
+                                                    className={`btn-default text-xs h-8 px-3 flex items-center gap-1.5 font-medium ${!hasDraftContent ? "opacity-50 cursor-not-allowed pointer-events-none" : "cursor-pointer"}`}
                                                 >
                                                     <span>{copiedHtml ? "✓ Copied" : "🌐 Copy as HTML"}</span>
                                                 </button>
                                                 <button
                                                     type="button"
                                                     onClick={handleDownloadRewriteDocx}
-                                                    disabled={isDraftDownloading}
-                                                    className="btn-primary text-xs h-8 px-3.5 flex items-center gap-1.5 cursor-pointer font-medium"
+                                                    disabled={!hasDraftContent || isDraftDownloading}
+                                                    className={`btn-primary text-xs h-8 px-3.5 flex items-center gap-1.5 font-medium ${(!hasDraftContent || isDraftDownloading) ? "opacity-50 cursor-not-allowed pointer-events-none" : "cursor-pointer"}`}
                                                 >
                                                     {isDraftDownloading ? (
                                                         <>

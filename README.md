@@ -222,6 +222,8 @@ All backend variables use the `GEO_AUDITOR_` prefix and are defined in `backend/
 | `GEO_AUDITOR_LLM_DAILY_LIMIT` | `200` | Maximum LLM requests per UTC calendar day. |
 | `GEO_AUDITOR_LLM_MAX_TOKENS` | `16000` | Maximum token ceiling for model completions. |
 | `GEO_AUDITOR_LLM_STREAMING` | `True` | Enables Server-Sent Events (SSE) streaming to prevent proxy timeouts. |
+| `GEO_AUDITOR_LLM_REWRITE_MODEL` | `""` | Optional model identifier for `/api/ai/rewrite` (defaults to `LLM_MODEL`). |
+| `GEO_AUDITOR_LLM_REWRITE_MAX_TOKENS` | `32000` | Optional maximum token limit for `/api/ai/rewrite` (defaults to `32000`). |
 | `GEO_AUDITOR_DATAFORSEO_LOGIN` | `""` | DataForSEO API account login. |
 | `GEO_AUDITOR_DATAFORSEO_PASSWORD` | `""` | DataForSEO API account password. |
 | `GEO_AUDITOR_SERP_DAILY_LIMIT` | `100` | Maximum DataForSEO requests per UTC calendar day. |

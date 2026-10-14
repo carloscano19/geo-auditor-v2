@@ -9,7 +9,7 @@ import json
 from pathlib import Path
 from functools import lru_cache
 from typing import Optional
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     llm_daily_limit: int = 200
     llm_max_tokens: int = 16000
     llm_streaming: bool = True
+    llm_rewrite_model: str = ""
+    llm_rewrite_max_tokens: int = 32000
+
+    @model_validator(mode="after")
+    def set_rewrite_model_default(self) -> "Settings":
+        if not self.llm_rewrite_model:
+            self.llm_rewrite_model = self.llm_model
+        return self
 
     # DataForSEO / SERP Configuration
     dataforseo_login: str = ""
