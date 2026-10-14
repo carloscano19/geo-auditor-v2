@@ -15,10 +15,12 @@ non-technical editors, including:
 """
 
 import io
+import ipaddress
 import json
+import socket
 from datetime import datetime, timezone
 from typing import Optional, List, Dict, Any, Tuple
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 import docx
 from docx import Document
@@ -937,6 +939,116 @@ def generate_editor_brief_docx(
     return buffer.getvalue()
 
 
+def _is_ip_allowed(ip_str: str) -> bool:
+    try:
+        ip = ipaddress.ip_address(ip_str)
+        if (
+            ip.is_private
+            or ip.is_loopback
+            or ip.is_link_local
+            or ip.is_reserved
+            or ip.is_multicast
+            or ip.is_unspecified
+        ):
+            return False
+        return True
+    except ValueError:
+        return False
+
+
+def _is_host_safe(hostname: str) -> bool:
+    if not hostname:
+        return False
+    h = hostname.strip().lower()
+    if h == "localhost" or h.endswith(".localhost") or h.endswith(".local") or h.endswith(".internal"):
+        return False
+
+    # Check direct IP literals (e.g. 127.0.0.1, 10.0.0.1, 169.254.169.254)
+    try:
+        ip = ipaddress.ip_address(h)
+        return _is_ip_allowed(str(ip))
+    except ValueError:
+        pass
+
+    try:
+        addr_info = socket.getaddrinfo(h, None)
+        if not addr_info:
+            return False
+        for res in addr_info:
+            sockaddr = res[4]
+            ip_str = sockaddr[0]
+            if not _is_ip_allowed(ip_str):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+def _download_safe_image(
+    url: str,
+    max_bytes: int = 5 * 1024 * 1024,
+    max_redirects: int = 3,
+    timeout: float = 4.0,
+) -> Optional[bytes]:
+    """
+    Safely download an external image with strict security boundaries:
+    - Only http/https.
+    - Hostname resolved and checked against private, loopback, link-local, reserved, multicast IPs.
+    - Manual redirect handling (maximum 3 redirects) with validation of each target.
+    - Streaming download capped at max_bytes (5 MB).
+    - Only accepts Content-Type: image/*.
+    """
+    import httpx
+
+    current_url = url
+    for _ in range(max_redirects + 1):
+        try:
+            parsed = urlparse(current_url)
+            if parsed.scheme.lower() not in ("http", "https") or not parsed.hostname:
+                return None
+            if not _is_host_safe(parsed.hostname):
+                return None
+
+            with httpx.Client(timeout=timeout, follow_redirects=False) as client:
+                with client.stream("GET", current_url) as resp:
+                    if resp.status_code in (301, 302, 303, 307, 308):
+                        loc = resp.headers.get("location")
+                        if not loc:
+                            return None
+                        current_url = urljoin(current_url, loc)
+                        continue
+
+                    if resp.status_code != 200:
+                        return None
+
+                    content_type = (resp.headers.get("content-type") or "").strip().lower()
+                    if not content_type.startswith("image/"):
+                        return None
+
+                    content_len_header = resp.headers.get("content-length")
+                    if content_len_header:
+                        try:
+                            if int(content_len_header) > max_bytes:
+                                return None
+                        except ValueError:
+                            pass
+
+                    content = bytearray()
+                    for chunk in resp.iter_bytes(chunk_size=8192):
+                        content.extend(chunk)
+                        if len(content) > max_bytes:
+                            return None
+
+                    if not content:
+                        return None
+
+                    return bytes(content)
+        except Exception:
+            return None
+
+    return None
+
+
 def generate_rewrite_draft_docx(
     url: Optional[str],
     draft_markdown: str,
@@ -1139,6 +1251,8 @@ def generate_rewrite_draft_docx(
     i = 0
     in_table = False
     table_lines: list[str] = []
+    downloaded_images_count = 0
+    MAX_DOCX_IMAGES = 15
 
     def _flush_table(t_lines: list[str]):
         if not t_lines:
@@ -1201,15 +1315,16 @@ def generate_rewrite_draft_docx(
             alt_text = img_match.group(1).strip()
             img_url = img_match.group(2).strip()
             inserted = False
-            try:
-                import httpx
-                resp = httpx.get(img_url, timeout=4.0, follow_redirects=True)
-                if resp.status_code == 200 and len(resp.content) > 100:
-                    img_stream = io.BytesIO(resp.content)
-                    doc.add_picture(img_stream, width=Inches(5.5))
-                    inserted = True
-            except Exception:
-                inserted = False
+            if downloaded_images_count < MAX_DOCX_IMAGES:
+                img_bytes = _download_safe_image(img_url)
+                if img_bytes:
+                    try:
+                        img_stream = io.BytesIO(img_bytes)
+                        doc.add_picture(img_stream, width=Inches(5.5))
+                        inserted = True
+                        downloaded_images_count += 1
+                    except Exception:
+                        inserted = False
 
             p_img = doc.add_paragraph()
             p_img.paragraph_format.space_after = Pt(6)

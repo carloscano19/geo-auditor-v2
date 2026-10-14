@@ -119,9 +119,17 @@ export default function AuditForm({
             onSubmit(url.trim(), null, trimmedQuery);
         } else if (mode === "text" && body.trim()) {
             if (formattedHtml) {
-                const combinedHtml = title.trim()
-                    ? `<h1>${title.trim()}</h1>\n${formattedHtml}`
-                    : formattedHtml;
+                const escapeHtml = (s: string) =>
+                    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+
+                const hasH1 = (formattedStats && formattedStats.h1 > 0) ||
+                    /<h1[\s>]/i.test(formattedHtml) ||
+                    /<p\s+[^>]*class=["'][^"']*\b(MsoTitle|MsoHeading1)\b/i.test(formattedHtml);
+
+                let combinedHtml = formattedHtml;
+                if (title.trim() && !hasH1) {
+                    combinedHtml = `<h1>${escapeHtml(title.trim())}</h1>\n${formattedHtml}`;
+                }
                 onSubmit(null, null, trimmedQuery, combinedHtml);
             } else {
                 const combinedText = title.trim()

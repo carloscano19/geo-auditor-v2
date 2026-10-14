@@ -4467,3 +4467,130 @@ def test_rewrite_docx_renders_images_and_note():
     assert "[Image: Stadium Chart — https://invalid-host-for-testing.local/chart.png]" in text
 
 
+def test_safe_image_rejects_ssrf_hosts():
+    from unittest.mock import patch, MagicMock
+    from src.utils.docx_brief import _is_host_safe, _download_safe_image
+
+    bad_hosts = ["127.0.0.1", "10.0.0.1", "10.1.2.3", "169.254.169.254", "localhost", "sub.localhost", "app.local", "internal.corp.internal"]
+    for host in bad_hosts:
+        assert _is_host_safe(host) is False
+        assert _download_safe_image(f"http://{host}/image.png") is None
+        assert _download_safe_image(f"https://{host}/image.png") is None
+
+    # Test SSRF via redirect to private IP
+    mock_redirect_resp = MagicMock()
+    mock_redirect_resp.status_code = 302
+    mock_redirect_resp.headers = {"location": "http://169.254.169.254/latest/meta-data"}
+
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.stream.return_value.__enter__.return_value = mock_redirect_resp
+
+    with patch("src.utils.docx_brief._is_host_safe", side_effect=lambda h: h == "example.com"), \
+         patch("httpx.Client", return_value=mock_client):
+        res = _download_safe_image("https://example.com/redirect-to-ssrf.png")
+        assert res is None
+
+
+def test_safe_image_rejects_non_image_content_type():
+    from unittest.mock import patch, MagicMock
+    from src.utils.docx_brief import _download_safe_image
+
+    mock_resp = MagicMock()
+    mock_resp.status_code = 200
+    mock_resp.headers = {"content-type": "text/html"}
+    mock_resp.iter_bytes.return_value = [b"<html>not an image</html>"]
+
+    mock_client = MagicMock()
+    mock_client.__enter__.return_value = mock_client
+    mock_client.stream.return_value.__enter__.return_value = mock_resp
+
+    with patch("src.utils.docx_brief._is_host_safe", return_value=True), \
+         patch("httpx.Client", return_value=mock_client):
+        res = _download_safe_image("https://example.com/not-an-image")
+        assert res is None
+
+
+def test_safe_image_aborts_on_response_exceeding_max_bytes():
+    from unittest.mock import patch, MagicMock
+    from src.utils.docx_brief import _download_safe_image
+
+    # 1. Content-Length header > 5 MB
+    mock_resp_header = MagicMock()
+    mock_resp_header.status_code = 200
+    mock_resp_header.headers = {
+        "content-type": "image/png",
+        "content-length": str(6 * 1024 * 1024)
+    }
+    mock_resp_header.iter_bytes.return_value = []
+
+    mock_client_header = MagicMock()
+    mock_client_header.__enter__.return_value = mock_client_header
+    mock_client_header.stream.return_value.__enter__.return_value = mock_resp_header
+
+    with patch("src.utils.docx_brief._is_host_safe", return_value=True), \
+         patch("httpx.Client", return_value=mock_client_header):
+        res = _download_safe_image("https://example.com/huge.png")
+        assert res is None
+
+    # 2. Streaming chunks exceeding 5 MB
+    mock_resp_stream = MagicMock()
+    mock_resp_stream.status_code = 200
+    mock_resp_stream.headers = {"content-type": "image/png"}
+    # Emit 6 chunks of 1MB each
+    chunk_1mb = b"A" * (1024 * 1024)
+    mock_resp_stream.iter_bytes.return_value = [chunk_1mb] * 6
+
+    mock_client_stream = MagicMock()
+    mock_client_stream.__enter__.return_value = mock_client_stream
+    mock_client_stream.stream.return_value.__enter__.return_value = mock_resp_stream
+
+    with patch("src.utils.docx_brief._is_host_safe", return_value=True), \
+         patch("httpx.Client", return_value=mock_client_stream):
+        res = _download_safe_image("https://example.com/huge-stream.png")
+        assert res is None
+
+
+def test_docx_rewrite_respects_max_15_images():
+    import io, base64, docx as _docx
+    from unittest.mock import patch
+    from src.utils.docx_brief import generate_rewrite_draft_docx
+
+    # 1x1 valid PNG
+    b64_png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=="
+    dummy_png = base64.b64decode(b64_png)
+
+    markdown_lines = ["# Document with many images\n"]
+    for idx in range(1, 18):
+        markdown_lines.append(f"![Image {idx}](https://example.com/img{idx}.png)\n")
+    draft_md = "\n".join(markdown_lines)
+
+    call_count = 0
+    def mock_download(url, **kwargs):
+        nonlocal call_count
+        call_count += 1
+        return dummy_png
+
+    with patch("src.utils.docx_brief._download_safe_image", side_effect=mock_download):
+        docx_bytes = generate_rewrite_draft_docx(
+            url="https://example.com/article",
+            draft_markdown=draft_md,
+            warnings=[],
+        )
+
+    # _download_safe_image should be called at most 15 times
+    assert call_count == 15
+
+    doc = _docx.Document(io.BytesIO(docx_bytes))
+    all_text = "\n".join(p.text for p in doc.paragraphs)
+
+    # Images 1 through 15 are inserted (as figures)
+    assert "Figure: Image 1" in all_text
+    assert "Figure: Image 15" in all_text
+
+    # Images 16 and 17 fall back to text [Image: Image 16 — ...]
+    assert "[Image: Image 16 — https://example.com/img16.png]" in all_text
+    assert "[Image: Image 17 — https://example.com/img17.png]" in all_text
+
+
+
