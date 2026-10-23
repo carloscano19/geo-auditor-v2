@@ -2474,13 +2474,24 @@ Write the complete rewritten article in Markdown now following all editorial and
     for p in raw_paras:
         if p.startswith("#") or p.startswith("|") or p.startswith("!["):
             continue
-        p_clean_text = re.sub(r'\[EDITOR:[^\]]*\]', '', p)
+        p_no_gaps = re.sub(r'\[EDITOR:[^\]]*\]', '', p).strip()
+        # Exclude paragraphs that are solely a single link or button
+        if re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[[^\]]+\]\([^)]+\)\s*$', p_no_gaps):
+            continue
+
+        # Replace markdown images and links with alt/anchor text, remove loose URLs and editor gaps
+        p_clean = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', p_no_gaps)
+        p_clean = re.sub(r'\[([^\]]*)\]\([^)]+\)', r'\1', p_clean)
+        p_clean = re.sub(r'https?://[^\s)\]]+', '', p_clean)
+
         # Content words of more than 2 letters without stop words
-        words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', p_clean_text.lower())
+        words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', p_clean.lower())
         cwords = set(w for w in words if w not in EN_ES_STOP_WORDS)
-        if cwords:
-            candidate_paras.append(p)
-            para_word_sets.append(cwords)
+        # Exclude paragraphs with fewer than 8 content words
+        if len(cwords) < 8:
+            continue
+        candidate_paras.append(p)
+        para_word_sets.append(cwords)
 
     # Remove words appearing in >= 50% of candidate body paragraphs (entity names like "stadio", "renzo", "barbera", "palermo")
     word_doc_freq: dict[str, int] = {}

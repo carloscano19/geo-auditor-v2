@@ -4896,14 +4896,45 @@ def test_duplicate_paragraphs_warning_in_rewrite():
     assert res_b.status_code == 200
     assert any("Possible duplicated content:" in w for w in res_b.json()["warnings"])
 
-    # Case 3: Draft with non-duplicate (history vs music) -> MUST NOT warn
-    draft_c = f"# Title\n\n{p_hist1}\n\n{p_music}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    # Real Palermo duplicate pair (c): intro / key facts
+    p_intro1 = (
+        "Stadio Renzo Barbera is the historic home stadium of Palermo FC situated in Sicily with an official capacity "
+        "of 36,365 seats and opened in 1932 for professional championship football matches."
+    )
+    p_intro2 = (
+        "Located in Sicily, the Stadio Renzo Barbera serves as the home ground of Palermo FC, boasting a capacity "
+        "of 36,365 seats since it was inaugurated in 1932 as the primary football arena."
+    )
+
+    # Case 3: Draft with pair (c) -> MUST warn
+    draft_c = f"# Title\n\n{p_intro1}\n\n{p_intro2}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
     with patch("main.get_settings", return_value=mock_settings), \
          patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
         mock_stream.return_value = (draft_c, "stop")
         res_c = client.post("/api/ai/rewrite", json=req)
     assert res_c.status_code == 200
-    assert not any("Possible duplicated content:" in w for w in res_c.json()["warnings"])
+    assert any("Possible duplicated content:" in w for w in res_c.json()["warnings"])
+
+    # Case 4: Draft with non-duplicate (history vs music) -> MUST NOT warn
+    draft_non_dupe = f"# Title\n\n{p_hist1}\n\n{p_music}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_non_dupe, "stop")
+        res_non = client.post("/api/ai/rewrite", json=req)
+    assert res_non.status_code == 200
+    assert not any("Possible duplicated content:" in w for w in res_non.json()["warnings"])
+
+    # Case 5: CTA button vs paragraphs with URLs -> MUST NOT warn
+    btn_cta = "[CHECK HERE FOR PALERMO FC FAN TOKEN® UPDATES](https://www.socios.com/palermo-fan-token/)"
+    p_chair = "Renzo Barbera spent a decade as the chairman of [Palermo FC](https://www.socios.com/palermo-fc-history-rivalries-and-football-culture/) during a period of growth for the Sicilian club."
+    p_token = "The stadium is not the only place where Palermo fans show their support. Digital experiences provide additional ways for the Rosanero faithful to engage with the club, and the [Palermo FC Fan Token™](https://www.socios.com/socios-com-partners-with-palermo-fc/) is just one example of this type of digital fan engagement."
+    draft_cta = f"# Title\n\n{btn_cta}\n\n{p_chair}\n\n{p_token}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_cta, "stop")
+        res_cta = client.post("/api/ai/rewrite", json=req)
+    assert res_cta.status_code == 200
+    assert not any("Possible duplicated content:" in w for w in res_cta.json()["warnings"])
 
 
 def test_missing_original_figures_warning():
