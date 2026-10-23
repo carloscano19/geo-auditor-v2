@@ -4829,7 +4829,7 @@ def test_heading_rename_status():
 
 
 def test_duplicate_paragraphs_warning_in_rewrite():
-    """Test that paragraphs sharing > 50% content-word trigrams trigger a duplicate content warning."""
+    """Test that paragraphs sharing >= 45% content words trigger a duplicate content warning on real Palermo pairs."""
     mock_settings = Settings(
         llm_base_url="https://api.openai.com/v1",
         llm_model="gpt-4o",
@@ -4837,10 +4837,35 @@ def test_duplicate_paragraphs_warning_in_rewrite():
     )
     client = TestClient(app)
 
-    # Two paragraphs sharing > 50% content trigrams
-    p1 = "The historic stadium in Palermo represents one of the most iconic football grounds in southern Italy featuring magnificent architecture."
-    p2 = "The historic stadium in Palermo represents one of the most iconic football grounds in southern Italy featuring magnificent atmosphere."
-    draft_with_dupes = f"# Title\n\n{p1}\n\n{p2}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    # Real Palermo duplicate pair (a): history name changes
+    p_hist1 = (
+        "Three name changes mark the ground's history. It opened on January 24, 1932 as the Stadio Littorio, "
+        "became the Stadio La Favorita in 1945 after the historic park created by King Ferdinand IV of Bourbon, "
+        "and took the name Stadio Renzo Barbera in 2002 following the death of the club's former chairman."
+    )
+    p_hist2 = (
+        "The Stadio Renzo Barbera was opened on January 24, 1932, although it was originally known as Stadio Littorio. "
+        "In 1945, the name changed to Stadio La Favorita, after the nearby historic park created by King Ferdinand IV of Bourbon. "
+        "In 2002, the stadium changed its name once again, becoming the Stadio Renzo Barbera in honour of Palermo's former club president (1970-80)."
+    )
+
+    # Real Palermo duplicate pair (b): stands organization
+    p_stands1 = (
+        "While the Curva Nord is home to the most vocal Palermo supporters, Curva Sud is partly allocated to away fans. "
+        "Tribuna Copertura is the main western grandstand, while Tribuna Montepellegrino is situated opposite the main stand."
+    )
+    p_stands2 = (
+        "Matchdays at the Renzo Barbera are organised around four main sections. The Curva Nord houses the most vocal Palermo "
+        "supporters, while the Curva Sud is partly allocated to away fans. Tribuna Copertura is the main western grandstand, "
+        "and Tribuna Montepellegrino sits opposite the main stand, facing the mountain that rises behind the city."
+    )
+
+    # Real Palermo non-duplicate paragraph (c): music venue
+    p_music = (
+        "The ground has also served as a music venue. Concerts staged during the 1970s and 1980s brought artists "
+        "including Aretha Franklin, Frank Sinatra, Miles Davis, Frank Zappa, Duran Duran and Black Sabbath to Palermo, "
+        "drawing tens of thousands of spectators to the stadium across those years."
+    )
 
     req = {
         "ai_context": {
@@ -4853,26 +4878,32 @@ def test_duplicate_paragraphs_warning_in_rewrite():
         }
     }
 
+    # Case 1: Draft with pair (a) -> MUST warn
+    draft_a = f"# Title\n\n{p_hist1}\n\n{p_hist2}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
     with patch("main.get_settings", return_value=mock_settings), \
          patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
-        mock_stream.return_value = (draft_with_dupes, "stop")
-        res = client.post("/api/ai/rewrite", json=req)
+        mock_stream.return_value = (draft_a, "stop")
+        res_a = client.post("/api/ai/rewrite", json=req)
+    assert res_a.status_code == 200
+    assert any("Possible duplicated content:" in w for w in res_a.json()["warnings"])
 
-    assert res.status_code == 200
-    warnings = res.json()["warnings"]
-    assert any("Possible duplicated content:" in w for w in warnings)
-
-    # Distinct paragraphs -> no warning
-    p_distinct = "Ticket prices range from twenty to eighty euros depending on the selected match category."
-    draft_clean = f"# Title\n\n{p1}\n\n{p_distinct}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    # Case 2: Draft with pair (b) -> MUST warn
+    draft_b = f"# Title\n\n{p_stands1}\n\n{p_stands2}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
     with patch("main.get_settings", return_value=mock_settings), \
          patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
-        mock_stream.return_value = (draft_clean, "stop")
-        res2 = client.post("/api/ai/rewrite", json=req)
+        mock_stream.return_value = (draft_b, "stop")
+        res_b = client.post("/api/ai/rewrite", json=req)
+    assert res_b.status_code == 200
+    assert any("Possible duplicated content:" in w for w in res_b.json()["warnings"])
 
-    assert res2.status_code == 200
-    warnings2 = res2.json()["warnings"]
-    assert not any("Possible duplicated content:" in w for w in warnings2)
+    # Case 3: Draft with non-duplicate (history vs music) -> MUST NOT warn
+    draft_c = f"# Title\n\n{p_hist1}\n\n{p_music}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_c, "stop")
+        res_c = client.post("/api/ai/rewrite", json=req)
+    assert res_c.status_code == 200
+    assert not any("Possible duplicated content:" in w for w in res_c.json()["warnings"])
 
 
 def test_missing_original_figures_warning():
@@ -4911,7 +4942,7 @@ def test_missing_original_figures_warning():
 
 
 def test_inconsistency_resolved_vs_unresolved():
-    """Test that leaving both conflicting values triggers a warning, while resolving it does not."""
+    """Test that leaving both conflicting values triggers a warning (including typographic quotes), while resolving it does not."""
     mock_settings = Settings(
         llm_base_url="https://api.openai.com/v1",
         llm_model="gpt-4o",
@@ -4919,36 +4950,44 @@ def test_inconsistency_resolved_vs_unresolved():
     )
     client = TestClient(app)
 
+    # Real Palermo pair with typographic curly quote ’ in plan vs ASCII quote ' in draft
     req = {
         "ai_context": {
-            "main_text": "The club chairman Dario Mirri announced the expansion. The club president Dario Mirri agreed.",
+            "main_text": "Palermo’s former club president (1970-80). Former club chairman between 1970 and 1980.",
             "language": "en",
         },
         "ai_plan": {
             "combined_schema": {},
             "inconsistencies": [
                 {
-                    "issue": "Leadership title conflict",
-                    "values": ["president", "chairman"],
-                    "suggestion": "Unify to president"
+                    "issue": "President vs Chairman inconsistency",
+                    "values": ["Palermo’s former club president (1970-80)", "Former club chairman between 1970 and 1980"],
+                    "suggestion": "Unify to club president"
                 }
             ],
             "warnings": [],
         }
     }
 
-    # Case 1: Unresolved (both "president" and "chairman" present)
-    draft_unresolved = "# Palermo FC\n\nThe club chairman met with the city council while the club president oversaw operations."
+    # Case 1: Unresolved (draft uses ASCII quote ' for president, but both values are present)
+    draft_unresolved = (
+        "# Palermo FC\n\n"
+        "The venue honours Palermo's former club president (1970-80).\n\n"
+        "Earlier notes referenced the former club chairman between 1970 and 1980."
+    )
     with patch("main.get_settings", return_value=mock_settings), \
          patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
         mock_stream.return_value = (draft_unresolved, "stop")
         res = client.post("/api/ai/rewrite", json=req)
 
     assert res.status_code == 200
-    assert "Inconsistency not resolved: Leadership title conflict" in res.json()["warnings"]
+    assert "Inconsistency not resolved: President vs Chairman inconsistency" in res.json()["warnings"]
 
-    # Case 2: Resolved (only "president" present)
-    draft_resolved = "# Palermo FC\n\nThe club president met with the city council and oversaw operations."
+    # Case 2: Resolved (only president value present)
+    draft_resolved = (
+        "# Palermo FC\n\n"
+        "The venue honours Palermo's former club president (1970-80) exclusively."
+    )
     with patch("main.get_settings", return_value=mock_settings), \
          patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
         mock_stream.return_value = (draft_resolved, "stop")
@@ -4956,6 +4995,49 @@ def test_inconsistency_resolved_vs_unresolved():
 
     assert res2.status_code == 200
     assert not any("Inconsistency not resolved" in w for w in res2.json()["warnings"])
+
+
+def test_extract_original_faq_real_palermo():
+    """Test extract_original_faq extracts all 7 questions from the real Palermo FC HTML FAQ structure."""
+    from main import extract_original_faq
+
+    html = """
+    <h2>Frequently Asked Questions</h2>
+    <ul>
+      <li>Where does Palermo FC play? At the Stadio Renzo Barbera.</li>
+      <li>What is the capacity of Stadio Renzo Barbera? It holds 36,365.</li>
+      <li>When did the Stadio Renzo Barbera open? In 1932.</li>
+      <li>Why was it called La Favorita? After the park.</li>
+      <li>When was it renamed Renzo Barbera? In 2002.</li>
+      <li>Who is Renzo Barbera? Club president.</li>
+      <li>Has Palermo stadium hosted World Cup matches? Yes, 1990.</li>
+    </ul>
+    """
+    faq_h2, qs = extract_original_faq(html, "")
+    assert faq_h2 == "Frequently Asked Questions"
+    assert len(qs) == 7
+    expected = [
+        "Where does Palermo FC play?",
+        "What is the capacity of Stadio Renzo Barbera?",
+        "When did the Stadio Renzo Barbera open?",
+        "Why was it called La Favorita?",
+        "When was it renamed Renzo Barbera?",
+        "Who is Renzo Barbera?",
+        "Has Palermo stadium hosted World Cup matches?",
+    ]
+    assert qs == expected
+
+    # Also test main_text fallback with questions
+    text = """
+    ## Frequently Asked Questions
+    - Where does Palermo FC play? At the Stadio Renzo Barbera.
+    - What is the capacity of Stadio Renzo Barbera? It holds 36,365.
+    - When did the Stadio Renzo Barbera open? In 1932.
+    """
+    faq_h2_txt, qs_txt = extract_original_faq("", text)
+    assert faq_h2_txt == "Frequently Asked Questions"
+    assert len(qs_txt) == 3
+    assert qs_txt[0] == "Where does Palermo FC play?"
 
 
 def test_original_faq_preserved_and_editor_gap_warning():
@@ -5029,6 +5111,8 @@ def test_sources_to_cite_filtering_and_fan_token_restriction():
     req = {
         "ai_context": {
             "main_text": "Original text about football.",
+            "main_html": '<a href="https://www.socios.com/palermo">Socios</a>',
+            "url": "https://www.socios.com/palermo-article",
             "language": "en",
         },
         "ai_plan": {
@@ -5074,9 +5158,9 @@ Visitors should check the [Club Guide](https://palermofc.com/stadium).
 Rumors were reported on an [Invented Blog](https://invented-rumor-site.com/post).
 Fourth source test: [Fourth Source](https://fourth-source.com/stadium).
 
-## Palermo Fan Token
+## Support Palermo Beyond the Matchday
 
-Fans can trade tokens. See tournament info at [UEFA](https://uefa.com/venues).
+The stadium is not the only place where Palermo fans show their support. Digital experiences provide additional ways for the Rosanero faithful to engage with the club, and the Palermo FC Fan Token™ is just one example of this type of digital fan engagement on [Socios](https://www.socios.com/palermo). See tournament info at [UEFA](https://uefa.com/venues).
 """
 
     with patch("main.get_settings", return_value=mock_settings), \
@@ -5103,9 +5187,11 @@ Fans can trade tokens. See tournament info at [UEFA](https://uefa.com/venues).
     assert "https://fourth-source.com/stadium" not in draft
     assert "Fourth Source" in draft
 
-    # 4. UEFA link inside Fan Token section stripped
+    # 4. In Fan Token paragraph: UEFA external link stripped (anchor text remains), original socios.com link preserved
     assert "https://uefa.com/venues" not in draft
     assert "UEFA" in draft
+    assert "[Socios](https://www.socios.com/palermo)" in draft
+
 
 
 

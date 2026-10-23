@@ -88,6 +88,7 @@ from src.utils.lang_patterns import (
     MISSING_INFO_ANSWER_PHRASES,
     DISCARD_QUESTION_KEYWORDS,
     SENSITIVE_LEGAL_KEYWORDS,
+    EN_ES_STOP_WORDS,
     generate_ahrefs_recommendations,
     strip_page_meta_references,
 )
@@ -603,33 +604,29 @@ def headings_share_words(s1: str, s2: str, threshold: float = 0.6) -> bool:
     return (shared / len(w1) >= threshold) or (shared / len(w2) >= threshold)
 
 
-EN_ES_STOP_WORDS = {
-    # English
-    "a", "about", "above", "after", "again", "against", "all", "am", "an", "and", "any", "are", "aren't",
-    "as", "at", "be", "because", "been", "before", "being", "below", "between", "both", "but", "by",
-    "can't", "cannot", "could", "couldn't", "did", "didn't", "do", "does", "doesn't", "doing", "don't",
-    "down", "during", "each", "few", "for", "from", "further", "had", "hadn't", "has", "hasn't", "have",
-    "haven't", "having", "he", "he'd", "he'll", "he's", "her", "here", "here's", "hers", "herself",
-    "him", "himself", "his", "how", "how's", "i", "i'd", "i'll", "i'm", "i've", "if", "in", "into",
-    "is", "isn't", "it", "it's", "its", "itself", "let's", "me", "more", "most", "mustn't", "my",
-    "myself", "no", "nor", "not", "of", "off", "on", "once", "only", "or", "other", "ought", "our",
-    "ours", "ourselves", "out", "over", "own", "same", "shan't", "she", "she'd", "she'll", "she's",
-    "should", "shouldn't", "so", "some", "such", "than", "that", "that's", "the", "their", "theirs",
-    "them", "themselves", "then", "there", "there's", "these", "they", "they'd", "they'll", "they're",
-    "they've", "this", "those", "through", "to", "too", "under", "until", "up", "very", "was", "wasn't",
-    "we", "we'd", "we'll", "we're", "we've", "were", "weren't", "what", "what's", "when", "when's",
-    "where", "where's", "which", "while", "who", "who's", "whom", "why", "why's", "with", "won't",
-    "would", "wouldn't", "you", "you'd", "you'll", "you're", "you've", "your", "yours", "yourself", "yourselves",
-    # Spanish
-    "de", "la", "que", "el", "en", "y", "a", "los", "del", "se", "las", "por", "un", "para", "con", "no",
-    "una", "su", "al", "lo", "como", "mas", "más", "pero", "sus", "le", "ya", "o", "fue", "este", "ha",
-    "si", "sí", "porque", "esta", "son", "entre", "esta", "cuando", "muy", "sin", "sobre", "ser", "tiene",
-    "también", "tambien", "me", "hasta", "hay", "donde", "quien", "desde", "todo", "nos", "durante",
-    "todos", "uno", "les", "ni", "contra", "otros", "ese", "eso", "ante", "ellos", "e", "esto", "mí",
-    "mi", "antes", "algunos", "qué", "que", "unos", "yo", "otro", "otras", "otra", "él", "el", "tanto",
-    "esa", "estos", "mucho", "quienes", "nada", "muchos", "cual", "poco", "ella", "estar", "estas",
-    "algunas", "algo", "nosotros", "nosotras", "vosotros", "vosotras", "ellos", "ellas"
-}
+
+def extract_question_from_text(text: str) -> Optional[str]:
+    """
+    If the text has '?' (or starts with '¿') within the first 25 words,
+    the question is the text up to and including that '?'.
+    """
+    if not text:
+        return None
+    t = text.strip()
+    q_pos = t.find("?")
+    if q_pos != -1:
+        prefix = t[:q_pos + 1].strip()
+        words = prefix.split()
+        if 2 <= len(words) <= 25:
+            if "¿" in prefix:
+                inv_pos = prefix.find("¿")
+                return prefix[inv_pos:].strip()
+            return prefix
+    if t.startswith("¿"):
+        words = t.split()
+        if 2 <= len(words) <= 25:
+            return t
+    return None
 
 
 def extract_original_faq(main_html: str, main_text: str) -> tuple[Optional[str], list[str]]:
@@ -640,6 +637,19 @@ def extract_original_faq(main_html: str, main_text: str) -> tuple[Optional[str],
     faq_re = re.compile(r'\b(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes)\b', re.I)
     faq_h2: Optional[str] = None
     questions: list[str] = []
+
+    def _process_element(el) -> Optional[str]:
+        if not el:
+            return None
+        t = el.get_text(" ", strip=True)
+        q = extract_question_from_text(t)
+        if q:
+            return q
+        if el.name in ("h3", "h4", "summary", "dt"):
+            words = t.split()
+            if 2 <= len(words) <= 20:
+                return t
+        return None
 
     if main_html:
         from bs4 import BeautifulSoup
@@ -657,22 +667,31 @@ def extract_original_faq(main_html: str, main_text: str) -> tuple[Optional[str],
             while curr:
                 if getattr(curr, "name", None) in ("h1", "h2"):
                     break
-                if getattr(curr, "name", None) in ("h3", "h4", "summary"):
-                    q_text = curr.get_text(" ", strip=True)
-                    if q_text and len(q_text.split()) >= 2:
-                        questions.append(q_text)
+                tag_name = getattr(curr, "name", None)
+                if tag_name in ("h3", "h4", "summary", "dt", "li", "p"):
+                    q = _process_element(curr)
+                    if q and q not in questions:
+                        questions.append(q)
                 elif hasattr(curr, "find_all"):
-                    for sub in curr.find_all(["h3", "h4", "summary", "dt"]):
-                        sub_text = sub.get_text(" ", strip=True)
-                        if sub_text and len(sub_text.split()) >= 2 and sub_text not in questions:
-                            questions.append(sub_text)
+                    for sub in curr.find_all(["h3", "h4", "summary", "dt", "li", "p"]):
+                        q = _process_element(sub)
+                        if q and q not in questions:
+                            questions.append(q)
                 curr = curr.next_sibling
 
             if not questions and target_h2.parent:
-                for sub in target_h2.parent.find_all(["h3", "h4", "summary", "dt"]):
-                    sub_text = sub.get_text(" ", strip=True)
-                    if sub_text and len(sub_text.split()) >= 2 and sub_text not in questions:
-                        questions.append(sub_text)
+                after = False
+                for sub in target_h2.parent.find_all(["h2", "h3", "h4", "summary", "dt", "li", "p"]):
+                    if sub == target_h2:
+                        after = True
+                        continue
+                    if not after:
+                        continue
+                    if sub.name in ("h1", "h2"):
+                        break
+                    q = _process_element(sub)
+                    if q and q not in questions:
+                        questions.append(q)
 
     if main_text:
         lines = main_text.split("\n")
@@ -690,19 +709,21 @@ def extract_original_faq(main_html: str, main_text: str) -> tuple[Optional[str],
                     if in_faq:
                         break
             elif in_faq:
-                qm = re.match(r'^###\s+(.*)', line_str)
-                if qm:
-                    q = qm.group(1).strip()
-                    if q and q not in questions:
-                        questions.append(q)
-                elif re.match(r'^\*\*(.*?\?)\*\*', line_str):
-                    qm2 = re.match(r'^\*\*(.*?\?)\*\*', line_str)
+                if not line_str:
+                    continue
+                clean_line = re.sub(r'^(?:###\s+|##\s+|[\*\-\+]\s+|\d+\.\s+)', '', line_str).strip()
+                q = extract_question_from_text(clean_line)
+                if q and q not in questions:
+                    questions.append(q)
+                elif re.match(r'^\*\*(.*?\?)\*\*', clean_line):
+                    qm2 = re.match(r'^\*\*(.*?\?)\*\*', clean_line)
                     q = qm2.group(1).strip()
                     if q and q not in questions:
                         questions.append(q)
-                elif (line_str.endswith("?") or line_str.startswith("¿")) and 3 <= len(line_str.split()) <= 25:
-                    if line_str not in questions:
-                        questions.append(line_str)
+                elif clean_line.startswith("### "):
+                    h3_text = clean_line[4:].strip()
+                    if h3_text and 2 <= len(h3_text.split()) <= 20 and h3_text not in questions:
+                        questions.append(h3_text)
 
     cleaned: list[str] = []
     seen = set()
@@ -2040,7 +2061,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     - Begin with the # Main Title (H1).
     - Opening Lead Paragraph: Use the suggested lead paragraph from the plan.
     - If inconsistencies / contradictions are listed, resolve them using the plan's recommendation and unify the terminology/value throughout the whole article.
-    - If an original FAQ is present, retain the EXACT H2 and ALL original questions (answers 2-3 sentences max). Add non-overlapping plan questions. Any FAQ question whose answer has an editor gap [EDITOR: ...] MUST be placed at the very end of the FAQ section.
+    - If an original FAQ is present, retain the EXACT H2 and ALL original questions LITERALLY with their exact wording (answers 2-3 sentences max). Add non-overlapping plan questions. Any FAQ question whose answer has an editor gap [EDITOR: ...] MUST be placed at the very end of the FAQ section.
     - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
     - Merge suggested actionable paragraphs into their appropriate sections.
 """
@@ -2104,7 +2125,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 
     if orig_faq_h2:
         q_list_str = "\n".join(f"- {q}" for q in orig_faq_questions) if orig_faq_questions else "(none)"
-        orig_faq_text = f"Heading: \"{orig_faq_h2}\"\nQuestions to preserve:\n{q_list_str}"
+        orig_faq_text = f"Heading: \"{orig_faq_h2}\"\nQuestions to preserve LITERALLY:\n{q_list_str}"
     else:
         orig_faq_text = "(none)"
 
@@ -2346,47 +2367,65 @@ Write the complete rewritten article in Markdown now following all editorial and
     is_legal_section = False
     is_faq_section = False
 
-    processed_lines = []
-    for line in stashed.split("\n"):
-        line_s = line.strip()
-        if not line_s:
-            processed_lines.append(line)
+    FAN_TOKEN_RE = re.compile(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?', re.I)
+    sens_kws = list(SENSITIVE_LEGAL_KEYWORDS.get("en", [])) + list(SENSITIVE_LEGAL_KEYWORDS.get("es", []))
+
+    raw_blocks = re.split(r'(\n\s*\n)', stashed)
+    processed_blocks = []
+
+    for block in raw_blocks:
+        if not block.strip():
+            processed_blocks.append(block)
             continue
 
-        if line_s.startswith("#"):
-            current_section = line_s.lower()
-            is_fan_token_section = bool(re.search(r'\bfan\s*token\b|\$|\btoken\b', current_section))
-            is_legal_section = bool(re.search(r'\b(?:disclaimer|terms|risk|legal|aviso\s+legal)\b', current_section))
-            is_faq_section = bool(re.search(r'\b(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes)\b', current_section)) or (
-                orig_faq_h2 is not None and normalize_heading(orig_faq_h2) in normalize_heading(current_section)
-            )
+        # Check headings inside block
+        for line in block.split("\n"):
+            line_s = line.strip()
+            if line_s.startswith("#"):
+                current_section = line_s.lower()
+                is_fan_token_section = bool(re.search(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?|\$|\btoken\b', current_section))
+                is_legal_section = bool(re.search(r'(?i)\b(?:disclaimer|terms|risk|legal|aviso\s+legal)\b', current_section))
+                is_faq_section = bool(re.search(r'\b(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes)\b', current_section)) or (
+                    orig_faq_h2 is not None and normalize_heading(orig_faq_h2) in normalize_heading(current_section)
+                )
 
-        # External sources restriction: strip if prohibited section or already linked once
+        # Paragraph-level check: contains "fan token" (any form) or any word from SENSITIVE_LEGAL_KEYWORDS
+        block_lower = block.lower()
+        has_fan_token = bool(FAN_TOKEN_RE.search(block))
+        has_legal_kw = any(kw in block_lower for kw in sens_kws)
+        is_prohibited_para = is_fan_token_section or is_legal_section or is_faq_section or has_fan_token or has_legal_kw
+
+        # Convert external source links in prohibited sections or paragraphs (or if already seen) into plain anchor text
         def _check_ext_link(m: re.Match) -> str:
             anchor = m.group(1)
             u = m.group(2)
             u_norm = normalize_link_url(u)
             if u_norm in allowed_ext_urls:
-                if is_fan_token_section or is_legal_section or is_faq_section:
+                if is_prohibited_para:
                     return anchor
                 if u_norm in seen_ext_urls:
                     return anchor
                 seen_ext_urls.add(u_norm)
             return m.group(0)
 
-        line_with_ext = _MD_LINK_RE.sub(_check_ext_link, line)
+        block_with_ext = _MD_LINK_RE.sub(_check_ext_link, block)
 
-        # Now filter URLs (only allowed_urls are kept)
-        if line_with_ext.strip().startswith("#") or line_with_ext.strip().startswith("|") or line_with_ext.strip().startswith("!["):
-            l_clean = filter_draft_urls(line_with_ext, allowed_urls)
-            processed_lines.append(l_clean)
-        else:
-            l_clean = filter_draft_urls(line_with_ext, allowed_urls)
-            l_clean = strip_page_meta_references(l_clean)
-            if l_clean.strip():
-                processed_lines.append(l_clean)
+        new_lines = []
+        for line in block_with_ext.split("\n"):
+            line_s = line.strip()
+            if not line_s:
+                new_lines.append(line)
+            elif line_s.startswith("#") or line_s.startswith("|") or line_s.startswith("!["):
+                new_lines.append(filter_draft_urls(line, allowed_urls))
+            else:
+                l_clean = filter_draft_urls(line, allowed_urls)
+                l_clean = strip_page_meta_references(l_clean)
+                if l_clean.strip():
+                    new_lines.append(l_clean)
 
-    stashed = "\n".join(processed_lines)
+        processed_blocks.append("\n".join(new_lines))
+
+    stashed = "".join(processed_blocks)
 
     for idx, gap in enumerate(gaps):
         stashed = stashed.replace(f"___EDITOR_GAP_PRESERVE_{idx}___", gap)
@@ -2420,7 +2459,7 @@ Write the complete rewritten article in Markdown now following all editorial and
             dom = s.domain or urllib.parse.urlparse(s.url).netloc
             warnings.append(f"External source added: {dom} — check that it supports the claim next to it")
 
-    # 7. Check for duplicated content (>50% trigram overlap on content words before FAQ)
+    # 7. Check for duplicated content (content-word set overlap before FAQ)
     body_for_dupes = draft_markdown
     faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
     if not faq_match and orig_faq_h2:
@@ -2429,32 +2468,52 @@ Write the complete rewritten article in Markdown now following all editorial and
         body_for_dupes = draft_markdown[:faq_match.start()]
 
     raw_paras = [p.strip() for p in re.split(r'\n\s*\n', body_for_dupes) if p.strip()]
-    candidate_paras: list[tuple[str, set[tuple[str, ...]]]] = []
+    candidate_paras: list[str] = []
+    para_word_sets: list[set[str]] = []
+
     for p in raw_paras:
         if p.startswith("#") or p.startswith("|") or p.startswith("!["):
             continue
         p_clean_text = re.sub(r'\[EDITOR:[^\]]*\]', '', p)
-        words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]+\b', p_clean_text.lower())
-        cwords = [w for w in words if w not in EN_ES_STOP_WORDS]
-        if len(cwords) >= 6:
-            trigrams = {tuple(cwords[i:i+3]) for i in range(len(cwords) - 2)}
-            if len(trigrams) >= 3:
-                candidate_paras.append((p, trigrams))
+        # Content words of more than 2 letters without stop words
+        words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', p_clean_text.lower())
+        cwords = set(w for w in words if w not in EN_ES_STOP_WORDS)
+        if cwords:
+            candidate_paras.append(p)
+            para_word_sets.append(cwords)
+
+    # Remove words appearing in >= 50% of candidate body paragraphs (entity names like "stadio", "renzo", "barbera", "palermo")
+    word_doc_freq: dict[str, int] = {}
+    for wset in para_word_sets:
+        for w in wset:
+            word_doc_freq[w] = word_doc_freq.get(w, 0) + 1
+
+    num_body_paras = len(candidate_paras)
+    if num_body_paras >= 3:
+        frequent_words = {
+            w for w, count in word_doc_freq.items()
+            if count >= 3 and count >= num_body_paras * 0.5
+        }
+    else:
+        frequent_words = set()
+
+    filtered_para_sets = [wset - frequent_words for wset in para_word_sets]
 
     seen_dupe_pairs = set()
-    for i in range(len(candidate_paras)):
-        p_a, tri_a = candidate_paras[i]
-        for j in range(i + 1, len(candidate_paras)):
-            p_b, tri_b = candidate_paras[j]
-            overlap = len(tri_a & tri_b)
-            denom = min(len(tri_a), len(tri_b))
-            if denom > 0 and (overlap / denom) > 0.5:
-                pair_key = (min(i, j), max(i, j))
-                if pair_key not in seen_dupe_pairs:
-                    seen_dupe_pairs.add(pair_key)
-                    snip_a = " ".join(p_a.split()[:8])
-                    snip_b = " ".join(p_b.split()[:8])
-                    warnings.append(f"Possible duplicated content: '{snip_a}…' / '{snip_b}…'")
+    for i in range(num_body_paras):
+        set_a = filtered_para_sets[i]
+        for j in range(i + 1, num_body_paras):
+            set_b = filtered_para_sets[j]
+            if len(set_a) >= 8 and len(set_b) >= 8:
+                overlap = len(set_a & set_b)
+                denom = min(len(set_a), len(set_b))
+                if denom > 0 and (overlap / denom) >= 0.45:
+                    pair_key = (min(i, j), max(i, j))
+                    if pair_key not in seen_dupe_pairs:
+                        seen_dupe_pairs.add(pair_key)
+                        snip_a = " ".join(candidate_paras[i].split()[:8])
+                        snip_b = " ".join(candidate_paras[j].split()[:8])
+                        warnings.append(f"Possible duplicated content: '{snip_a}…' / '{snip_b}…'")
 
     # 8. Check for original figures missing from draft
     orig_figs = num_pattern.findall(orig_text)
@@ -2471,14 +2530,14 @@ Write the complete rewritten article in Markdown now following all editorial and
         if f not in draft_figs and f not in draft_markdown and f_norm not in draft_markdown:
             warnings.append(f"Original figure missing from draft: {f}")
 
-    # 9. Check for unresolved inconsistencies
-    draft_lower = draft_markdown.lower()
+    # 9. Check for unresolved inconsistencies (normalized to handle punctuation & quotes)
+    draft_norm_incons = normalize_heading(draft_markdown)
     for inc in (plan.inconsistencies or []):
         if inc.values and len(inc.values) >= 2:
             all_present = True
             for val in inc.values:
-                v_clean = val.strip().lower()
-                if not v_clean or v_clean not in draft_lower:
+                val_norm = normalize_heading(val)
+                if not val_norm or val_norm not in draft_norm_incons:
                     all_present = False
                     break
             if all_present:
