@@ -89,7 +89,7 @@ export interface PlanQuestion {
 export interface PlanOutlineItem {
     h2: string;
     purpose: string;
-    status: 'existing' | 'new' | 'present';
+    status: 'existing' | 'new' | 'present' | 'rename';
 }
 
 export interface PlanTable {

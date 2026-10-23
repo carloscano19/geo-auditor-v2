@@ -259,7 +259,7 @@ class AuthorityDetector(BaseDetector):
             exp_explanation = f"Found {signal_count} first-person experience signals."
             exp_recs = []
             if signal_count < 3:
-                exp_recs.append("Use more first-person language ('I tested', 'We found') to demonstrate real experience.")
+                exp_recs.append("Add real first-hand experience from someone who was there (e.g. a team member who attended). Never invent it.")
                 
             breakdown.append(ScoreBreakdown(
                 name="Experience Signals",

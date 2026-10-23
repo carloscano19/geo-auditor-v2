@@ -4776,5 +4776,338 @@ def test_rewrite_settings_applied_only_to_rewrite():
         assert mock_settings.llm_max_tokens == 16000
 
 
+# ---------------------------------------------------------------------------
+# Rewrite Quality & Editorial Integrity Tests
+# ---------------------------------------------------------------------------
+
+def test_heading_rename_status():
+    """Test heading status 'rename' when suggested heading overlaps >=60% with an existing heading on the page."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+    plan_req = {
+        "ai_context": {
+            "url": "https://example.com/palermo",
+            "title": "Palermo FC Stadium",
+            "h1": "Stadio Renzo Barbera",
+            "language": "en",
+            "existing_h2s": [
+                "Future of Stadio Renzo Barbera",
+                "History and Architecture",
+            ],
+            "main_text": "Future of Stadio Renzo Barbera. The venue is being renovated for future European tournaments.",
+        }
+    }
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = {
+            "suggested_lead": {"suggested": "Palermo stadium guide."},
+            "questions_to_answer": [],
+            "suggested_h2_structure": [
+                # 1. Exact match -> 'present'
+                {"h2": "History and Architecture", "purpose": "Overview of history", "status": "existing"},
+                # 2. Overlapping match -> 'rename'
+                {"h2": "Future of Stadio Renzo Barbera: Renovation and EURO 2032", "purpose": "Details on upcoming upgrades", "status": "new"},
+                # 3. Brand new heading -> 'new'
+                {"h2": "Transportation and Parking Options", "purpose": "Logistics for visitors", "status": "new"},
+            ],
+            "paragraphs_to_add": [],
+            "sources_to_cite": [],
+            "data_opportunities": [],
+            "combined_schema": {},
+        }
+        res = client.post("/api/ai/plan", json=plan_req)
+
+    assert res.status_code == 200
+    h2s = res.json()["suggested_h2_structure"]
+    assert h2s[0]["status"] == "present"
+    assert h2s[1]["status"] == "rename"
+    assert h2s[2]["status"] == "new"
+
+
+def test_duplicate_paragraphs_warning_in_rewrite():
+    """Test that paragraphs sharing > 50% content-word trigrams trigger a duplicate content warning."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+
+    # Two paragraphs sharing > 50% content trigrams
+    p1 = "The historic stadium in Palermo represents one of the most iconic football grounds in southern Italy featuring magnificent architecture."
+    p2 = "The historic stadium in Palermo represents one of the most iconic football grounds in southern Italy featuring magnificent atmosphere."
+    draft_with_dupes = f"# Title\n\n{p1}\n\n{p2}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+
+    req = {
+        "ai_context": {
+            "main_text": "The historic stadium in Palermo was built in 1932.",
+            "language": "en",
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": [],
+        }
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_with_dupes, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    warnings = res.json()["warnings"]
+    assert any("Possible duplicated content:" in w for w in warnings)
+
+    # Distinct paragraphs -> no warning
+    p_distinct = "Ticket prices range from twenty to eighty euros depending on the selected match category."
+    draft_clean = f"# Title\n\n{p1}\n\n{p_distinct}\n\n## FAQ\n\n### When was it built?\nIt was built in 1932."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_clean, "stop")
+        res2 = client.post("/api/ai/rewrite", json=req)
+
+    assert res2.status_code == 200
+    warnings2 = res2.json()["warnings"]
+    assert not any("Possible duplicated content:" in w for w in warnings2)
+
+
+def test_missing_original_figures_warning():
+    """Test warning when figures present in original text are missing from the draft."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+
+    # Original has figures 36,365 and 1932
+    orig_text = "Stadio Renzo Barbera has a total capacity of 36,365 seats and was inaugurated in 1932."
+    # Draft includes 1932 but omits 36,365
+    draft_text = "# Stadio Renzo Barbera\n\nThe venue was inaugurated in 1932 as a primary sports arena."
+
+    req = {
+        "ai_context": {
+            "main_text": orig_text,
+            "language": "en",
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": [],
+        }
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    warnings = res.json()["warnings"]
+    assert "Original figure missing from draft: 36,365" in warnings
+
+
+def test_inconsistency_resolved_vs_unresolved():
+    """Test that leaving both conflicting values triggers a warning, while resolving it does not."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "main_text": "The club chairman Dario Mirri announced the expansion. The club president Dario Mirri agreed.",
+            "language": "en",
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "inconsistencies": [
+                {
+                    "issue": "Leadership title conflict",
+                    "values": ["president", "chairman"],
+                    "suggestion": "Unify to president"
+                }
+            ],
+            "warnings": [],
+        }
+    }
+
+    # Case 1: Unresolved (both "president" and "chairman" present)
+    draft_unresolved = "# Palermo FC\n\nThe club chairman met with the city council while the club president oversaw operations."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_unresolved, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    assert "Inconsistency not resolved: Leadership title conflict" in res.json()["warnings"]
+
+    # Case 2: Resolved (only "president" present)
+    draft_resolved = "# Palermo FC\n\nThe club president met with the city council and oversaw operations."
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_resolved, "stop")
+        res2 = client.post("/api/ai/rewrite", json=req)
+
+    assert res2.status_code == 200
+    assert not any("Inconsistency not resolved" in w for w in res2.json()["warnings"])
+
+
+def test_original_faq_preserved_and_editor_gap_warning():
+    """Test that original FAQ questions are checked for presence, and editor gaps in FAQ trigger warnings."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+
+    orig_text = """Stadio Renzo Barbera is an iconic stadium.
+
+## Frequently Asked Questions
+
+### What is the capacity of the stadium?
+The stadium has 36,365 seats.
+
+### When did the stadium open?
+It opened in 1932.
+"""
+
+    req = {
+        "ai_context": {
+            "main_text": orig_text,
+            "language": "en",
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": [],
+        }
+    }
+
+    # Draft keeps question 1, drops question 2, and adds question 3 with an editor gap
+    draft_text = """# Stadio Renzo Barbera
+
+The stadium opened in 1932 and accommodates 36,365 supporters.
+
+## Frequently Asked Questions
+
+### What is the capacity of the stadium?
+The stadium has 36,365 seats.
+
+### What is the ownership structure?
+Palermo FC is owned by [EDITOR: owner name and stake — official records].
+"""
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    warnings = res.json()["warnings"]
+
+    # 1. Dropped question warning
+    assert "Original FAQ question dropped: When did the stadium open?" in warnings
+    # 2. FAQ with editor gap warning
+    assert "FAQ with editor gap: What is the ownership structure? — fill it or remove it before publishing" in warnings
+
+
+def test_sources_to_cite_filtering_and_fan_token_restriction():
+    """Test that allowed sources_to_cite (max 3 with why) are preserved, invented URLs stripped, and external links in Fan Token stripped."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "main_text": "Original text about football.",
+            "language": "en",
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "sources_to_cite": [
+                {
+                    "url": "https://legaseriea.it/stadium",
+                    "title": "Lega Serie A",
+                    "domain": "legaseriea.it",
+                    "found_in": "Organic top 10",
+                    "why": "Official league stadium data",
+                },
+                {
+                    "url": "https://palermofc.com/stadium",
+                    "title": "Palermo FC",
+                    "domain": "palermofc.com",
+                    "found_in": "Organic top 10",
+                    "why": "Club official guide",
+                },
+                {
+                    "url": "https://uefa.com/venues",
+                    "title": "UEFA",
+                    "domain": "uefa.com",
+                    "found_in": "Organic top 10",
+                    "why": "Tournament guidelines",
+                },
+                {
+                    "url": "https://fourth-source.com/stadium",
+                    "title": "Fourth Source",
+                    "domain": "fourth-source.com",
+                    "found_in": "Organic top 10",
+                    "why": "Extra fourth source",
+                },
+            ],
+            "warnings": [],
+        }
+    }
+
+    draft_text = """# Stadio Renzo Barbera
+
+Official match schedules are published by [Lega Serie A](https://legaseriea.it/stadium).
+Visitors should check the [Club Guide](https://palermofc.com/stadium).
+Rumors were reported on an [Invented Blog](https://invented-rumor-site.com/post).
+Fourth source test: [Fourth Source](https://fourth-source.com/stadium).
+
+## Palermo Fan Token
+
+Fans can trade tokens. See tournament info at [UEFA](https://uefa.com/venues).
+"""
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    draft = data["draft_markdown"]
+    warnings = data["warnings"]
+
+    # 1. Allowed external sources 1 and 2 preserved
+    assert "[Lega Serie A](https://legaseriea.it/stadium)" in draft
+    assert "[Club Guide](https://palermofc.com/stadium)" in draft
+    assert "External source added: legaseriea.it — check that it supports the claim next to it" in warnings
+    assert "External source added: palermofc.com — check that it supports the claim next to it" in warnings
+
+    # 2. Invented URL stripped to anchor text
+    assert "https://invented-rumor-site.com/post" not in draft
+    assert "Invented Blog" in draft
+
+    # 3. Fourth source exceeds max 3 limit -> stripped
+    assert "https://fourth-source.com/stadium" not in draft
+    assert "Fourth Source" in draft
+
+    # 4. UEFA link inside Fan Token section stripped
+    assert "https://uefa.com/venues" not in draft
+    assert "UEFA" in draft
+
+
+
 
 

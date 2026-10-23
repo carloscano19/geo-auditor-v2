@@ -525,6 +525,8 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             aiPlan.suggested_h2_structure.forEach((h, i) => {
                 const statusBadge = h.status === "present"
                     ? "[Already on the page — keep it]"
+                    : h.status === "rename"
+                    ? `[Already on the page — consider renaming to: ${h.h2}]`
                     : h.status === "existing"
                     ? "[Exists — add the heading]"
                     : "[New — write this section]";
@@ -1509,12 +1511,16 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                 <span className={`text-[10px] uppercase font-bold tracking-wider px-2 py-0.5 rounded shrink-0 ${
                                                     item.status === "present"
                                                         ? "bg-good-soft border border-good/30 text-good"
+                                                        : item.status === "rename"
+                                                        ? "bg-amber-500/10 border border-amber-500/30 text-amber-600 dark:text-amber-400"
                                                         : item.status === "existing"
                                                         ? "bg-surface-2 text-ink-2 border border-hairline"
                                                         : "bg-critical-soft border border-critical/30 text-critical"
                                                 }`}>
                                                     {item.status === "present"
                                                         ? "Already on the page — keep it"
+                                                        : item.status === "rename"
+                                                        ? `Already on the page — consider renaming to: ${item.h2}`
                                                         : item.status === "existing"
                                                         ? "Exists — add the heading"
                                                         : "New — write this section"}

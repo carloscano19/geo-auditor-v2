@@ -671,6 +671,9 @@ def generate_editor_brief_docx(
                 if item.status == "present":
                     status_label = "Already on the page — keep it"
                     badge_color = RGBColor(16, 120, 70)
+                elif item.status == "rename":
+                    status_label = f"Already on the page — consider renaming to: {item.h2}"
+                    badge_color = RGBColor(217, 119, 6)
                 elif item.status == "existing":
                     status_label = "Exists — add the heading"
                     badge_color = RGBColor(107, 114, 128)
@@ -1126,14 +1129,17 @@ def generate_rewrite_draft_docx(
             run.bold = True
             run.font.color.rgb = RGBColor(255, 255, 255)
 
-        for row_idx, dim in enumerate(dims, start=1):
-            dim_name = getattr(dim, "name", "")
-            s_before = getattr(dim, "score_before", 0.0)
-            s_after = getattr(dim, "score_after", 0.0)
-            diff = getattr(dim, "difference", 0.0)
+        from src.utils.batch_aggregator import DIMENSION_DISPLAY_NAMES
 
-            diff_str = f"+{diff:.1f}" if diff > 0 else f"{diff:.1f}"
-            row_data = [dim_name, f"{s_before:.1f}", f"{s_after:.1f}", diff_str]
+        for row_idx, dim in enumerate(dims, start=1):
+            dim_key = getattr(dim, "name", "")
+            dim_name = DIMENSION_DISPLAY_NAMES.get(dim_key, dim_key.replace("_", " ").title())
+            s_before = round(getattr(dim, "score_before", 0.0))
+            s_after = round(getattr(dim, "score_after", 0.0))
+            diff = s_after - s_before
+
+            diff_str = f"+{diff}" if diff > 0 else f"{diff}"
+            row_data = [dim_name, f"{s_before}/100", f"{s_after}/100", diff_str]
             bg_color = "F9FAFB" if row_idx % 2 == 1 else "FFFFFF"
 
             for i, (val, width) in enumerate(zip(row_data, col_widths)):
@@ -1155,12 +1161,12 @@ def generate_rewrite_draft_docx(
 
         # Total row
         tot_idx = len(dims) + 1
-        t_before = getattr(score_comparison, "total_score_before", 0.0)
-        t_after = getattr(score_comparison, "total_score_after", 0.0)
-        t_diff = getattr(score_comparison, "difference", 0.0)
-        t_diff_str = f"+{t_diff:.1f}" if t_diff > 0 else f"{t_diff:.1f}"
+        t_before = round(getattr(score_comparison, "total_score_before", 0.0))
+        t_after = round(getattr(score_comparison, "total_score_after", 0.0))
+        t_diff = t_after - t_before
+        t_diff_str = f"+{t_diff}" if t_diff > 0 else f"{t_diff}"
 
-        tot_data = ["Total Citation Score (Normalized)", f"{t_before:.1f}", f"{t_after:.1f}", t_diff_str]
+        tot_data = ["Total Citation Score (Normalized)", f"{t_before}/100", f"{t_after}/100", t_diff_str]
         for i, (val, width) in enumerate(zip(tot_data, col_widths)):
             cell = table.cell(tot_idx, i)
             cell.width = width
