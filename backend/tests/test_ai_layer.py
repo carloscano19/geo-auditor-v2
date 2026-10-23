@@ -5224,6 +5224,294 @@ The stadium is not the only place where Palermo fans show their support. Digital
     assert "[Socios](https://www.socios.com/palermo)" in draft
 
 
+def test_rewrite_standalone_button_anchor_restored():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "Buy token: CHECK HERE FOR PALERMO FC FAN TOKEN® UPDATES",
+            "main_html": '<article><p><a href="https://www.socios.com/palermo-fan-token/">CHECK HERE FOR PALERMO FC FAN TOKEN® UPDATES</a></p></article>',
+            "language": "en",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+
+    # Model returned standalone line with ™ instead of ®
+    draft_text = """# Palermo Stadium
+
+Some text about the stadium.
+
+[CHECK HERE FOR PALERMO FC FAN TOKEN™ UPDATES](https://www.socios.com/palermo-fan-token/)
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert "[CHECK HERE FOR PALERMO FC FAN TOKEN® UPDATES](https://www.socios.com/palermo-fan-token/)" in data["draft_markdown"]
+
+
+def test_rewrite_trademark_inconsistency_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "Palermo FC Fan Token™ and PALERMO FC FAN TOKEN®",
+            "main_html": '<article><p>Palermo FC Fan Token™ and PALERMO FC FAN TOKEN®</p></article>',
+            "language": "en",
+        },
+        "ai_plan": {
+            "inconsistencies": [
+                {
+                    "issue": "Palermo FC Fan Token™ vs PALERMO FC FAN TOKEN®",
+                    "values": ["Palermo FC Fan Token™", "PALERMO FC FAN TOKEN®"],
+                    "suggestion": "Check with legal",
+                }
+            ],
+            "combined_schema": {},
+            "warnings": [],
+        },
+    }
+
+    draft_text = """# Palermo Stadium
+
+Palermo FC Fan Token™ is popular, and PALERMO FC FAN TOKEN® is also mentioned.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    warnings = data["warnings"]
+    assert "Trademark notation differs (™ vs ®) — check with legal, not changed by the AI" in warnings
+    assert not any("Inconsistency not resolved" in w for w in warnings)
+
+
+def test_rewrite_citation_anchor_page_title_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "Stadium info.",
+            "main_html": '<article><p>Stadium info.</p></article>',
+            "language": "en",
+        },
+        "ai_plan": {
+            "sources_to_cite": [
+                {
+                    "url": "https://populous.com/project/renzo-barbera",
+                    "title": "Populous Palermo Stadium Renzo Barbera Redevelopment Project",
+                    "domain": "populous.com",
+                    "found_in": "Organic top 10",
+                    "why": "Official architectural firm proposal.",
+                }
+            ],
+            "combined_schema": {},
+            "warnings": [],
+        },
+    }
+
+    # Model cited external source enclosed isolated in parens
+    draft_text = """# Palermo Stadium
+
+According to the plans ([Populous Palermo Stadium Renzo Barbera Redevelopment Project](https://populous.com/project/renzo-barbera)).
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert any("Citation anchor looks like a page title: Populous Palermo Stadium Renzo Barbera Redevelopment Project" in w for w in data["warnings"])
+
+
+def test_rewrite_docx_bold_and_italic_formatting():
+    from src.utils.docx_brief import generate_rewrite_draft_docx
+    from docx import Document
+    import io
+
+    draft_md = """# Test Article
+
+This paragraph contains **important bold note** and *italicized emphasis* alongside regular text.
+"""
+    docx_bytes = generate_rewrite_draft_docx(
+        url="https://example.com/test",
+        draft_markdown=draft_md,
+        warnings=[],
+    )
+    doc = Document(io.BytesIO(docx_bytes))
+    bold_found = False
+    italic_found = False
+
+    for p in doc.paragraphs:
+        for run in p.runs:
+            if run.bold and "important bold note" in run.text:
+                bold_found = True
+            if run.italic and "italicized emphasis" in run.text:
+                italic_found = True
+
+    assert bold_found, "Bold markdown was not styled with run.bold in Word docx"
+    assert italic_found, "Italic markdown was not styled with run.italic in Word docx"
+
+
+def test_rewrite_faq_unsupported_claim_before_gap():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "Stadium info.",
+            "main_html": '<article><p>Stadium info.</p></article>',
+            "language": "en",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+
+    draft_text = """# Palermo Stadium
+
+Welcome to the stadium.
+
+## Frequently Asked Questions
+
+### Who owns Palermo FC?
+Palermo FC is not owned by Manchester City. The club's ownership is held by [EDITOR: owner and stake — official club statements].
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert any("Possible unsupported claim before the editor gap: Palermo FC is not owned by Manchester City." in w for w in data["warnings"])
+    assert any("FAQ with editor gap: Who owns Palermo FC? — fill it or remove it before publishing" in w for w in data["warnings"])
+
+
+def test_rewrite_faq_trim_max_two_gaps_prioritizing_paa():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "Stadium info.",
+            "main_html": '<article><p>Stadium info.</p></article>',
+            "language": "en",
+        },
+        "ai_plan": {
+            "questions_to_answer": [
+                {
+                    "question": "Who owns Palermo FC?",
+                    "draft_answer": "Palermo FC ownership is [EDITOR: owner].",
+                    "answer_source": "needs_info",
+                    "origin": "google_paa",
+                }
+            ],
+            "combined_schema": {},
+            "warnings": [],
+        },
+    }
+
+    # Draft has 3 questions with editor gaps
+    draft_text = """# Palermo Stadium
+
+## Frequently Asked Questions
+
+### Can you take a stadium tour?
+[EDITOR: stadium tours availability — club ticketing].
+
+### Who owns Palermo FC?
+Palermo FC's current ownership is [EDITOR: owner and stake — official club statements].
+
+### What is the capacity of Curva Nord?
+The Curva Nord capacity is [EDITOR: capacity — stadium records].
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    warnings = data["warnings"]
+    draft = data["draft_markdown"]
+
+    # Exactly one gap question removed
+    assert any("Suggested FAQ question not included (needs data): What is the capacity of Curva Nord?" in w for w in warnings)
+    # PAA gap question kept
+    assert "Who owns Palermo FC?" in draft
+    # Tour question kept (2nd slot)
+    assert "Can you take a stadium tour?" in draft
+    # 3rd question removed from draft
+    assert "What is the capacity of Curva Nord?" not in draft
+
+
+def test_rewrite_faq_deduplication_removes_non_original():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    # Original page has FAQ with "What is the capacity of Stadio Renzo Barbera?"
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "main_text": "FAQ: What is the capacity of Stadio Renzo Barbera? It holds 36,365.",
+            "main_html": '<article><h2>FAQ</h2><h3>What is the capacity of Stadio Renzo Barbera?</h3><p>It holds 36,365.</p></article>',
+            "language": "en",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+
+    # Draft repeats the question in another form
+    draft_text = """# Palermo Stadium
+
+## FAQ
+
+### What is the seating capacity of Stadio Renzo Barbera?
+It can seat 36,365 spectators.
+
+### What is the capacity of Stadio Renzo Barbera?
+The stadium capacity is 36,365.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    warnings = data["warnings"]
+    draft = data["draft_markdown"]
+
+    assert any("Duplicate FAQ question removed: What is the seating capacity of Stadio Renzo Barbera?" in w for w in warnings)
+    assert "What is the capacity of Stadio Renzo Barbera?" in draft
+    assert "What is the seating capacity of Stadio Renzo Barbera?" not in draft
+
+
+
 
 
 

@@ -1540,7 +1540,7 @@ Generate a JSON object with EXACTLY this structure:
 Requirements:
 - suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC is majority-owned by [EDITOR: current owner and stake — official club statements]."). Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the editor gap: no yes/no answers, and no claims about whether something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the opening / first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
 - sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
@@ -2051,17 +2051,18 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 3. Plan paragraphs must be merged into the existing original paragraph discussing the same topic, rather than added as duplicate paragraphs next to it.
 4. A new suggested H2 is only created if it provides information not already present in another section. If it only repeats another section, its content must be merged into that section and the H2 not created.
 5. Target article length: around 1.5x original length + FAQ + genuinely new sections. Do not inflate word count with redundant phrasing.
-6. When an FAQ question needs info or lacks data, the FIRST sentence must answer directly with the gap [EDITOR: description — source type] placed precisely where the missing data belongs (e.g. "Palermo FC is majority-owned by [EDITOR: current owner and stake — official club statements]."). Do NOT fill with unrelated page data (like stadium capacity). Preserve all [EDITOR: ...] placeholders already present in the AI plan.
+6. When an FAQ question needs info or lacks data, the FIRST sentence must answer directly with the gap [EDITOR: description — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the gap: neither yes/no, nor that something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Preserve all [EDITOR: ...] placeholders already present in the AI plan.
 7. NEVER invent first-person experience ("we tested", "we saw", "in our experience", "probamos", "visitamos"). If experience signals are needed, use: [EDITOR: add a real first-hand experience — team member who attended] in {lang_instruction}.
-8. SENSITIVE TEXTS INTACT: Any disclaimer, risk warning, "not financial advice", terms and conditions, volatility note, or regulatory compliance statement in the original text MUST BE COPIED LITERALLY and verbatim without modification. Never offer financial advice or investment recommendations.
-9. LINKS: The user message lists ORIGINAL LINKS and ALLOWED EXTERNAL SOURCES. You MUST keep ALL original links as Markdown links [text](url), in the same context or as close as possible to where they were in the original. You may cite up to 3 allowed external sources, at most ONCE each, next to the claim they support. NEVER place external links in Fan Token sections, legal/disclaimer texts, or FAQ. NEVER add any other URL. If no links are provided, write no URLs at all.
+8. SENSITIVE TEXTS & TRADEMARKS INTACT: Any disclaimer, risk warning, "not financial advice", terms and conditions, volatility note, or regulatory compliance statement in the original text MUST BE COPIED LITERALLY and verbatim without modification. Never alter trademark symbols (™, ®, ©), brand names, or button/CTA texts. Inconsistencies that only affect trademark symbols or legal notices must NOT be modified: leave them as they are. Never offer financial advice or investment recommendations.
+9. LINKS & CITATIONS: The user message lists ORIGINAL LINKS and ALLOWED EXTERNAL SOURCES. You MUST keep ALL original links as Markdown links [text](url), in the same context or as close as possible to where they were in the original. Keep button / CTA anchor texts verbatim. You may cite up to 3 allowed external sources, at most ONCE each, placed naturally on a short phrase within the sentence (2-6 words), e.g. "according to the [club's stadium guide](url)" or "[designs revealed by Populous](url)". NEVER use the title of the page as the anchor, NEVER enclose the link isolated inside parentheses like "([Title](url))", and NEVER use "..." or "…". NEVER place external links in Fan Token sections, legal/disclaimer texts, or FAQ. NEVER add any other URL. If no links are provided, write no URLs at all.
 10. IMAGES: The user message lists the ORIGINAL IMAGES of the page. You MUST keep ALL of them as Markdown images ![alt](url), placed in the most appropriate section or as close as possible to their original position. Do NOT invent new images or alter the URLs. If the list is empty, include no images.
 11. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
 12. Structure, Inconsistencies & FAQ:
     - Begin with the # Main Title (H1).
     - Opening Lead Paragraph: Use the suggested lead paragraph from the plan.
-    - If inconsistencies / contradictions are listed, resolve them using the plan's recommendation and unify the terminology/value throughout the whole article.
-    - If an original FAQ is present, retain the EXACT H2 and ALL original questions LITERALLY with their exact wording (answers 2-3 sentences max). Add non-overlapping plan questions. Any FAQ question whose answer has an editor gap [EDITOR: ...] MUST be placed at the very end of the FAQ section.
+    - If inconsistencies / contradictions are listed, resolve them using the plan's recommendation and unify the terminology/value throughout the whole article (except trademark notation differences ™/®/©, which must be kept as they are).
+    - Consistency: Always use the exact same term for the same role or entity throughout the whole article (e.g. do not mix "president" and "chairman"), even if the plan did not detect it. Do not repeat the exact same sentence across two different sections.
+    - FAQ: Format each FAQ question as a subheading "### Question?" with the answer below (answers 2-3 sentences max). Retain the EXACT H2 and ALL original questions LITERALLY with their exact wording. At most 2 questions with [EDITOR: ...] gaps may be included, placed at the very end of the FAQ section.
     - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
     - Merge suggested actionable paragraphs into their appropriate sections.
 """
@@ -2432,6 +2433,29 @@ Write the complete rewritten article in Markdown now following all editorial and
 
     draft_markdown = stashed.strip()
 
+    # Standalone link anchor text restoration
+    # If a line in draft_markdown contains solely a Markdown link whose URL matches an original link,
+    # restore the exact original anchor text.
+    orig_anchor_by_url = {
+        normalize_link_url(l["url"]): l["text"]
+        for l in (original_links or []) if l.get("text") and l.get("url")
+    }
+    restored_lines = []
+    for line in draft_markdown.split("\n"):
+        line_s = line.strip()
+        btn_m = re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[([^\]]+)\]\((https?://[^\s)]+)(?:\s+"[^"]*")?\)\s*$', line_s)
+        if btn_m:
+            curr_anchor = btn_m.group(1)
+            url_target = btn_m.group(2)
+            u_norm = normalize_link_url(url_target)
+            if u_norm in orig_anchor_by_url:
+                orig_anc = orig_anchor_by_url[u_norm]
+                old_target = f"[{curr_anchor}]("
+                new_target = f"[{orig_anc}]("
+                line = line.replace(old_target, new_target, 1)
+        restored_lines.append(line)
+    draft_markdown = "\n".join(restored_lines)
+
     # 4. Warn about original links that did not make it into the draft
     draft_urls = {
         normalize_link_url(u)
@@ -2453,11 +2477,20 @@ Write the complete rewritten article in Markdown now following all editorial and
                 alt_desc = img["alt"] if img["alt"] else "unnamed image"
                 warnings.append(f"Original image not preserved: {alt_desc} ({img['src']})")
 
-    # 6. Warn about external sources added to the draft
+    # 6. Warn about external sources added to the draft and check citation formatting
     for s in valid_external_sources:
-        if normalize_link_url(s.url) in draft_urls:
+        s_norm = normalize_link_url(s.url)
+        if s_norm in draft_urls:
             dom = s.domain or urllib.parse.urlparse(s.url).netloc
             warnings.append(f"External source added: {dom} — check that it supports the claim next to it")
+            for m in _MD_LINK_RE.finditer(draft_markdown):
+                if normalize_link_url(m.group(2)) == s_norm:
+                    anchor = m.group(1).strip()
+                    full_link = m.group(0)
+                    is_ellipsis = anchor.endswith("...") or anchor.endswith("…")
+                    is_in_parens = bool(re.search(r'\(\s*' + re.escape(full_link) + r'\s*\)', draft_markdown))
+                    if is_ellipsis or is_in_parens:
+                        warnings.append(f"Citation anchor looks like a page title: {anchor}")
 
     # 7. Check for duplicated content (content-word set overlap before FAQ)
     body_for_dupes = draft_markdown
@@ -2542,9 +2575,17 @@ Write the complete rewritten article in Markdown now following all editorial and
             warnings.append(f"Original figure missing from draft: {f}")
 
     # 9. Check for unresolved inconsistencies (normalized to handle punctuation & quotes)
+    TM_SYMBOLS_RE = re.compile(r'[\u2122\xae\xa9]')
     draft_norm_incons = normalize_heading(draft_markdown)
     for inc in (plan.inconsistencies or []):
         if inc.values and len(inc.values) >= 2:
+            val_stripped_set = {normalize_heading(TM_SYMBOLS_RE.sub('', v)) for v in inc.values}
+            if len(val_stripped_set) == 1 and len(set(inc.values)) > 1:
+                tm_warn = "Trademark notation differs (™ vs ®) — check with legal, not changed by the AI"
+                if tm_warn not in warnings:
+                    warnings.append(tm_warn)
+                continue
+
             all_present = True
             for val in inc.values:
                 val_norm = normalize_heading(val)
@@ -2554,33 +2595,127 @@ Write the complete rewritten article in Markdown now following all editorial and
             if all_present:
                 warnings.append(f"Inconsistency not resolved: {inc.issue}")
 
-    # 10. Check for dropped original FAQ questions
+    # 10. Process and rebuild FAQ section (deduplication, max 2 editor gaps, format with ###)
+    faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
+    if not faq_match and orig_faq_h2:
+        faq_match = re.search(r'(?mi)^##\s+' + re.escape(orig_faq_h2) + r'$', draft_markdown)
+
+    if faq_match:
+        faq_start = faq_match.start()
+        faq_header_line = draft_markdown[faq_start:draft_markdown.find("\n", faq_start) if "\n" in draft_markdown[faq_start:] else len(draft_markdown)]
+        after_match = draft_markdown[faq_match.end():]
+        next_h2 = re.search(r'(?mi)^##\s+(?!#)', after_match)
+        if next_h2:
+            faq_end = faq_match.end() + next_h2.start()
+            after_faq = draft_markdown[faq_end:]
+        else:
+            faq_end = len(draft_markdown)
+            after_faq = ""
+        before_faq = draft_markdown[:faq_start]
+        faq_full = draft_markdown[faq_start:faq_end]
+
+        faq_inner = faq_full[len(faq_header_line):]
+        blocks = re.split(r'(?m)^(?=###\s+|Q:\s*|\*\*\s*Q:\s*|\*\*(?:Q:\s*)?[^\n]+\?\*\*)', faq_inner)
+        intro_text = blocks[0].strip() if blocks else ""
+
+        orig_norm_set = {normalize_heading(q) for q in orig_faq_questions}
+        paa_norm_set = set()
+        paa_words_list: list[set[str]] = []
+        for pq in (plan.questions_to_answer or []):
+            is_paa = (getattr(pq, "origin", None) == "google_paa" or getattr(pq, "answer_source", None) in ("paa", "organic", "google_paa"))
+            if is_paa and pq.question:
+                paa_norm_set.add(normalize_heading(pq.question))
+                pw = set(w for w in re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', pq.question.lower()) if w not in EN_ES_STOP_WORDS)
+                if pw:
+                    paa_words_list.append(pw)
+
+        class _ParsedFAQ:
+            def __init__(self, raw_block: str):
+                lines = raw_block.strip().split("\n")
+                first_line = lines[0].strip()
+                q_text = re.sub(r'^(?:###\s*|\*\*\s*Q:\s*|Q:\s*|\*\*)', '', first_line)
+                q_text = re.sub(r'\*\*\s*$', '', q_text).strip()
+                self.question = q_text.rstrip("#:_ ").strip()
+                self.answer_text = "\n".join(lines[1:]).strip()
+                self.is_original = normalize_heading(self.question) in orig_norm_set
+                words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', self.question.lower())
+                self.content_words = set(w for w in words if w not in EN_ES_STOP_WORDS)
+                self.has_gap = "[EDITOR:" in self.answer_text
+                
+                # Check PAA priority
+                q_norm = normalize_heading(self.question)
+                matched_paa = q_norm in paa_norm_set
+                if not matched_paa and self.content_words:
+                    for pw in paa_words_list:
+                        denom = min(len(self.content_words), len(pw))
+                        if denom > 0 and (len(self.content_words & pw) / denom) >= 0.60:
+                            matched_paa = True
+                            break
+                self.is_paa = matched_paa
+
+        parsed_items = [_ParsedFAQ(b) for b in blocks[1:] if b.strip()]
+
+        # 1. Deduplicate questions sharing >= 60% of content words
+        kept_items: list[_ParsedFAQ] = []
+        for item in parsed_items:
+            dupe_idx = None
+            for idx, kept in enumerate(kept_items):
+                wa = kept.content_words
+                wb = item.content_words
+                if wa and wb:
+                    denom = min(len(wa), len(wb))
+                    if denom > 0 and (len(wa & wb) / denom) >= 0.60:
+                        dupe_idx = idx
+                        break
+            if dupe_idx is not None:
+                kept = kept_items[dupe_idx]
+                if item.is_original and not kept.is_original:
+                    removed = kept
+                    kept_items[dupe_idx] = item
+                    warnings.append(f"Duplicate FAQ question removed: {removed.question}")
+                else:
+                    warnings.append(f"Duplicate FAQ question removed: {item.question}")
+            else:
+                kept_items.append(item)
+
+        # 2. Limit questions with [EDITOR: ...] gaps to max 2, prioritizing PAA
+        gap_items = [it for it in kept_items if it.has_gap]
+        if len(gap_items) > 2:
+            sorted_gaps = sorted(gap_items, key=lambda it: (0 if it.is_paa else 1))
+            to_keep_gaps = set(sorted_gaps[:2])
+            to_remove_gaps = sorted_gaps[2:]
+            for rem in to_remove_gaps:
+                warnings.append(f"Suggested FAQ question not included (needs data): {rem.question}")
+            kept_items = [it for it in kept_items if not it.has_gap or it in to_keep_gaps]
+
+        # 3. Partition: non-gap questions first, followed by at most 2 gap questions at the end
+        non_gap_items = [it for it in kept_items if not it.has_gap]
+        final_gap_items = [it for it in kept_items if it.has_gap]
+
+        # 4. Check unsupported claims before editor gap in first sentence & emit gap warning
+        for it in final_gap_items:
+            m_sent = re.search(r'^(.*?[.!?])(?:\s+|$)', it.answer_text.strip(), flags=re.DOTALL)
+            first_sentence = m_sent.group(1).strip() if m_sent else it.answer_text.strip()
+            if "[EDITOR:" not in first_sentence:
+                warnings.append(f"Possible unsupported claim before the editor gap: {first_sentence}")
+            warnings.append(f"FAQ with editor gap: {it.question} — fill it or remove it before publishing")
+
+        # 5. Reconstruct FAQ markdown with ### headings
+        faq_sections: list[str] = []
+        if intro_text:
+            faq_sections.append(intro_text)
+        for it in non_gap_items + final_gap_items:
+            faq_sections.append(f"### {it.question}\n\n{it.answer_text}")
+
+        reconstructed_faq = faq_header_line + "\n\n" + "\n\n".join(faq_sections) + ("\n\n" if after_faq else "\n")
+        draft_markdown = before_faq + reconstructed_faq + after_faq
+
+    # 11. Check for dropped original FAQ questions
     draft_norm_headings = normalize_heading(draft_markdown)
     for q in orig_faq_questions:
         q_norm = normalize_heading(q)
         if q_norm and q_norm not in draft_norm_headings:
             warnings.append(f"Original FAQ question dropped: {q}")
-
-    # 11. Check for FAQ questions whose answer has an editor gap [EDITOR: ...]
-    if faq_match:
-        faq_section_text = draft_markdown[faq_match.start():]
-        next_h2 = re.search(r'(?mi)^##\s+(?!#)', faq_section_text[1:])
-        if next_h2:
-            faq_section_text = faq_section_text[:next_h2.start() + 1]
-
-        q_blocks = re.split(r'(?mi)^(?:###\s+|\*\*(?:Q:\s*)?|\bQ:\s*)', faq_section_text)
-        seen_faq_gaps = set()
-        for block in q_blocks[1:]:
-            lines = block.strip().split("\n")
-            if not lines:
-                continue
-            if "[EDITOR:" in block:
-                q_line = lines[0].strip().rstrip("*#:_ ")
-                if "?" in q_line:
-                    q_line = q_line[:q_line.index("?")+1].strip().rstrip("*#:_ ")
-                if q_line and q_line not in seen_faq_gaps:
-                    seen_faq_gaps.add(q_line)
-                    warnings.append(f"FAQ with editor gap: {q_line} — fill it or remove it before publishing")
 
     word_count_original = len(orig_text.split())
     word_count_draft = len(draft_markdown.split())

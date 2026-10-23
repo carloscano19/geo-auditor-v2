@@ -318,14 +318,33 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
         // Simple client-side Markdown to clean HTML conversion
         const escapeHtml = (s: string) =>
             s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-        // Converts inline Markdown images and links to HTML; everything else is escaped
+        const formatText = (raw: string) => {
+            const styleRe = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+            let res = "";
+            let prev = 0;
+            let sm: RegExpExecArray | null;
+            while ((sm = styleRe.exec(raw)) !== null) {
+                res += escapeHtml(raw.slice(prev, sm.index));
+                const matchStr = sm[0];
+                if (matchStr.startsWith('**') && matchStr.endsWith('**') && matchStr.length >= 4) {
+                    res += `<strong>${escapeHtml(matchStr.slice(2, -2))}</strong>`;
+                } else if (matchStr.startsWith('*') && matchStr.endsWith('*') && matchStr.length >= 2) {
+                    res += `<em>${escapeHtml(matchStr.slice(1, -1))}</em>`;
+                } else {
+                    res += escapeHtml(matchStr);
+                }
+                prev = sm.index + matchStr.length;
+            }
+            return res + escapeHtml(raw.slice(prev));
+        };
+        // Converts inline Markdown images, links, bold and italic to HTML; everything else is escaped
         const inline = (s: string) => {
             const tokenRe = /(!\[([^\]]*)\]\((https?:\/\/[^)\s]+)\)|\[([^\]]*)\]\((https?:\/\/[^)\s]+)\))/g;
             let out = "";
             let last = 0;
             let m: RegExpExecArray | null;
             while ((m = tokenRe.exec(s)) !== null) {
-                out += escapeHtml(s.slice(last, m.index));
+                out += formatText(s.slice(last, m.index));
                 if (m[0].startsWith('!')) {
                     out += `<img src="${escapeHtml(m[3])}" alt="${escapeHtml(m[2])}" />`;
                 } else {
@@ -333,7 +352,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                 }
                 last = m.index + m[0].length;
             }
-            return out + escapeHtml(s.slice(last));
+            return out + formatText(s.slice(last));
         };
         const lines = rewriteDraft.draft_markdown.split('\n');
         const htmlParts: string[] = [];
@@ -2039,7 +2058,23 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                                     );
                                                                 }
                                                             }
-                                                            return <span key={idx}>{part}</span>;
+                                                            // Format bold (**...**) and italic (*...*) safely without innerHTML
+                                                            const styleRegex = /(\*\*[^*]+\*\*|\*[^*]+\*)/g;
+                                                            const subparts = part.split(styleRegex);
+                                                            return (
+                                                                <React.Fragment key={idx}>
+                                                                    {subparts.map((sub, sIdx) => {
+                                                                        if (!sub) return null;
+                                                                        if (sub.startsWith('**') && sub.endsWith('**') && sub.length >= 4) {
+                                                                            return <strong key={sIdx}>{sub.slice(2, -2)}</strong>;
+                                                                        }
+                                                                        if (sub.startsWith('*') && sub.endsWith('*') && sub.length >= 2) {
+                                                                            return <em key={sIdx}>{sub.slice(1, -1)}</em>;
+                                                                        }
+                                                                        return <span key={sIdx}>{sub}</span>;
+                                                                    })}
+                                                                </React.Fragment>
+                                                            );
                                                         });
                                                     };
 
@@ -2124,10 +2159,20 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
 
                                                         // Heading 3
                                                         if (trimmed.startsWith('### ')) {
+                                                            const hLines = trimmed.split('\n');
+                                                            const headingText = hLines[0].slice(4);
+                                                            const restText = hLines.slice(1).join('\n').trim();
                                                             return (
-                                                                <h3 key={bIdx} className="text-sm font-bold text-ink pt-1">
-                                                                    {renderDraftInline(trimmed.slice(4))}
-                                                                </h3>
+                                                                <div key={bIdx} className="space-y-1 pt-1">
+                                                                    <h3 className="text-sm font-bold text-ink">
+                                                                        {renderDraftInline(headingText)}
+                                                                    </h3>
+                                                                    {restText && (
+                                                                        <p className="text-xs sm:text-sm text-ink leading-relaxed">
+                                                                            {renderDraftInline(restText)}
+                                                                        </p>
+                                                                    )}
+                                                                </div>
                                                             );
                                                         }
 

@@ -1249,9 +1249,23 @@ def generate_rewrite_draft_docx(
             if link_m:
                 _add_hyperlink(paragraph, link_m.group(1) or link_m.group(2), link_m.group(2), bold=default_bold)
             else:
-                run = paragraph.add_run(part)
-                if default_bold:
-                    run.bold = True
+                style_pattern = re.compile(r'(\*\*[^*]+\*\*|\*[^*]+\*)')
+                subparts = style_pattern.split(part)
+                for sub in subparts:
+                    if not sub:
+                        continue
+                    if sub.startswith("**") and sub.endswith("**") and len(sub) >= 4:
+                        r = paragraph.add_run(sub[2:-2])
+                        r.bold = True
+                    elif sub.startswith("*") and sub.endswith("*") and len(sub) >= 2:
+                        r = paragraph.add_run(sub[1:-1])
+                        r.italic = True
+                        if default_bold:
+                            r.bold = True
+                    else:
+                        r = paragraph.add_run(sub)
+                        if default_bold:
+                            r.bold = True
 
     lines = draft_markdown.split("\n")
     i = 0
