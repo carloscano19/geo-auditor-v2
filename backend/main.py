@@ -2629,26 +2629,76 @@ Write the complete rewritten article in Markdown now following all editorial and
                 if pw:
                     paa_words_list.append(pw)
 
+        def _clean_faq_q(q: str) -> str:
+            q = re.sub(r'^(?:###\s*|(?:\*|\s)*(?:Q|Question)(?:\*\*|\*|\s)*:\s*|\*+|\s+)+', '', q, flags=re.IGNORECASE).strip()
+            q = re.sub(r'[\*#:\s]+$', '', q).strip()
+            return q
+
+        def _clean_faq_rem(a: str) -> str:
+            a = re.sub(r'^(?:\*|\s)*(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
+            a = re.sub(r'^(?:\*|\s)+', '', a).strip()
+            return a
+
+        def _clean_faq_next_line(a: str) -> str:
+            a = re.sub(r'^(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
+            return a
+
         class _ParsedFAQ:
             def __init__(self, raw_block: str):
                 lines = raw_block.strip().split("\n")
                 first_line = lines[0].strip()
-                q_text = re.sub(r'^(?:###\s*|\*\*\s*Q:\s*|Q:\s*|\*\*)', '', first_line)
-                q_text = re.sub(r'\*\*\s*$', '', q_text).strip()
-                self.question = q_text.rstrip("#:_ ").strip()
-                self.answer_text = "\n".join(lines[1:]).strip()
+                rest_lines = lines[1:]
+
+                q_idx = first_line.find("?")
+                if q_idx != -1:
+                    q_raw = first_line[:q_idx + 1]
+                    rem_raw = first_line[q_idx + 1:].strip()
+                else:
+                    m_bold = re.match(r'^\*\*(.*?)\*\*\s*(.*)$', first_line)
+                    if m_bold:
+                        q_raw = m_bold.group(1)
+                        rem_raw = m_bold.group(2).strip()
+                    else:
+                        m_h3 = re.match(r'^###\s+(.*)$', first_line)
+                        if m_h3:
+                            q_raw = m_h3.group(1)
+                            rem_raw = ""
+                        else:
+                            q_raw = first_line
+                            rem_raw = ""
+
+                self.question = _clean_faq_q(q_raw)
+                ans_parts: list[str] = []
+                if rem_raw:
+                    clean_rem = _clean_faq_rem(rem_raw)
+                    if clean_rem:
+                        ans_parts.append(clean_rem)
+                if rest_lines:
+                    if not ans_parts:
+                        clean_first_rest = _clean_faq_next_line(rest_lines[0])
+                        if clean_first_rest:
+                            ans_parts.append(clean_first_rest)
+                        ans_parts.extend(rest_lines[1:])
+                    else:
+                        ans_parts.extend(rest_lines)
+
+                self.answer_text = "\n".join(ans_parts).strip()
                 self.is_original = normalize_heading(self.question) in orig_norm_set
-                words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', self.question.lower())
+
+                # Content words of the FAQ item (question + answer) for robust deduplication
+                full_item_text = self.question + " " + self.answer_text
+                words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', full_item_text.lower())
                 self.content_words = set(w for w in words if w not in EN_ES_STOP_WORDS)
                 self.has_gap = "[EDITOR:" in self.answer_text
-                
+
                 # Check PAA priority
                 q_norm = normalize_heading(self.question)
                 matched_paa = q_norm in paa_norm_set
                 if not matched_paa and self.content_words:
+                    q_words = set(w for w in re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', self.question.lower()) if w not in EN_ES_STOP_WORDS)
                     for pw in paa_words_list:
-                        denom = min(len(self.content_words), len(pw))
-                        if denom > 0 and (len(self.content_words & pw) / denom) >= 0.60:
+                        denom = min(len(q_words), len(pw)) if q_words else 0
+                        if denom > 0 and (len(q_words & pw) / denom) >= 0.60:
                             matched_paa = True
                             break
                 self.is_paa = matched_paa

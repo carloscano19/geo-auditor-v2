@@ -5511,6 +5511,102 @@ The stadium capacity is 36,365.
     assert "What is the seating capacity of Stadio Renzo Barbera?" not in draft
 
 
+def test_rewrite_faq_real_production_format():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://www.socios.com/stadio-renzo-barbera-palermo-fc-stadium/",
+            "main_text": "Stadium info with capacity 37,619.",
+            "main_html": "<article><p>Stadium info with capacity 37,619.</p></article>",
+            "language": "en",
+        },
+        "ai_plan": {
+            "questions_to_answer": [
+                {
+                    "question": "Why does Palermo play in pink?",
+                    "draft_answer": "Pink and black kit.",
+                    "answer_source": "needs_info",
+                    "origin": "google_paa",
+                },
+                {
+                    "question": "Is Palermo F.C. owned by Man city?",
+                    "draft_answer": "Palermo ownership.",
+                    "answer_source": "needs_info",
+                    "origin": "google_paa",
+                },
+                {
+                    "question": "What happened to Palermo Football Club?",
+                    "draft_answer": "Recent history.",
+                    "answer_source": "needs_info",
+                    "origin": "google_paa",
+                },
+                {
+                    "question": "Can you tour the Stadio Renzo Barbera?",
+                    "draft_answer": "Stadium tours.",
+                    "answer_source": "needs_info",
+                    "origin": "ai",
+                },
+            ],
+            "combined_schema": {},
+            "warnings": [],
+        },
+    }
+
+    draft_text = """# Stadio Renzo Barbera
+
+Welcome to the stadium guide.
+
+## Stadio Renzo Barbera FAQs
+
+**Where does Palermo FC play?** Palermo FC play their home matches at the Stadio Renzo Barbera.
+
+**What is the capacity of Stadio Renzo Barbera?** The Stadio Renzo Barbera accommodates 37,619 fans.
+
+**Where does Palermo FC play and how many fans does the stadium hold?** Palermo FC play at the Stadio Renzo Barbera, a ground with a capacity of 37,619.
+
+**Why does Palermo play in pink?** Palermo's pink and black home kit gives the club its Rosanero nickname, and the specific origin of those colours is [EDITOR: historical origin of Palermo's colours — official club history].
+
+**Is Palermo F.C. owned by Man city?** Palermo FC is not owned by Manchester City. The club's ownership is held by [EDITOR: current owner name and ownership structure — official club statements].
+
+**What happened to Palermo Football Club?** Palermo FC's recent history includes [EDITOR: key ownership changes — official club statements].
+
+**Can you tour the Stadio Renzo Barbera?** Stadium tours of the Stadio Renzo Barbera operate [EDITOR: tour days and prices — official club ticketing].
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    warnings = data["warnings"]
+    draft = data["draft_markdown"]
+
+    # 1. Exactly one duplicate question removed, cleanly without response or asterisks
+    assert "Duplicate FAQ question removed: Where does Palermo FC play and how many fans does the stadium hold?" in warnings
+
+    # 2. Reconstructed cleanly with "### Question?" and answer below, no stray ** in headings
+    assert "### Where does Palermo FC play?\n\nPalermo FC play their home matches at the Stadio Renzo Barbera." in draft
+    assert "### What is the capacity of Stadio Renzo Barbera?\n\nThe Stadio Renzo Barbera accommodates 37,619 fans." in draft
+    assert "### Why does Palermo play in pink?\n\nPalermo's pink and black home kit" in draft
+    assert "### Is Palermo F.C. owned by Man city?\n\nPalermo FC is not owned by Manchester City." in draft
+    assert "**Where does Palermo FC play?**" not in draft
+
+    # 3. Exactly 2 gap questions kept (the first two google_paa), and 2 trimmed with warnings (including tours)
+    assert any("Suggested FAQ question not included (needs data): What happened to Palermo Football Club?" in w for w in warnings)
+    assert any("Suggested FAQ question not included (needs data): Can you tour the Stadio Renzo Barbera?" in w for w in warnings)
+    assert "Can you tour the Stadio Renzo Barbera?" not in draft
+    assert "What happened to Palermo Football Club?" not in draft
+
+    # 4. Unsupported claim warning before editor gap for the kept question
+    assert any("Possible unsupported claim before the editor gap: Palermo FC is not owned by Manchester City." in w for w in warnings)
+
+
+
 
 
 
