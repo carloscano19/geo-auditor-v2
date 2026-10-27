@@ -595,9 +595,9 @@ def normalize_heading(text: str) -> str:
 
 
 def get_heading_words(text: str) -> set[str]:
-    """Extract individual words from normalized heading text."""
+    """Extract individual words from normalized heading text, filtering out stop words."""
     norm = normalize_heading(text)
-    return set(norm.split())
+    return {w for w in norm.split() if w and w not in EN_ES_STOP_WORDS}
 
 
 def headings_share_words(s1: str, s2: str, threshold: float = 0.6) -> bool:
@@ -1702,17 +1702,26 @@ Requirements:
                 st = "present"
                 matched_original_h2 = exact_match
             else:
-                # 2. Overlapping match: remove entity words, require >= 60% overlap and >= 2 shared words
+                # 2. Overlapping match: remove entity words & stop words
+                # Rename if:
+                # (a) share >= 2 words and overlap >= 60%, OR
+                # (b) ALL remaining words of real H2 (at least 1) are contained in suggested H2
                 sug_words = get_heading_words(norm_sug) - entity_words
                 candidates_rename: list[tuple[float, int, str]] = []
-                for orig_h, norm_h in norm_candidates:
-                    real_words = get_heading_words(norm_h) - entity_words
-                    shared = sug_words & real_words
-                    if len(shared) >= 2:
+                if sug_words:
+                    for orig_h, norm_h in norm_candidates:
+                        real_words = get_heading_words(norm_h) - entity_words
+                        if not real_words:
+                            continue
+                        shared = sug_words & real_words
                         ratio1 = len(shared) / len(sug_words) if sug_words else 0
                         ratio2 = len(shared) / len(real_words) if real_words else 0
                         overlap = max(ratio1, ratio2)
-                        if overlap >= 0.6:
+
+                        cond_a = len(shared) >= 2 and overlap >= 0.6
+                        cond_b = len(real_words) >= 1 and real_words.issubset(sug_words)
+
+                        if cond_a or cond_b:
                             candidates_rename.append((overlap, len(shared), orig_h))
 
                 if candidates_rename:

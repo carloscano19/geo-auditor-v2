@@ -4861,12 +4861,20 @@ def test_palermo_real_headings_classification():
             "suggested_lead": {"suggested": "Palermo stadium guide."},
             "questions_to_answer": [],
             "suggested_h2_structure": [
-                # 1. "Stadio Renzo Barbera: Key Facts and Location" -> "new" (NOT "rename")
+                # 1. "Stands, Layout and Roof of the Palermo Stadium" -> "new"
+                {"h2": "Stands, Layout and Roof of the Palermo Stadium", "purpose": "Layout details", "status": "new"},
+                # 2. "Stands, Seating and Matchday Atmosphere" -> "new"
+                {"h2": "Stands, Seating and Matchday Atmosphere", "purpose": "Matchday atmosphere", "status": "new"},
+                # 3. "Renovation Plans and the Road to EURO 2032" -> "new"
+                {"h2": "Renovation Plans and the Road to EURO 2032", "purpose": "Road to EURO 2032", "status": "new"},
+                # 4. "Stadio Renzo Barbera: Key Facts and Location" -> "new"
                 {"h2": "Stadio Renzo Barbera: Key Facts and Location", "purpose": "Quick facts overview", "status": "new"},
-                # 2. "Future of Stadio Renzo Barbera: Renovation and EURO 2032" -> "rename", original: "Future of Stadio Renzo Barbera"
-                {"h2": "Future of Stadio Renzo Barbera: Renovation and EURO 2032", "purpose": "Renovation details", "status": "new"},
-                # 3. "Stadio Renzo Barbera History" -> "present"
-                {"h2": "Stadio Renzo Barbera History", "purpose": "History of the club's home", "status": "existing"},
+                # 5. "Future of Stadio Renzo Barbera: Renovation and EURO 2032 Plans" -> "rename" of "Future of Stadio Renzo Barbera"
+                {"h2": "Future of Stadio Renzo Barbera: Renovation and EURO 2032 Plans", "purpose": "Renovation details", "status": "new"},
+                # 6. "Palermo FC Fan Engagement and the Fan Token" -> "rename" of "Stadio Renzo Barbera and Fan Engagement"
+                {"h2": "Palermo FC Fan Engagement and the Fan Token", "purpose": "Fan token details", "status": "new"},
+                # 7. "Stadio Renzo Barbera FAQs" -> "present"
+                {"h2": "Stadio Renzo Barbera FAQs", "purpose": "Frequently asked questions", "status": "existing"},
             ],
             "paragraphs_to_add": [],
             "sources_to_cite": [],
@@ -4877,14 +4885,35 @@ def test_palermo_real_headings_classification():
 
     assert res.status_code == 200
     h2s = res.json()["suggested_h2_structure"]
+    assert len(h2s) == 7
+
+    assert h2s[0]["h2"] == "Stands, Layout and Roof of the Palermo Stadium"
     assert h2s[0]["status"] == "new"
     assert h2s[0]["original_h2"] is None
 
-    assert h2s[1]["status"] == "rename"
-    assert h2s[1]["original_h2"] == "Future of Stadio Renzo Barbera"
+    assert h2s[1]["h2"] == "Stands, Seating and Matchday Atmosphere"
+    assert h2s[1]["status"] == "new"
+    assert h2s[1]["original_h2"] is None
 
-    assert h2s[2]["status"] == "present"
-    assert h2s[2]["original_h2"] == "Stadio Renzo Barbera History"
+    assert h2s[2]["h2"] == "Renovation Plans and the Road to EURO 2032"
+    assert h2s[2]["status"] == "new"
+    assert h2s[2]["original_h2"] is None
+
+    assert h2s[3]["h2"] == "Stadio Renzo Barbera: Key Facts and Location"
+    assert h2s[3]["status"] == "new"
+    assert h2s[3]["original_h2"] is None
+
+    assert h2s[4]["h2"] == "Future of Stadio Renzo Barbera: Renovation and EURO 2032 Plans"
+    assert h2s[4]["status"] == "rename"
+    assert h2s[4]["original_h2"] == "Future of Stadio Renzo Barbera"
+
+    assert h2s[5]["h2"] == "Palermo FC Fan Engagement and the Fan Token"
+    assert h2s[5]["status"] == "rename"
+    assert h2s[5]["original_h2"] == "Stadio Renzo Barbera and Fan Engagement"
+
+    assert h2s[6]["h2"] == "Stadio Renzo Barbera FAQs"
+    assert h2s[6]["status"] == "present"
+    assert h2s[6]["original_h2"] == "Stadio Renzo Barbera FAQs"
 
 
 def test_docx_brief_rename_label():
