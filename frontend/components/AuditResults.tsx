@@ -545,7 +545,9 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                 const statusBadge = h.status === "present"
                     ? "[Already on the page — keep it]"
                     : h.status === "rename"
-                    ? `[Already on the page — consider renaming to: ${h.h2}]`
+                    ? (h.original_h2
+                        ? `[Already on the page as '${h.original_h2}' — consider renaming to: ${h.h2}]`
+                        : `[Already on the page — consider renaming to: ${h.h2}]`)
                     : h.status === "existing"
                     ? "[Exists — add the heading]"
                     : "[New — write this section]";
@@ -1539,7 +1541,9 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                     {item.status === "present"
                                                         ? "Already on the page — keep it"
                                                         : item.status === "rename"
-                                                        ? `Already on the page — consider renaming to: ${item.h2}`
+                                                        ? (item.original_h2
+                                                            ? `Already on the page as '${item.original_h2}' — consider renaming to: ${item.h2}`
+                                                            : `Already on the page — consider renaming to: ${item.h2}`)
                                                         : item.status === "existing"
                                                         ? "Exists — add the heading"
                                                         : "New — write this section"}

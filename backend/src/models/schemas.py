@@ -186,6 +186,7 @@ class PlanOutlineItem(BaseModel):
     h2: str
     purpose: str
     status: Literal["existing", "new", "present", "rename"]
+    original_h2: Optional[str] = None
 
 
 class PlanTable(BaseModel):

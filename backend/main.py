@@ -594,6 +594,12 @@ def normalize_heading(text: str) -> str:
     return re.sub(r"\s+", " ", clean).strip()
 
 
+def get_heading_words(text: str) -> set[str]:
+    """Extract individual words from normalized heading text."""
+    norm = normalize_heading(text)
+    return set(norm.split())
+
+
 def headings_share_words(s1: str, s2: str, threshold: float = 0.6) -> bool:
     """Check if two headings share >= threshold of their words (in either direction)."""
     w1 = set(s1.split())
@@ -1419,7 +1425,9 @@ async def generate_ai_plan(request: AIPlanRequest):
         "6. In 'data_opportunities', suggest factual data, statistics, and domain benchmarks only. DO NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).\n"
         "7. Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations (e.g. 'stock price', 'cotización', 'revenue', 'rentabilidad', 'should I invest').\n"
         "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.\n"
-        "9. CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself."
+        "9. CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself.\n"
+        "10. FACTUAL ACCURACY & NO UNBACKED FLUFF: Do NOT add superlatives or rankings ('one of the most', 'the best', 'the largest', 'the most iconic') not literally backed by the page text snippet. Do NOT deduce or infer unstated facts from translations of foreign proper names (e.g. do NOT assert that a stand is covered simply by translating 'Tribuna Copertura').\n"
+        "11. PROMISE INTEGRITY IN HEADINGS: Each suggested H2 in 'suggested_h2_structure' must strictly promise ONLY content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof)."
     )
 
     google_context_text = ""
@@ -1541,7 +1549,7 @@ Requirements:
 - suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
 - questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the editor gap: no yes/no answers, and no claims about whether something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the opening / first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
-- suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence.
+- suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence. Each suggested H2 must strictly promise only content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof).
 - sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
 - data_opportunities: 2 to 5 suggestions of data points or factual metrics to strengthen the content. Factual and content data only. PROHIBITED: Do NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).
@@ -1551,6 +1559,7 @@ Requirements:
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
 - Logical connectors (Therefore, However, Because, etc.) in paragraphs and text must ONLY be used when genuine logical relationships exist between ideas; never artificially insert them to boost a score.
 - CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all suggested paragraphs ('paragraphs_to_add') and all answers ('draft_answer') must be written strictly as final, publishable web copy. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'this guide', 'this article', 'the announcement\'s disclaimer', or similar meta-commentary.
+- FACTUAL ACCURACY & NO UNBACKED FLUFF: Do NOT add superlatives or rankings ("one of the most", "the best", "the largest", "the most iconic") that are not literally backed by the page text snippet. Do NOT deduce or infer unstated facts from translations of foreign proper names (e.g. do NOT assert that a stand is covered simply by translating "Tribuna Copertura").
 - Language: Strictly {lang_instruction}. All text, including the descriptions inside [EDITOR: ...], must be strictly in {lang_instruction}.
 """
 
@@ -1660,7 +1669,19 @@ Requirements:
     if not page_h2_candidates and ctx.main_text:
         # Fallback to headings extracted if available
         pass
-    norm_page_h2s = [normalize_heading(h) for h in page_h2_candidates if normalize_heading(h)]
+    norm_candidates = [(orig_h, normalize_heading(orig_h)) for orig_h in page_h2_candidates if normalize_heading(orig_h)]
+
+    # Compute entity words appearing in >= 50% of real page H2s (with count >= 2 when multiple H2s exist)
+    total_real_h2s = len(norm_candidates)
+    word_freq_counts: dict[str, int] = {}
+    for _, norm_h in norm_candidates:
+        for w in get_heading_words(norm_h):
+            word_freq_counts[w] = word_freq_counts.get(w, 0) + 1
+
+    entity_words: set[str] = {
+        w for w, cnt in word_freq_counts.items()
+        if (cnt >= 2 if total_real_h2s >= 2 else cnt >= 1) and (cnt / total_real_h2s >= 0.5)
+    }
 
     h2_raw = raw_result.get("suggested_h2_structure", [])
     valid_h2: list[dict] = []
@@ -1672,24 +1693,45 @@ Requirements:
             norm_sug = normalize_heading(clean_h2)
             
             # Deterministic check:
-            # - Exact match -> 'present'
-            # - Else if norm_real in norm_sug or norm_sug in norm_real or share >= 60% of words -> 'rename'
-            # - Else if in content -> 'existing', else 'new'
-            if norm_sug and any(norm_sug == ph for ph in norm_page_h2s):
+            # 1. Exact match -> 'present'
+            st = "new"
+            matched_original_h2: Optional[str] = None
+            exact_match = next((orig_h for orig_h, norm_h in norm_candidates if norm_sug == norm_h), None)
+
+            if exact_match is not None:
                 st = "present"
-            elif norm_sug and any((ph in norm_sug or norm_sug in ph or headings_share_words(norm_sug, ph, 0.6)) for ph in norm_page_h2s):
-                st = "rename"
-            elif norm_sug and page_norm and (norm_sug in page_norm):
-                st = "existing"
+                matched_original_h2 = exact_match
             else:
-                st = h.get("status", "new")
-                if st not in ["existing", "new", "present", "rename"]:
-                    st = "new"
+                # 2. Overlapping match: remove entity words, require >= 60% overlap and >= 2 shared words
+                sug_words = get_heading_words(norm_sug) - entity_words
+                candidates_rename: list[tuple[float, int, str]] = []
+                for orig_h, norm_h in norm_candidates:
+                    real_words = get_heading_words(norm_h) - entity_words
+                    shared = sug_words & real_words
+                    if len(shared) >= 2:
+                        ratio1 = len(shared) / len(sug_words) if sug_words else 0
+                        ratio2 = len(shared) / len(real_words) if real_words else 0
+                        overlap = max(ratio1, ratio2)
+                        if overlap >= 0.6:
+                            candidates_rename.append((overlap, len(shared), orig_h))
+
+                if candidates_rename:
+                    # Pick highest overlap, breaking ties by number of shared words
+                    candidates_rename.sort(key=lambda x: (x[0], x[1]), reverse=True)
+                    st = "rename"
+                    matched_original_h2 = candidates_rename[0][2]
+                elif norm_sug and page_norm and (norm_sug in page_norm):
+                    st = "existing"
+                else:
+                    st = h.get("status", "new")
+                    if st not in ["existing", "new", "present", "rename"]:
+                        st = "new"
 
             valid_h2.append({
                 "h2": clean_h2,
                 "purpose": strip_urls(str(h.get("purpose") or "")).strip(),
                 "status": st,
+                "original_h2": matched_original_h2,
             })
             if len(valid_h2) >= 7:
                 break
@@ -2048,8 +2090,10 @@ Do NOT output explanations, introductory comments, or markdown fences. Output ON
 CRITICAL EDITORIAL & INTEGRITY RULES:
 1. Keep all factual DATA from the original (figures, dates, names, facts), NOT all sentences. Each fact must appear only once in the body; in the FAQ it may be repeated briefly. Do not duplicate information across sections.
 2. Only use facts present in the original page text snippet or the AI improvement plan. NEVER invent figures, statistics, dates, names, or quotes.
+   - Do NOT add superlatives or rankings ("one of Italian football's most raucous atmospheres", "the best", "the largest", "the most iconic") if they are not explicitly present in the original text (e.g. if the original says "raucous atmosphere", write "raucous atmosphere", NOT "one of the most raucous").
+   - Do NOT deduce or infer unstated facts from literal translations of foreign proper names (e.g. do not deduce "the covered main stand" from the name "Tribuna Copertura" without the original text stating it is covered or what kind of stand it is).
 3. Plan paragraphs must be merged into the existing original paragraph discussing the same topic, rather than added as duplicate paragraphs next to it.
-4. A new suggested H2 is only created if it provides information not already present in another section. If it only repeats another section, its content must be merged into that section and the H2 not created.
+4. A new suggested H2 is only created if it provides information not already present in another section. If it only repeats another section, its content must be merged into that section and the H2 not created. Each suggested H2 must promise ONLY what the section actually contains; never introduce empty topics or features absent from the text (e.g. do NOT name a section "Layout and Roof Renovation" if the text does not discuss the roof or layout).
 5. Target article length: around 1.5x original length + FAQ + genuinely new sections. Do not inflate word count with redundant phrasing.
 6. When an FAQ question needs info or lacks data, the FIRST sentence must answer directly with the gap [EDITOR: description — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the gap: neither yes/no, nor that something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Preserve all [EDITOR: ...] placeholders already present in the AI plan.
 7. NEVER invent first-person experience ("we tested", "we saw", "in our experience", "probamos", "visitamos"). If experience signals are needed, use: [EDITOR: add a real first-hand experience — team member who attended] in {lang_instruction}.

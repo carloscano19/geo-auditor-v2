@@ -4825,7 +4825,105 @@ def test_heading_rename_status():
     h2s = res.json()["suggested_h2_structure"]
     assert h2s[0]["status"] == "present"
     assert h2s[1]["status"] == "rename"
+    assert h2s[1]["original_h2"] == "Future of Stadio Renzo Barbera"
     assert h2s[2]["status"] == "new"
+
+
+def test_palermo_real_headings_classification():
+    """Test deterministic H2 classification on real Palermo FC Stadium headings."""
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+    client = TestClient(app)
+    palermo_real_h2s = [
+        "Stadio Renzo Barbera History",
+        "Why Is It Called Renzo Barbera?",
+        "Stadio Renzo Barbera and Palermo Supporters",
+        "Stadio Renzo Barbera and Fan Engagement",
+        "Future of Stadio Renzo Barbera",
+        "Stadio Renzo Barbera FAQs",
+    ]
+    plan_req = {
+        "ai_context": {
+            "url": "https://example.com/palermo",
+            "title": "Palermo FC Stadium Guide",
+            "h1": "Stadio Renzo Barbera Guide",
+            "language": "en",
+            "existing_h2s": palermo_real_h2s,
+            "main_text": "Guide to Stadio Renzo Barbera in Palermo.",
+        }
+    }
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_llm:
+        mock_llm.return_value = {
+            "suggested_lead": {"suggested": "Palermo stadium guide."},
+            "questions_to_answer": [],
+            "suggested_h2_structure": [
+                # 1. "Stadio Renzo Barbera: Key Facts and Location" -> "new" (NOT "rename")
+                {"h2": "Stadio Renzo Barbera: Key Facts and Location", "purpose": "Quick facts overview", "status": "new"},
+                # 2. "Future of Stadio Renzo Barbera: Renovation and EURO 2032" -> "rename", original: "Future of Stadio Renzo Barbera"
+                {"h2": "Future of Stadio Renzo Barbera: Renovation and EURO 2032", "purpose": "Renovation details", "status": "new"},
+                # 3. "Stadio Renzo Barbera History" -> "present"
+                {"h2": "Stadio Renzo Barbera History", "purpose": "History of the club's home", "status": "existing"},
+            ],
+            "paragraphs_to_add": [],
+            "sources_to_cite": [],
+            "data_opportunities": [],
+            "combined_schema": {},
+        }
+        res = client.post("/api/ai/plan", json=plan_req)
+
+    assert res.status_code == 200
+    h2s = res.json()["suggested_h2_structure"]
+    assert h2s[0]["status"] == "new"
+    assert h2s[0]["original_h2"] is None
+
+    assert h2s[1]["status"] == "rename"
+    assert h2s[1]["original_h2"] == "Future of Stadio Renzo Barbera"
+
+    assert h2s[2]["status"] == "present"
+    assert h2s[2]["original_h2"] == "Stadio Renzo Barbera History"
+
+
+def test_docx_brief_rename_label():
+    """Test that Word docx export prints the original H2 when status is 'rename'."""
+    from src.utils.docx_brief import generate_editor_brief_docx
+    from src.models.schemas import AIPlanResponse, PlanOutlineItem, AuditResponse, AIContext
+    from docx import Document
+    import io
+
+    plan = AIPlanResponse(
+        combined_schema={},
+        suggested_h2_structure=[
+            PlanOutlineItem(
+                h2="Future of Stadio Renzo Barbera: Renovation and EURO 2032",
+                purpose="Renovation details",
+                status="rename",
+                original_h2="Future of Stadio Renzo Barbera",
+            ),
+            PlanOutlineItem(
+                h2="Brand New Section",
+                purpose="Write this",
+                status="new",
+                original_h2=None,
+            )
+        ]
+    )
+    audit = AuditResponse(
+        url="https://example.com/palermo",
+        total_score=75.0,
+        dimensions=[],
+        scoring_version="v2.0",
+        analysis_time_ms=120.0,
+        ai_context=AIContext(title="Palermo Guide", language="en"),
+    )
+    docx_bytes = generate_editor_brief_docx(audit_result=audit, ai_plan=plan)
+    doc = Document(io.BytesIO(docx_bytes))
+    full_text = "\n".join(p.text for p in doc.paragraphs)
+    assert "Already on the page as 'Future of Stadio Renzo Barbera' — consider renaming to: Future of Stadio Renzo Barbera: Renovation and EURO 2032" in full_text
+    assert "New — write this section" in full_text
 
 
 def test_duplicate_paragraphs_warning_in_rewrite():

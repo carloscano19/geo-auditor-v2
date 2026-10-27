@@ -672,7 +672,11 @@ def generate_editor_brief_docx(
                     status_label = "Already on the page — keep it"
                     badge_color = RGBColor(16, 120, 70)
                 elif item.status == "rename":
-                    status_label = f"Already on the page — consider renaming to: {item.h2}"
+                    orig = getattr(item, "original_h2", None)
+                    if orig:
+                        status_label = f"Already on the page as '{orig}' — consider renaming to: {item.h2}"
+                    else:
+                        status_label = f"Already on the page — consider renaming to: {item.h2}"
                     badge_color = RGBColor(217, 119, 6)
                 elif item.status == "existing":
                     status_label = "Exists — add the heading"
