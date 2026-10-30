@@ -5960,6 +5960,155 @@ Palermo FC plays here.
     assert not any("Draft opening paragraph is missing target query term(s)" in w for w in data["warnings"])
 
 
+def test_rewrite_autonomous_passages_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    base_context = {
+        "url": "https://club.com/stadium",
+        "language": "en",
+        "main_text": "The Stadio Renzo Barbera is the stadium of Palermo FC. It holds 36,365 spectators.",
+    }
+    base_plan = {"combined_schema": {}, "warnings": []}
+
+    # 1. English draft with referential starter in FAQ answer -> warning
+    draft_referential = """# Stadio Renzo Barbera
+
+The Stadio Renzo Barbera is the home stadium of Palermo FC, hosting major football fixtures in Sicily.
+
+## Frequently Asked Questions
+
+### Why was the stadium named La Favorita?
+
+It was named after the nearby historic park created by King Ferdinand IV of Bourbon in the eighteenth century as a royal estate.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_referential, "stop")
+        res = client.post("/api/ai/rewrite", json={"ai_context": base_context, "ai_plan": base_plan})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert "Paragraph not self-contained (starts with 'It was named after…') — name the subject explicitly" in data["warnings"]
+
+    # 2. English draft without referential starter -> no warning
+    draft_autonomous = """# Stadio Renzo Barbera
+
+The Stadio Renzo Barbera is the home stadium of Palermo FC, hosting major football fixtures in Sicily.
+
+## Frequently Asked Questions
+
+### Why was the stadium named La Favorita?
+
+The Stadio La Favorita name came from the nearby historic park created by King Ferdinand IV of Bourbon in the eighteenth century as a royal estate.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_autonomous, "stop")
+        res = client.post("/api/ai/rewrite", json={"ai_context": base_context, "ai_plan": base_plan})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert not any("Paragraph not self-contained" in w for w in data["warnings"])
+
+    # 3. Spanish draft with referential starter -> warning
+    context_es = {
+        "url": "https://club.com/estadio",
+        "language": "es",
+        "main_text": "El Estadio Renzo Barbera es el estadio del Palermo FC con capacidad para 36.365 espectadores.",
+    }
+    draft_es_referential = """# Estadio Renzo Barbera
+
+El Estadio Renzo Barbera es el estadio del Palermo FC, ubicado en la ciudad de Palermo con capacidad para 36.365 espectadores.
+
+## Preguntas Frecuentes
+
+### ¿Por qué se modificó el recinto?
+
+Esto se debe a las regulaciones de la liga que exigen estándares específicos para estadios de primera división en todas las competiciones oficiales.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_es_referential, "stop")
+        res = client.post("/api/ai/rewrite", json={"ai_context": context_es, "ai_plan": base_plan})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert "Paragraph not self-contained (starts with 'Esto se debe a…') — name the subject explicitly" in data["warnings"]
+
+
+def test_rewrite_faq_preserves_original_questions_and_deduplicates_new():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    req = {
+        "ai_context": {
+            "url": "https://club.com/stadium",
+            "language": "en",
+            "main_text": "Stadium history and overview.",
+            "main_html": """<article>
+                <h2>Frequently Asked Questions</h2>
+                <ul>
+                    <li>When was it renamed Renzo Barbera? In 2002.</li>
+                    <li>Who is Renzo Barbera? Club chairman.</li>
+                    <li>Where does Palermo play? At the stadium.</li>
+                </ul>
+            </article>""",
+        },
+        "ai_plan": {"combined_schema": {}, "warnings": []},
+    }
+
+    # Draft contains both original questions plus a new question almost identical to an original
+    draft_text = """# Stadio Renzo Barbera
+
+The Stadio Renzo Barbera is the official ground of Palermo FC in Sicily, accommodating passionate football supporters throughout the season.
+
+## Frequently Asked Questions
+
+### When was it renamed Renzo Barbera?
+The stadium was officially renamed Renzo Barbera in 2002 to honour the beloved club chairman.
+
+### Who is Renzo Barbera?
+Renzo Barbera was a revered Italian sports executive who presided over Palermo FC during memorable Serie A campaigns.
+
+### Where does Palermo play?
+Palermo FC play their official home matches at the Stadio Renzo Barbera in Palermo.
+
+### Who was Renzo Barbera?
+Renzo Barbera was an Italian sports executive and club president.
+"""
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_text, "stop")
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    warnings = data["warnings"]
+    draft = data["draft_markdown"]
+
+    # Rule A & Test: Both original questions are kept in draft!
+    assert "### When was it renamed Renzo Barbera?" in draft
+    assert "### Who is Renzo Barbera?" in draft
+    assert "### Where does Palermo play?" in draft
+
+    # Neither original question is reported as duplicate or dropped
+    assert not any("Duplicate FAQ question removed: When was it renamed Renzo Barbera?" in w for w in warnings)
+    assert not any("Duplicate FAQ question removed: Who is Renzo Barbera?" in w for w in warnings)
+    assert not any("Original FAQ question dropped" in w for w in warnings)
+
+    # Rule B & Test: The new duplicate question is removed with warning
+    assert "Duplicate FAQ question removed: Who was Renzo Barbera?" in warnings
+    assert "### Who was Renzo Barbera?" not in draft
+
+
+
 
 
 

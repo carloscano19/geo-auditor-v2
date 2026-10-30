@@ -53,6 +53,30 @@ def compute_mtld(tokens: List[str], threshold: float = 0.72) -> float:
     return (mtld_f + mtld_b) / 2.0
 
 
+def extract_eval_paragraphs(html: str, fallback_text: str = "") -> List[str]:
+    """
+    Extract substantive paragraphs (p and blockquote only, excluding li and td)
+    using the exact selection logic of PassageQualityDetector:
+    >= 25 words preferred, fallback to >= 15 words.
+    """
+    scoped_html, scoped_text = extract_main_content(html)
+    cleaned_html = clean_html_for_analysis(scoped_html) if scoped_html else ""
+    soup = BeautifulSoup(cleaned_html, 'lxml') if cleaned_html else None
+
+    raw_paragraphs = []
+    if soup:
+        for p in soup.find_all(['p', 'blockquote']):
+            text_p = p.get_text(separator=' ', strip=True)
+            if text_p:
+                raw_paragraphs.append(text_p)
+    if not raw_paragraphs:
+        raw_text = scoped_text or fallback_text
+        raw_paragraphs = [p.strip() for p in re.split(r'\n+', raw_text) if p.strip()]
+
+    substantive_paragraphs = [p for p in raw_paragraphs if len(p.split()) >= 25]
+    return substantive_paragraphs if substantive_paragraphs else [p for p in raw_paragraphs if len(p.split()) >= 15]
+
+
 class PassageQualityDetector(BaseDetector):
     """Detector for Passage Quality and Standalone Citability."""
 
@@ -78,23 +102,8 @@ class PassageQualityDetector(BaseDetector):
 
         # 1. Extract scoped main content
         scoped_html, scoped_text = extract_main_content(page_data.html_rendered or page_data.html_raw)
-        cleaned_html = clean_html_for_analysis(scoped_html) if scoped_html else ""
-        soup = BeautifulSoup(cleaned_html, 'lxml') if cleaned_html else None
-
-        # Extract substantive paragraphs (p and blockquote only, excluding li and td)
-        raw_paragraphs = []
-        if soup:
-            for p in soup.find_all(['p', 'blockquote']):
-                text_p = p.get_text(separator=' ', strip=True)
-                if text_p:
-                    raw_paragraphs.append(text_p)
-        if not raw_paragraphs:
-            raw_text = scoped_text or page_data.text_content or ""
-            raw_paragraphs = [p.strip() for p in re.split(r'\n+', raw_text) if p.strip()]
-
-        # Filter substantive paragraphs (>= 25 words preferred, fallback >= 15 words)
-        substantive_paragraphs = [p for p in raw_paragraphs if len(p.split()) >= 25]
-        eval_paragraphs = substantive_paragraphs if substantive_paragraphs else [p for p in raw_paragraphs if len(p.split()) >= 15]
+        eval_paragraphs = extract_eval_paragraphs(page_data.html_rendered or page_data.html_raw, page_data.text_content or "")
+        substantive_paragraphs = [p for p in eval_paragraphs if len(p.split()) >= 25]
 
         # ---------------------------------------------------------
         # Submetric 1: Lexical Richness with MTLD (25%)

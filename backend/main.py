@@ -89,6 +89,7 @@ from src.utils.lang_patterns import (
     DISCARD_QUESTION_KEYWORDS,
     SENSITIVE_LEGAL_KEYWORDS,
     EN_ES_STOP_WORDS,
+    get_lang_patterns,
     generate_ahrefs_recommendations,
     strip_page_meta_references,
 )
@@ -97,7 +98,9 @@ from src.utils.docx_brief import (
     generate_rewrite_draft_docx,
     sanitize_domain_for_filename,
 )
+import markdown
 from src.detectors.query_match import get_missing_lead_query_terms
+from src.detectors.passage_quality import extract_eval_paragraphs
 from src.services.ahrefs_client import (
     AhrefsClient,
     AhrefsAuthError,
@@ -1452,7 +1455,8 @@ async def generate_ai_plan(request: AIPlanRequest):
         "9. CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself.\n"
         "10. FACTUAL ACCURACY & NO UNBACKED FLUFF: Do NOT add superlatives or rankings ('one of the most', 'the best', 'the largest', 'the most iconic') not literally backed by the page text snippet. Do NOT deduce or infer unstated facts from translations of foreign proper names (e.g. do NOT assert that a stand is covered simply by translating 'Tribuna Copertura').\n"
         "11. PROMISE INTEGRITY IN HEADINGS: Each suggested H2 in 'suggested_h2_structure' must strictly promise ONLY content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof).\n"
-        "12. TARGET QUERY IN OPENING LEAD: When a Target Query is provided, the suggested opening lead paragraph ('suggested_lead') MUST naturally and literally contain all of its significant search words (do not substitute with synonyms or foreign language variants; e.g. 'ground' or 'Stadio' do not satisfy 'stadium')."
+        "12. TARGET QUERY IN OPENING LEAD: When a Target Query is provided, the suggested opening lead paragraph ('suggested_lead') MUST naturally and literally contain all of its significant search words (do not substitute with synonyms or foreign language variants; e.g. 'ground' or 'Stadio' do not satisfy 'stadium').\n"
+        "13. AUTONOMOUS & SELF-CONTAINED PASSAGES: Every paragraph, suggested lead ('suggested_lead'), suggested new paragraph ('paragraphs_to_add'), and FAQ answer ('draft_answer') must be completely self-contained and easily understood when cited out of context. Every paragraph and answer MUST start by explicitly naming the entity, person, or topic (e.g. 'The Stadio La Favorita name came from...', 'Renzo Barbera was...'). NEVER start any paragraph or answer with pronouns or referential phrases like 'It', 'They', 'This', 'These', 'Those', 'Such', 'As mentioned...', 'Como hemos visto...', 'Esto...', etc."
     )
 
     google_context_text = ""
@@ -1572,14 +1576,14 @@ Generate a JSON object with EXACTLY this structure:
 }}
 
 Requirements:
-- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences. When a Target Query is provided, the opening paragraph MUST naturally and literally contain all its significant search terms without replacing them with synonyms or translations in another language.
+- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence without starting with a pronoun or referential starter (e.g. avoid 'It is...', 'This is...'), uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences. When a Target Query is provided, the opening paragraph MUST naturally and literally contain all its significant search terms without replacing them with synonyms or translations in another language.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
-- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the editor gap: no yes/no answers, and no claims about whether something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the opening / first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
+- questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Each answer must be self-contained and start by explicitly naming the entity or subject rather than starting with pronouns like 'It was...', 'They are...'. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the editor gap: no yes/no answers, and no claims about whether something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the opening / first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence. Each suggested H2 must strictly promise only content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof).
 - sources_why: For each candidate source, provide 'why' in exactly 1 sentence. If the source is NOT suitable to cite in the text (business directories, pages of a different entity, unrelated content), set 'why': null.
 - suggested_table: If the content has comparative/structured elements, provide 2-4 rows. If the page lacks enough comparative data to build 2 rows reliably without inventing numbers, provide null for headers/rows and give 'table_idea'.
 - data_opportunities: 2 to 5 suggestions of data points or factual metrics to strengthen the content. Factual and content data only. PROHIBITED: Do NOT suggest technical SEO fixes (no schema, no structured data, no alt text, no metadata, no speed, no internal links).
-- paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments.
+- paragraphs_to_add: 1 to 3 paragraphs ready to publish without editor notes or verification comments. Each paragraph must be self-contained, starting by naming the subject explicitly without referential starters.
 - inconsistencies: 0 to 3 internal contradictions found on the page (different figures, dates, or names for the same thing). The conflicting values MUST appear literally in the page text snippet. If none are found, return an empty array [].
 - In financial, investment, or regulated topics, do NOT give investment advice, recommendations, or calls to action to investors; strictly describe what the page says.
 - Questions must be strictly relevant to the specific topic of the page. Forbidden to ask questions about stock prices, share prices, revenue, financial returns, or investment recommendations.
@@ -2147,9 +2151,10 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     - Opening Lead Paragraph: Use the suggested lead paragraph from the plan. When a Target Query is provided, ensure the opening paragraph literally and naturally contains all its significant search terms (do not substitute with synonyms or foreign language equivalents; e.g. 'ground' or 'Stadio' do not satisfy 'stadium').
     - If inconsistencies / contradictions are listed, resolve them using the plan's recommendation and unify the terminology/value throughout the whole article (except trademark notation differences ™/®/©, which must be kept as they are).
     - Consistency: Always use the exact same term for the same role or entity throughout the whole article (e.g. do not mix "president" and "chairman"), even if the plan did not detect it. Do not repeat the exact same sentence across two different sections.
-    - FAQ: Format each FAQ question as a subheading "### Question?" with the answer below (answers 2-3 sentences max). Retain the EXACT H2 and ALL original questions LITERALLY with their exact wording. At most 2 questions with [EDITOR: ...] gaps may be included, placed at the very end of the FAQ section.
+    - FAQ: Format each FAQ question as a subheading "### Question?" with the answer below (answers 2-3 sentences max). Retain the EXACT H2 and ALL original questions LITERALLY with their exact wording. Each FAQ answer must be self-contained and start by explicitly naming the entity or subject rather than starting with a pronoun like 'It was...'. At most 2 questions with [EDITOR: ...] gaps may be included, placed at the very end of the FAQ section.
     - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
     - Merge suggested actionable paragraphs into their appropriate sections.
+13. AUTONOMOUS & SELF-CONTAINED PASSAGES: Every paragraph throughout the article and every FAQ answer must be completely self-contained and clear when quoted out of context. Always begin each paragraph and each answer by explicitly naming the entity, person, or subject (e.g. 'The Stadio La Favorita name came from...', 'Renzo Barbera was...'). NEVER start any paragraph or FAQ answer with pronouns or referential phrases such as 'It', 'They', 'This', 'These', 'Those', 'Such', 'As mentioned...', 'Como hemos visto...', 'Esto...', or any anaphoric reference.
 """
 
     plan_summary_parts = []
@@ -2251,7 +2256,7 @@ INCONSISTENCIES TO RESOLVE:
 AI IMPROVEMENT PLAN TO APPLY:
 {plan_context_text}
 
-Write the complete rewritten article in Markdown now following all editorial and verification rules strictly in {lang_instruction}.
+Write the complete rewritten article in Markdown now following all editorial and verification rules strictly in {lang_instruction}. Every paragraph and FAQ answer must be autonomous and self-contained, starting by naming the subject explicitly without pronouns or referential starters.
 """
 
     orig_text = ctx.main_text or ""
@@ -2770,45 +2775,74 @@ Write the complete rewritten article in Markdown now following all editorial and
                 self.answer_text = "\n".join(ans_parts).strip()
                 self.is_original = normalize_heading(self.question) in orig_norm_set
 
-                # Content words of the FAQ item (question + answer) for robust deduplication
-                full_item_text = self.question + " " + self.answer_text
-                words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', full_item_text.lower())
-                self.content_words = set(w for w in words if w not in EN_ES_STOP_WORDS)
+                # Question words without stop words
+                self.raw_q_words = get_heading_words(self.question)
+                self.content_words = set(self.raw_q_words)
                 self.has_gap = "[EDITOR:" in self.answer_text
 
                 # Check PAA priority
                 q_norm = normalize_heading(self.question)
                 matched_paa = q_norm in paa_norm_set
-                if not matched_paa and self.content_words:
-                    q_words = set(w for w in re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', self.question.lower()) if w not in EN_ES_STOP_WORDS)
+                if not matched_paa and self.raw_q_words:
                     for pw in paa_words_list:
-                        denom = min(len(q_words), len(pw)) if q_words else 0
-                        if denom > 0 and (len(q_words & pw) / denom) >= 0.60:
+                        denom = min(len(self.raw_q_words), len(pw)) if self.raw_q_words else 0
+                        if denom > 0 and (len(self.raw_q_words & pw) / denom) >= 0.60:
                             matched_paa = True
                             break
                 self.is_paa = matched_paa
 
         parsed_items = [_ParsedFAQ(b) for b in blocks[1:] if b.strip()]
 
+        # Compute entity words (words appearing in >= 50% of FAQ questions, like H2s in rename-fix, plus FAQ heading entity words)
+        GENERIC_FAQ_WORDS = {'faq', 'faqs', 'frequently', 'asked', 'questions', 'preguntas', 'frecuentes'}
+        faq_entity_words: set[str] = set()
+        if faq_header_line:
+            header_words = get_heading_words(faq_header_line) - GENERIC_FAQ_WORDS
+            faq_entity_words.update(header_words)
+
+        eval_faq_questions = [q for q in orig_faq_questions] if len(orig_faq_questions) >= 2 else ([it.question for it in parsed_items] if len(parsed_items) >= 3 else [])
+        if eval_faq_questions:
+            faq_word_freq: dict[str, int] = {}
+            for q in eval_faq_questions:
+                for w in get_heading_words(q):
+                    faq_word_freq[w] = faq_word_freq.get(w, 0) + 1
+
+            total_eval = len(eval_faq_questions)
+            for w, cnt in faq_word_freq.items():
+                if cnt >= 2 and (cnt / total_eval) >= 0.5:
+                    faq_entity_words.add(w)
+
+        # Update content_words for each FAQ item by stripping entity words (falling back to raw_q_words if empty)
+        for it in parsed_items:
+            filtered_q = it.raw_q_words - faq_entity_words
+            it.content_words = filtered_q if filtered_q else it.raw_q_words
+
         # 1. Deduplicate questions sharing >= 60% of content words
+        # Regla A: Deduplication NEVER eliminates an original question. If two original questions seem similar, keep BOTH.
+        # Regla B: Entity words are removed before comparing.
         kept_items: list[_ParsedFAQ] = []
         for item in parsed_items:
             dupe_idx = None
             for idx, kept in enumerate(kept_items):
+                # Regla A: two original questions are never deduplicated against each other
+                if kept.is_original and item.is_original:
+                    continue
+                is_exact = normalize_heading(kept.question) == normalize_heading(item.question)
                 wa = kept.content_words
                 wb = item.content_words
-                if wa and wb:
-                    denom = min(len(wa), len(wb))
-                    if denom > 0 and (len(wa & wb) / denom) >= 0.60:
-                        dupe_idx = idx
-                        break
+                denom = min(len(wa), len(wb)) if (wa and wb) else 0
+                is_overlap = denom > 0 and (len(wa & wb) / denom) >= 0.60
+                if is_exact or is_overlap:
+                    dupe_idx = idx
+                    break
+
             if dupe_idx is not None:
                 kept = kept_items[dupe_idx]
                 if item.is_original and not kept.is_original:
                     removed = kept
                     kept_items[dupe_idx] = item
                     warnings.append(f"Duplicate FAQ question removed: {removed.question}")
-                else:
+                elif not item.is_original:
                     warnings.append(f"Duplicate FAQ question removed: {item.question}")
             else:
                 kept_items.append(item)
@@ -2858,6 +2892,21 @@ Write the complete rewritten article in Markdown now following all editorial and
         missing_lead_terms = get_missing_lead_query_terms(draft_lead, target_q, lang)
         if missing_lead_terms:
             warnings.append(f"Draft opening paragraph is missing target query term(s): {', '.join(missing_lead_terms)}")
+
+    # 13. Check for non-autonomous paragraphs (Passage Quality - Autonomous Passages)
+    patterns = get_lang_patterns(lang)
+    referential_starters = patterns.get("referential_starters", [])
+    if referential_starters:
+        draft_html = markdown.markdown(draft_markdown, extensions=['tables', 'fenced_code'])
+        eval_paragraphs = extract_eval_paragraphs(draft_html, draft_markdown)
+        for p in eval_paragraphs:
+            is_referential = any(bool(re.search(pat, p, re.IGNORECASE)) for pat in referential_starters)
+            if is_referential:
+                words = p.split()[:4]
+                first_four = " ".join(words)
+                w_msg = f"Paragraph not self-contained (starts with '{first_four}…') — name the subject explicitly"
+                if w_msg not in warnings:
+                    warnings.append(w_msg)
 
     word_count_original = len(orig_text.split())
     word_count_draft = len(draft_markdown.split())
