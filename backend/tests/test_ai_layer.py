@@ -5733,6 +5733,233 @@ Welcome to the stadium guide.
     assert any("Possible unsupported claim before the editor gap: Palermo FC is not owned by Manchester City." in w for w in warnings)
 
 
+def test_get_missing_lead_query_terms():
+    from src.detectors.query_match import get_missing_lead_query_terms
+
+    # Missing "stadium"
+    missing = get_missing_lead_query_terms(
+        "The Stadio Renzo Barbera is the home ground of Palermo FC.",
+        "palermo stadium",
+        "en"
+    )
+    assert missing == ["stadium"]
+
+    # All terms present
+    missing = get_missing_lead_query_terms(
+        "The Stadio Renzo Barbera is the home stadium of Palermo FC.",
+        "palermo stadium",
+        "en"
+    )
+    assert missing == []
+
+    # No query
+    assert get_missing_lead_query_terms("Some lead text", None, "en") == []
+    assert get_missing_lead_query_terms("Some lead text", "", "en") == []
+
+    # Stop words in query ignored ("the", "in")
+    missing = get_missing_lead_query_terms(
+        "The Renzo Barbera ground.",
+        "the stadium in palermo",
+        "en"
+    )
+    assert missing == ["stadium", "palermo"]
+
+
+def test_plan_opening_paragraph_query_terms():
+    from main import ai_plan_cache
+    ai_plan_cache.clear()
+
+    client = TestClient(app)
+    mock_settings = Settings(
+        llm_base_url="https://api.openai.com/v1",
+        llm_model="gpt-4o",
+        llm_api_key="sk-test",
+    )
+
+    # 1. Missing "stadium" with query "palermo stadium" -> warning
+    mock_llm_return_missing = {
+        "suggested_lead": {
+            "original": "Original text.",
+            "suggested": "The Stadio Renzo Barbera is the home ground of Palermo FC.",
+            "rationale": "Direct answer.",
+        },
+        "json_ld": {"description": "Guide", "about": [], "mentions": []},
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = mock_llm_return_missing
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/palermo",
+                "language": "en",
+                "main_text": "The Stadio Renzo Barbera is the home ground of Palermo FC.",
+            },
+            "target_query": "palermo stadium"
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert "Suggested lead is missing target query term(s): stadium" in data["warnings"]
+
+    ai_plan_cache.clear()
+
+    # 2. Both terms present -> no warning
+    mock_llm_return_ok = {
+        "suggested_lead": {
+            "original": "Original text.",
+            "suggested": "The Stadio Renzo Barbera is the home stadium of Palermo FC.",
+            "rationale": "Direct answer.",
+        },
+        "json_ld": {"description": "Guide", "about": [], "mentions": []},
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+    }
+
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = mock_llm_return_ok
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/palermo",
+                "language": "en",
+                "main_text": "The Stadio Renzo Barbera is the home stadium of Palermo FC.",
+            },
+            "target_query": "palermo stadium"
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert not any("Suggested lead is missing target query term(s)" in w for w in data["warnings"])
+
+    ai_plan_cache.clear()
+
+    # 3. No query -> no warning
+    with patch("main.get_settings", return_value=mock_settings), \
+         patch("main.settings", mock_settings), \
+         patch("src.services.llm_client.get_settings", return_value=mock_settings), \
+         patch("src.services.llm_client.LLMClient.call_chat_completion", new_callable=AsyncMock) as mock_call:
+        mock_call.return_value = mock_llm_return_missing
+        res = client.post("/api/ai/plan", json={
+            "ai_context": {
+                "url": "https://example.com/palermo",
+                "language": "en",
+                "main_text": "The Stadio Renzo Barbera is the home ground of Palermo FC.",
+            }
+        })
+        assert res.status_code == 200
+        data = res.json()
+        assert not any("Suggested lead is missing target query term(s)" in w for w in data["warnings"])
+
+
+def test_rewrite_opening_paragraph_query_terms():
+    client = TestClient(app)
+
+    base_plan = {
+        "suggested_lead": {
+            "original": "Original text.",
+            "suggested": "The Stadio Renzo Barbera is the home ground of Palermo FC.",
+            "rationale": "Direct answer.",
+        },
+        "questions_to_answer": [],
+        "suggested_h2_structure": [],
+        "suggested_table": None,
+        "data_opportunities": [],
+        "paragraphs_to_add": [],
+        "inconsistencies": [],
+        "sources_to_cite": [],
+        "combined_schema": {},
+        "warnings": [],
+    }
+
+    # 1. Draft lead without "stadium" with query "palermo stadium" -> warning
+    draft_missing = """# Stadio Renzo Barbera
+
+The Stadio Renzo Barbera is the home ground of Palermo FC.
+
+## History
+
+Palermo FC plays here.
+"""
+
+    req_missing = {
+        "ai_context": {
+            "url": "https://example.com/palermo",
+            "language": "en",
+            "main_text": "The Stadio Renzo Barbera is the home ground of Palermo FC. Palermo FC plays here.",
+        },
+        "ai_plan": base_plan,
+        "target_query": "palermo stadium",
+    }
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_missing, "stop")
+        res = client.post("/api/ai/rewrite", json=req_missing)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert "Draft opening paragraph is missing target query term(s): stadium" in data["warnings"]
+
+    # 2. Draft lead with "palermo" and "stadium" -> no warning
+    draft_ok = """# Stadio Renzo Barbera
+
+The Stadio Renzo Barbera is the home stadium of Palermo FC.
+
+## History
+
+Palermo FC plays here.
+"""
+
+    req_ok = {
+        "ai_context": {
+            "url": "https://example.com/palermo",
+            "language": "en",
+            "main_text": "The Stadio Renzo Barbera is the home stadium of Palermo FC. Palermo FC plays here.",
+        },
+        "ai_plan": base_plan,
+        "target_query": "palermo stadium",
+    }
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_ok, "stop")
+        res = client.post("/api/ai/rewrite", json=req_ok)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert not any("Draft opening paragraph is missing target query term(s)" in w for w in data["warnings"])
+
+    # 3. No query -> no warning
+    req_no_query = {
+        "ai_context": {
+            "url": "https://example.com/palermo",
+            "language": "en",
+            "main_text": "The Stadio Renzo Barbera is the home ground of Palermo FC. Palermo FC plays here.",
+        },
+        "ai_plan": base_plan,
+    }
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.return_value = (draft_missing, "stop")
+        res = client.post("/api/ai/rewrite", json=req_no_query)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert not any("Draft opening paragraph is missing target query term(s)" in w for w in data["warnings"])
+
+
 
 
 

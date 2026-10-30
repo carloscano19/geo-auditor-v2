@@ -57,6 +57,39 @@ def tokenize(text: str) -> List[str]:
     return tokens
 
 
+def extract_query_terms(target_query: str, lang: str = "en") -> List[str]:
+    """
+    Extract significant query terms using tokenization and stop words removal.
+    """
+    if not target_query or not target_query.strip():
+        return []
+    patterns = get_lang_patterns(lang)
+    stop_words = patterns.get("stop_words", set())
+    raw_query_words = tokenize(target_query.strip())
+    query_terms = [w for w in raw_query_words if w not in stop_words and len(w) > 1]
+    if not query_terms:
+        query_terms = raw_query_words if raw_query_words else [target_query.strip().lower()]
+    return query_terms
+
+
+def get_missing_lead_query_terms(lead_text: str, target_query: Optional[str], lang: str = "en") -> List[str]:
+    """
+    Find significant query terms that are missing in the lead paragraph.
+    Returns a list of unique missing terms in order of appearance in the query.
+    If no target_query is provided or it is blank, returns an empty list.
+    """
+    if not target_query or not target_query.strip():
+        return []
+    query_terms = extract_query_terms(target_query, lang)
+    if not query_terms:
+        return []
+    if not lead_text or not lead_text.strip():
+        return list(dict.fromkeys(query_terms))
+    lead_tokens = set(tokenize(lead_text))
+    missing = [t for t in query_terms if t not in lead_tokens]
+    return list(dict.fromkeys(missing))
+
+
 class BM25:
     """Lightweight, in-memory BM25 implementation for paragraph ranking."""
 
@@ -122,14 +155,9 @@ class QueryMatchDetector(BaseDetector):
         recommendations: List[str] = []
 
         lang = resolve_language(page_data)
-        patterns = get_lang_patterns(lang)
-        stop_words = patterns.get("stop_words", set())
 
         # Tokenize query
-        raw_query_words = tokenize(self.target_query)
-        query_terms = [w for w in raw_query_words if w not in stop_words and len(w) > 1]
-        if not query_terms:
-            query_terms = raw_query_words if raw_query_words else [self.target_query.lower()]
+        query_terms = extract_query_terms(self.target_query, lang)
 
         # Extract main content
         scoped_html, scoped_text = extract_main_content(page_data.html_rendered or page_data.html_raw)

@@ -97,6 +97,7 @@ from src.utils.docx_brief import (
     generate_rewrite_draft_docx,
     sanitize_domain_for_filename,
 )
+from src.detectors.query_match import get_missing_lead_query_terms
 from src.services.ahrefs_client import (
     AhrefsClient,
     AhrefsAuthError,
@@ -608,6 +609,28 @@ def headings_share_words(s1: str, s2: str, threshold: float = 0.6) -> bool:
         return False
     shared = len(w1 & w2)
     return (shared / len(w1) >= threshold) or (shared / len(w2) >= threshold)
+
+
+def extract_draft_opening_paragraph(draft_markdown: str) -> str:
+    """
+    Extract the first substantive body paragraph from markdown draft.
+    Skips headings (#), markdown tables (|), images (![), and standalone CTA buttons/links.
+    """
+    if not draft_markdown:
+        return ""
+    paras = [p.strip() for p in re.split(r'\n\s*\n', draft_markdown) if p.strip()]
+    for p in paras:
+        if p.startswith("#") or p.startswith("|") or p.startswith("!["):
+            continue
+        p_no_gaps = re.sub(r'\[EDITOR:[^\]]*\]', '', p).strip()
+        # Exclude standalone button/link lines
+        if re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[[^\]]+\]\([^)]+\)\s*$', p_no_gaps):
+            continue
+        # Also clean markdown link wrappers to get plain text
+        clean_p = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', p)
+        clean_p = re.sub(r'\[([^\]]*)\]\([^)]+\)', r'\1', clean_p)
+        return clean_p.strip()
+    return ""
 
 
 
@@ -1401,6 +1424,7 @@ async def generate_ai_plan(request: AIPlanRequest):
     # 3. Build system and user prompt
     lang = ctx.language or "es"
     lang_instruction = "Spanish (Español)" if lang == "es" else "English"
+    target_q = (request.target_query or ctx.target_query or "").strip()
 
     expected_type = "Article"
     if ctx.content_type == "news":
@@ -1427,7 +1451,8 @@ async def generate_ai_plan(request: AIPlanRequest):
         "8. In 'paragraphs_to_add' and all suggested text, logical connectors (Therefore, However, Because, etc.) must ONLY be used when that logical relationship genuinely exists between ideas; never insert them artificially to boost a metric.\n"
         "9. CRITICAL COPYWRITING RULE: The suggested lead paragraph ('suggested_lead'), all 'paragraphs_to_add' (new paragraphs), and any 'draft_answer' with answer_source 'page', must be written strictly as final, publishable web copy ready for publication. NEVER refer to 'the page', 'this page', 'the page\'s', 'la página', 'esta página', 'the announcement\'s disclaimer', or any meta-commentary about the page or document itself.\n"
         "10. FACTUAL ACCURACY & NO UNBACKED FLUFF: Do NOT add superlatives or rankings ('one of the most', 'the best', 'the largest', 'the most iconic') not literally backed by the page text snippet. Do NOT deduce or infer unstated facts from translations of foreign proper names (e.g. do NOT assert that a stand is covered simply by translating 'Tribuna Copertura').\n"
-        "11. PROMISE INTEGRITY IN HEADINGS: Each suggested H2 in 'suggested_h2_structure' must strictly promise ONLY content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof)."
+        "11. PROMISE INTEGRITY IN HEADINGS: Each suggested H2 in 'suggested_h2_structure' must strictly promise ONLY content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof).\n"
+        "12. TARGET QUERY IN OPENING LEAD: When a Target Query is provided, the suggested opening lead paragraph ('suggested_lead') MUST naturally and literally contain all of its significant search words (do not substitute with synonyms or foreign language variants; e.g. 'ground' or 'Stadio' do not satisfy 'stadium')."
     )
 
     google_context_text = ""
@@ -1457,12 +1482,13 @@ async def generate_ai_plan(request: AIPlanRequest):
     }}
   ]"""
 
+    target_query_info = f"\nTarget Query: {target_q}" if target_q else ""
     user_prompt = f"""Generate an improvement plan for the following web page to optimize its citability in AI engines (ChatGPT, Perplexity, Gemini).
 
 Page Information:
 URL: {ctx.url or 'N/A'}
 Title: {ctx.title or 'N/A'}
-H1: {ctx.h1 or 'N/A'}
+H1: {ctx.h1 or 'N/A'}{target_query_info}
 Language: {lang}
 Content Type: {ctx.content_type}
 Detected Author: {ctx.detected_author or 'Not detected'}
@@ -1546,7 +1572,7 @@ Generate a JSON object with EXACTLY this structure:
 }}
 
 Requirements:
-- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences.
+- suggested_lead: An optimized opening paragraph (40-60 words) that immediately answers the primary user intent, states the main entity in the first sentence, uses strictly facts from the provided text, and removes fluff. Provide 'rationale' in maximum 2 sentences. When a Target Query is provided, the opening paragraph MUST naturally and literally contain all its significant search terms without replacing them with synonyms or translations in another language.
 - json_ld: Factual description (1-2 sentences), about (maximum 3 main entities/topics), and mentions (maximum 5 secondary entities/concepts). Factual only; do NOT invent figures.
 - questions_to_answer: 3 to 6 questions. Formulate direct, user-focused questions. Prioritize real Google 'People Also Ask' questions if provided. Draft answers must be 40-70 words. Set answer_source to 'page' ONLY if the page actually answers the question directly. When the page does not contain the answer, set answer_source to 'needs_info' and write a ready-to-publish answer where the FIRST sentence must answer the question directly with the missing information explicitly marked as a gap using this exact format: [EDITOR: what data is missing — source type] placed precisely where the missing data belongs (e.g. "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]."). When data is missing, the answer must NOT affirm or speculate on ANYTHING outside the editor gap: no yes/no answers, and no claims about whether something exists or does not exist (e.g. do NOT say 'Club X is not owned by Y' or 'Tours operate [EDITOR]'). The gap must be right in the opening / first sentence. Correct examples: "Palermo FC's current ownership is [EDITOR: owner and stake — official club statements]." and "[EDITOR: whether stadium tours are available, with days and prices — official club ticketing].". Do NOT fill with unrelated page data (like stadium capacity). The description inside [EDITOR: ...] MUST be written strictly in {lang_instruction} (the page's language, never in another language by default). An editor gap can ONLY request data that is NOT present in the page text; if a fact, figure, or detail is already in the text, you MUST include it directly rather than making a placeholder. Example: "The largest stadium in France is [EDITOR: stadium name and capacity — official stadium records]. The CEPAC Vélodrome, with 67,000 seats, is one of the country's most iconic football grounds." You may use facts that ARE on the page, but NEVER invent missing figures (any number not in the text will cause the answer to be discarded), and NEVER write meta-commentary like "This guide does not confirm...".
 - suggested_h2_structure: Logical H2 structure covering main aspects. Max 7 items. Provide 'purpose' in exactly 1 sentence. Each suggested H2 must strictly promise only content that the section actually contains. Never create H2s that promise features or elements absent from the text (e.g. do NOT promise 'Layout and Roof' if there is no content about the roof).
@@ -2018,6 +2044,11 @@ Requirements:
             f"{total_removed_count} suggestions were removed because they contained figures not found on the page."
         )
 
+    if target_q:
+        missing_lead_terms = get_missing_lead_query_terms(lead_paragraph_fix.suggested, target_q, lang)
+        if missing_lead_terms:
+            all_warnings.append(f"Suggested lead is missing target query term(s): {', '.join(missing_lead_terms)}")
+
     response_data = {
         "suggested_lead": lead_paragraph_fix.model_dump(),
         "questions_to_answer": valid_questions,
@@ -2089,6 +2120,7 @@ async def rewrite_article(request: AIRewriteRequest):
     llm = LLMClient()
     lang = ctx.language or "es"
     lang_instruction = "Spanish (Español)" if lang == "es" else "English"
+    target_q = (request.target_query or ctx.target_query or "").strip()
 
     # Build prompt
     system_prompt = f"""You are a master editorial copywriter and search optimizer.
@@ -2112,7 +2144,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 11. NO META-REFERENCES: Never refer to 'this page', 'the guide', 'this article', 'the post', 'la página', 'esta guía', 'este artículo', or similar meta-commentary. Write strictly as final web publication copy.
 12. Structure, Inconsistencies & FAQ:
     - Begin with the # Main Title (H1).
-    - Opening Lead Paragraph: Use the suggested lead paragraph from the plan.
+    - Opening Lead Paragraph: Use the suggested lead paragraph from the plan. When a Target Query is provided, ensure the opening paragraph literally and naturally contains all its significant search terms (do not substitute with synonyms or foreign language equivalents; e.g. 'ground' or 'Stadio' do not satisfy 'stadium').
     - If inconsistencies / contradictions are listed, resolve them using the plan's recommendation and unify the terminology/value throughout the whole article (except trademark notation differences ™/®/©, which must be kept as they are).
     - Consistency: Always use the exact same term for the same role or entity throughout the whole article (e.g. do not mix "president" and "chairman"), even if the plan did not detect it. Do not repeat the exact same sentence across two different sections.
     - FAQ: Format each FAQ question as a subheading "### Question?" with the answer below (answers 2-3 sentences max). Retain the EXACT H2 and ALL original questions LITERALLY with their exact wording. At most 2 questions with [EDITOR: ...] gaps may be included, placed at the very end of the FAQ section.
@@ -2196,7 +2228,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
 Title: {ctx.title or 'N/A'}
 H1: {ctx.h1 or 'N/A'}
 Language: {lang_instruction}
-Target Query: {request.target_query or ctx.target_query or 'General content'}
+Target Query: {target_q + ' (The opening paragraph MUST naturally and literally contain all its significant search terms; do not replace them with synonyms or foreign language translations)' if target_q else 'General content'}
 
 ORIGINAL PAGE TEXT CONTENT:
 {ctx.main_text}
@@ -2819,6 +2851,13 @@ Write the complete rewritten article in Markdown now following all editorial and
         q_norm = normalize_heading(q)
         if q_norm and q_norm not in draft_norm_headings:
             warnings.append(f"Original FAQ question dropped: {q}")
+
+    # 12. Check for missing target query terms in opening paragraph
+    if target_q:
+        draft_lead = extract_draft_opening_paragraph(draft_markdown)
+        missing_lead_terms = get_missing_lead_query_terms(draft_lead, target_q, lang)
+        if missing_lead_terms:
+            warnings.append(f"Draft opening paragraph is missing target query term(s): {', '.join(missing_lead_terms)}")
 
     word_count_original = len(orig_text.split())
     word_count_draft = len(draft_markdown.split())
