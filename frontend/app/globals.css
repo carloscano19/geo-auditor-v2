@@ -177,6 +177,70 @@ body {
   }
 }
 
+/* Rich text editor in AuditForm */
+#body:empty::before {
+  content: attr(data-placeholder);
+  color: var(--ink-3);
+  pointer-events: none;
+}
+#body h1 {
+  font-size: 1.25rem;
+  font-weight: 700;
+  margin-top: 0.75rem;
+  margin-bottom: 0.5rem;
+  color: var(--ink);
+}
+#body h2 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-top: 0.75rem;
+  margin-bottom: 0.4rem;
+  color: var(--ink);
+}
+#body h3 {
+  font-size: 0.95rem;
+  font-weight: 600;
+  margin-top: 0.5rem;
+  margin-bottom: 0.25rem;
+  color: var(--ink);
+}
+#body p {
+  margin-bottom: 0.5rem;
+}
+#body ul {
+  list-style-type: disc;
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+#body ol {
+  list-style-type: decimal;
+  padding-left: 1.25rem;
+  margin-bottom: 0.5rem;
+}
+#body li {
+  margin-bottom: 0.25rem;
+}
+#body table {
+  border-collapse: collapse;
+  width: 100%;
+  margin: 0.5rem 0;
+  font-size: 0.75rem;
+}
+#body th, #body td {
+  border: 1px solid var(--hairline-strong);
+  padding: 0.35rem 0.5rem;
+  text-align: left;
+}
+#body th {
+  background-color: var(--surface-2);
+  font-weight: 600;
+}
+#body a {
+  color: var(--accent);
+  text-decoration: underline;
+}
+
+
 /* Score circle animation */
 .score-circle {
   transition: stroke-dasharray 1s ease-out;

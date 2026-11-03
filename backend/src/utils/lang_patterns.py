@@ -917,4 +917,35 @@ def strip_page_meta_references(text: str) -> str:
     return " ".join(kept).strip()
 
 
+# Centralized patterns for editorial/CMS metadata commonly present at the start of drafts
+# (both English and Spanish)
+EDITORIAL_METADATA_REGEX = re.compile(
+    r"^\s*(?:"
+    r"meta\s+title|"
+    r"meta\s+t[ií]tulo|"
+    r"meta\s+description|"
+    r"meta\s+descripci[oó]n|"
+    r"seo\s+title|"
+    r"t[ií]tulo\s+seo|"
+    r"slug|"
+    r"url|"
+    r"focus\s+keyword|"
+    r"focus\s+keyphrase|"
+    r"target\s+keyword|"
+    r"primary\s+keyword|"
+    r"palabra\s+clave(?:\s+(?:principal|objetivo))?|"
+    r"frase\s+clave(?:\s+(?:principal|objetivo))?"
+    r")(?:\s*[\(\[][^\)\]]+[\)\]])?\s*[:\-–—]\s*(.*)$",
+    re.IGNORECASE
+)
+
+
+def is_editorial_metadata_line(line: str) -> bool:
+    """Check if a line matches editorial/CMS metadata patterns in English or Spanish."""
+    if not line:
+        return False
+    return bool(EDITORIAL_METADATA_REGEX.match(line.strip()))
+
+
+
 

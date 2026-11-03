@@ -291,7 +291,7 @@ def extract_substantive_paragraphs(html: str, min_words: int = 10) -> list[str]:
     return paragraphs
 
 
-def sanitize_pasted_html(raw_html: str) -> str:
+def sanitize_pasted_html(raw_html: str, return_metadata: bool = False) -> str | tuple[str, list[str]]:
     """
     Clean and normalize HTML pasted from editors (Google Docs, Word, web):
     - Google Docs: unwraps <b id="docs-internal-guid-..."> wrappers without losing headers/paragraphs.
@@ -299,11 +299,13 @@ def sanitize_pasted_html(raw_html: str) -> str:
     - Whitelist tags: h1-h6, p, ul, ol, li, table, thead, tbody, tr, th, td,
       a (href http/https), img (src http/https, alt), strong, b, em, i, br, blockquote.
     - Strips all scripts, styles, comments, attributes (except whitelisted), and empty spans preserving text.
+    - Detects and strips editorial metadata lines (Meta title, Meta description, Slug, SEO title, URL, Focus keyword).
     - Ensures an H1 exists: if no H1, converts the first heading or the first short substantive line into an H1.
       Never uses 'Analysis'.
     """
     if not raw_html or not raw_html.strip():
-        return ""
+        return ("", []) if return_metadata else ""
+
 
     soup = BeautifulSoup(raw_html, "lxml")
 
@@ -380,6 +382,43 @@ def sanitize_pasted_html(raw_html: str) -> str:
     # 5. Extract inner body content if body exists
     container = soup.body if soup.body else soup
 
+    # 5.5 Detect and strip editorial/CMS metadata lines (Meta title, Slug, Focus keyword, etc.)
+    from src.utils.lang_patterns import is_editorial_metadata_line
+    detected_metadata: list[str] = []
+
+    # Check headings, paragraphs, divs, and list items
+    for el in list(container.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li"])):
+        # If element was already decomposed, skip
+        if not el.parent:
+            continue
+        # Check text lines in element (handling <br> or single-line strings)
+        text_content = el.get_text(separator="\n", strip=True)
+        lines = [ln.strip() for ln in text_content.split("\n") if ln.strip()]
+        if not lines:
+            continue
+
+        matching_lines = [ln for ln in lines if is_editorial_metadata_line(ln)]
+        if matching_lines:
+            for ml in matching_lines:
+                if ml not in detected_metadata:
+                    detected_metadata.append(ml)
+
+            if len(matching_lines) == len(lines):
+                # All lines in this element are metadata -> decompose element
+                parent = el.parent
+                el.decompose()
+                # If it was an li in a ul/ol and list is now empty, remove list
+                if parent and parent.name in ["ul", "ol"] and not parent.find_all("li"):
+                    parent.decompose()
+            else:
+                # Some lines remain -> replace element content with remaining lines
+                remaining_lines = [ln for ln in lines if not is_editorial_metadata_line(ln)]
+                el.clear()
+                for i, r_line in enumerate(remaining_lines):
+                    if i > 0:
+                        el.append(soup.new_tag("br"))
+                    el.append(r_line)
+
     # 6. Ensure an H1 exists
     h1_tag = container.find("h1")
     if not h1_tag:
@@ -413,5 +452,34 @@ def sanitize_pasted_html(raw_html: str) -> str:
         if child_str:
             clean_parts.append(child_str)
 
-    return "\n".join(clean_parts).strip()
+    cleaned_html = "\n".join(clean_parts).strip()
+    if return_metadata:
+        return cleaned_html, detected_metadata
+    return cleaned_html
+
+
+def extract_editorial_metadata_from_text(raw_text: str) -> tuple[str, list[str]]:
+    """
+    Detect and strip leading editorial metadata lines (Meta title, Meta description,
+    Slug, SEO title, URL, Focus keyword, etc.) from plain text.
+    Returns (cleaned_text, detected_metadata_lines).
+    """
+    from src.utils.lang_patterns import is_editorial_metadata_line
+    if not raw_text:
+        return "", []
+
+    lines = raw_text.split("\n")
+    cleaned_lines = []
+    detected_metadata: list[str] = []
+
+    for line in lines:
+        stripped = line.strip()
+        if stripped and is_editorial_metadata_line(stripped):
+            if stripped not in detected_metadata:
+                detected_metadata.append(stripped)
+        else:
+            cleaned_lines.append(line)
+
+    return "\n".join(cleaned_lines).strip(), detected_metadata
+
 

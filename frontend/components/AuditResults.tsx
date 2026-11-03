@@ -73,6 +73,13 @@ const EXCLUDED_TECHNICAL_DIMENSIONS = new Set([
     "metadata_schema",
 ]);
 
+const DRAFT_EXCLUDED_DIMENSIONS = new Set([
+    "technical_infrastructure",
+    "metadata_schema",
+    "freshness",
+    "eeat_authority",
+]);
+
 const EXCLUDED_SUBMETRIC_KEYWORDS = [
     "https",
     "render",
@@ -165,6 +172,8 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
 
         for (const det of results.detector_results) {
             if (EXCLUDED_TECHNICAL_DIMENSIONS.has(det.dimension)) continue;
+            if (results.is_draft_mode && DRAFT_EXCLUDED_DIMENSIONS.has(det.dimension)) continue;
+            if (Boolean(det.debug_info?.draft_mode_excluded)) continue;
             const detWeight = det.weight != null ? det.weight : 0.10;
             const breakdowns = det.breakdown || [];
 
@@ -764,8 +773,11 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                         <div className="flex flex-col items-center shrink-0">
                             <ScoreDisplay
                                 score={results.total_score}
-                                label="Citation Score"
-                                sublabel="Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
+                                label={results.is_draft_mode ? "Content Score" : "Citation Score"}
+                                sublabel={results.is_draft_mode
+                                    ? "Draft mode: technical, metadata, freshness and authority dimensions are not included — they depend on the published page."
+                                    : "Measures on-page readiness for AI citation. Off-page factors like organic rankings and brand authority are not included."
+                                }
                             />
                             {results.score_capped && (
                                 <div className="mt-3 px-3 py-2 rounded-lg bg-critical-soft border border-critical/30 text-critical text-xs font-medium text-center max-w-xs">
@@ -780,7 +792,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                 <div className="w-full">
                                     <div className="flex items-center gap-2 justify-center lg:justify-start flex-wrap mb-1">
                                         <h2 className="text-xl sm:text-2xl font-bold text-ink tracking-tight">
-                                            Audit Overview
+                                            {results.is_draft_mode ? "Content Audit Overview" : "Audit Overview"}
                                         </h2>
                                         <span className="text-xs px-2.5 py-0.5 rounded-full font-mono bg-surface-2 text-ink-2 border border-hairline">
                                             {results.scoring_version}
@@ -813,6 +825,37 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                         </div>
                     </div>
                 </div>
+
+                {/* Editorial Metadata Card (if detected in draft) */}
+                {results.editorial_metadata && results.editorial_metadata.length > 0 && (
+                    <div className="rounded-card border border-hairline bg-surface p-5 sm:p-6 space-y-3">
+                        <div className="flex items-center justify-between flex-wrap gap-2">
+                            <div className="flex items-center gap-2">
+                                <span className="text-base">📝</span>
+                                <h3 className="text-sm font-semibold text-ink">
+                                    Editorial metadata detected
+                                </h3>
+                            </div>
+                            <span className="text-micro font-mono text-ink-3 bg-surface-2 border border-hairline px-2 py-0.5 rounded-control">
+                                Not scored
+                            </span>
+                        </div>
+                        <p className="text-xs text-ink-3">
+                            The following editorial metadata lines were detected and excluded from content scoring:
+                        </p>
+                        <div className="grid gap-2 sm:grid-cols-2">
+                            {results.editorial_metadata.map((item, idx) => (
+                                <div
+                                    key={idx}
+                                    className="p-2.5 bg-surface-2 rounded-control border border-hairline font-mono text-xs text-ink-2 truncate"
+                                    title={item}
+                                >
+                                    {item}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
 
                 {/* Top 5 Actions Card */}
                 <div className="rounded-card border border-hairline bg-surface p-6">

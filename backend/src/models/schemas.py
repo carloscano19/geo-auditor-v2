@@ -353,6 +353,8 @@ class AuditResponse(BaseModel):
     # Raw detector results for detailed view
     detector_results: list[DetectorResult] = Field(default_factory=list)
     ai_context: Optional[AIContext] = None
+    is_draft_mode: bool = False
+    editorial_metadata: list[str] = Field(default_factory=list)
 
 
 class BatchAuditRequest(BaseModel):

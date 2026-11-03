@@ -14,6 +14,7 @@ interface ScoreBreakdownProps {
 export default function ScoreBreakdown({ result, isOpen, onToggle }: ScoreBreakdownProps) {
     const [internalOpen, setInternalOpen] = useState(false);
     const isExpanded = isOpen !== undefined ? isOpen : internalOpen;
+    const isDraftExcluded = Boolean(result.debug_info?.draft_mode_excluded);
 
     const handleToggle = () => {
         if (onToggle) {
@@ -40,6 +41,7 @@ export default function ScoreBreakdown({ result, isOpen, onToggle }: ScoreBreakd
     };
 
     const getStatusDot = (score: number) => {
+        if (isDraftExcluded) return "bg-ink-3/30";
         if (score >= 80) return "bg-good";
         if (score >= 60) return "bg-good";
         if (score >= 40) return "bg-warn";
@@ -83,10 +85,10 @@ export default function ScoreBreakdown({ result, isOpen, onToggle }: ScoreBreakd
                                 {formatDimensionName(result.dimension)}
                             </span>
                             <span className="text-micro font-mono text-ink-3 bg-surface-2 border border-hairline px-2 py-0.5 rounded-control">
-                                Weight: {(result.weight * 100).toFixed(0)}%
+                                Weight: {isDraftExcluded ? "0%" : `${(result.weight * 100).toFixed(0)}%`}
                             </span>
                             <span className="text-micro font-mono text-ink-2 bg-surface-2 border border-hairline px-2 py-0.5 rounded-control">
-                                Contrib: +{result.contribution.toFixed(1)} pts
+                                Contrib: {isDraftExcluded ? "—" : `+${result.contribution.toFixed(1)} pts`}
                             </span>
                         </div>
                     </div>
@@ -96,15 +98,21 @@ export default function ScoreBreakdown({ result, isOpen, onToggle }: ScoreBreakd
                     {/* Dimension Progress Bar */}
                     <div className="w-28 sm:w-36 h-1.5 bg-surface-2 rounded-full overflow-hidden border border-hairline hidden xs:block">
                         <div
-                            className={`h-full rounded-full transition-all duration-500 ${getScoreBarClass(result.score)}`}
-                            style={{ width: `${Math.min(100, Math.max(0, result.score))}%` }}
+                            className={`h-full rounded-full transition-all duration-500 ${isDraftExcluded ? "bg-hairline" : getScoreBarClass(result.score)}`}
+                            style={{ width: `${isDraftExcluded ? 0 : Math.min(100, Math.max(0, result.score))}%` }}
                         />
                     </div>
 
                     {/* Score Badge */}
-                    <Badge tone={getScoreBadgeTone(result.score)} className="font-mono text-xs font-bold px-2.5 py-0.5">
-                        {Math.round(result.score)} / 100
-                    </Badge>
+                    {isDraftExcluded ? (
+                        <Badge tone="neutral" className="text-xs font-medium px-2.5 py-0.5">
+                            Not scored in draft mode
+                        </Badge>
+                    ) : (
+                        <Badge tone={getScoreBadgeTone(result.score)} className="font-mono text-xs font-bold px-2.5 py-0.5">
+                            {Math.round(result.score)} / 100
+                        </Badge>
+                    )}
 
                     {/* Chevron Icon */}
                     <span className="p-1 text-ink-3 no-print">
@@ -117,155 +125,166 @@ export default function ScoreBreakdown({ result, isOpen, onToggle }: ScoreBreakd
 
             {/* Accordion Body (Expanded or Print Mode) */}
             <div className={`accordion-content border-t border-hairline p-4 sm:p-6 bg-surface-2/40 space-y-4 ${isExpanded ? "block" : "hidden print:block"}`}>
-                {/* Submetrics List */}
-                <div className="space-y-2.5">
-                    <h4 className="text-micro font-bold text-ink-3 uppercase tracking-wider">
-                        Submetrics Breakdown
-                    </h4>
+                {isDraftExcluded ? (
+                    <div className="p-4 bg-surface rounded-control border border-hairline text-xs text-ink-2 space-y-1">
+                        <div className="font-semibold text-ink">Not evaluated in draft mode</div>
+                        <p className="text-ink-3 leading-relaxed">
+                            This dimension depends on the published web page (server infrastructure, HTTP response, head metadata, or site template) and is not evaluated for draft text.
+                        </p>
+                    </div>
+                ) : (
+                    <>
+                        {/* Submetrics List */}
+                        <div className="space-y-2.5">
+                            <h4 className="text-micro font-bold text-ink-3 uppercase tracking-wider">
+                                Submetrics Breakdown
+                            </h4>
 
-                    {result.breakdown.map((item, index) => (
-                        <div
-                            key={index}
-                            className="p-3.5 bg-surface rounded-control border border-hairline space-y-2"
-                        >
-                            <div className="flex justify-between items-start gap-2">
-                                <div className="min-w-0 flex-1">
-                                    <div className="font-semibold text-ink text-xs sm:text-sm leading-tight">
-                                        {item.name}
+                            {result.breakdown.map((item, index) => (
+                                <div
+                                    key={index}
+                                    className="p-3.5 bg-surface rounded-control border border-hairline space-y-2"
+                                >
+                                    <div className="flex justify-between items-start gap-2">
+                                        <div className="min-w-0 flex-1">
+                                            <div className="font-semibold text-ink text-xs sm:text-sm leading-tight">
+                                                {item.name}
+                                            </div>
+                                            {SUBTITLES[item.name] && (
+                                                <div className="text-micro text-ink-3 mt-0.5 leading-snug">
+                                                    {SUBTITLES[item.name]}
+                                                </div>
+                                            )}
+                                        </div>
+                                        <Badge tone={getScoreBadgeTone(item.raw_score)} className="font-mono text-xs font-bold px-2 py-0.2 shrink-0">
+                                            {Math.round(item.raw_score)}
+                                        </Badge>
                                     </div>
-                                    {SUBTITLES[item.name] && (
-                                        <div className="text-micro text-ink-3 mt-0.5 leading-snug">
-                                            {SUBTITLES[item.name]}
+
+                                    {/* Submetric Progress bar */}
+                                    <div className="w-full h-1 bg-surface-2 rounded-full overflow-hidden">
+                                        <div
+                                            className={`h-full rounded-full transition-all duration-300 ${getScoreBarClass(item.raw_score)}`}
+                                            style={{ width: `${Math.min(100, Math.max(0, item.raw_score))}%` }}
+                                        />
+                                    </div>
+
+                                    {/* Explanation */}
+                                    <p className="text-xs text-ink-2 leading-relaxed pt-0.5">
+                                        {item.explanation}
+                                    </p>
+
+                                    {/* Recommendations */}
+                                    {item.recommendations && item.recommendations.length > 0 && (
+                                        <div className="space-y-1 pt-1.5 border-t border-hairline">
+                                            <div className="text-micro font-bold text-accent uppercase tracking-wider">
+                                                Recommendation
+                                            </div>
+                                            <ul className="space-y-1">
+                                                {item.recommendations.map((rec, recIndex) => (
+                                                    <li
+                                                        key={recIndex}
+                                                        className="text-xs text-critical flex items-start gap-1.5 leading-relaxed bg-critical-soft p-2 rounded-control border border-critical/20"
+                                                    >
+                                                        <span className="font-bold shrink-0">→</span>
+                                                        <span>{rec}</span>
+                                                    </li>
+                                                ))}
+                                            </ul>
                                         </div>
                                     )}
                                 </div>
-                                <Badge tone={getScoreBadgeTone(item.raw_score)} className="font-mono text-xs font-bold px-2 py-0.2 shrink-0">
-                                    {Math.round(item.raw_score)}
-                                </Badge>
-                            </div>
-
-                            {/* Submetric Progress bar */}
-                            <div className="w-full h-1 bg-surface-2 rounded-full overflow-hidden">
-                                <div
-                                    className={`h-full rounded-full transition-all duration-300 ${getScoreBarClass(item.raw_score)}`}
-                                    style={{ width: `${Math.min(100, Math.max(0, item.raw_score))}%` }}
-                                />
-                            </div>
-
-                            {/* Explanation */}
-                            <p className="text-xs text-ink-2 leading-relaxed pt-0.5">
-                                {item.explanation}
-                            </p>
-
-                            {/* Recommendations */}
-                            {item.recommendations.length > 0 && (
-                                <div className="mt-2.5 pt-2.5 border-t border-hairline">
-                                    <p className="text-micro font-semibold text-ink-2 uppercase tracking-wider mb-1.5">
-                                        Recommended Action:
-                                    </p>
-                                    <ul className="space-y-1">
-                                        {item.recommendations.map((rec, recIndex) => (
-                                            <li
-                                                key={recIndex}
-                                                className="text-xs text-critical flex items-start gap-1.5 leading-relaxed bg-critical-soft p-2 rounded-control border border-critical/20"
-                                            >
-                                                <span className="font-bold shrink-0">→</span>
-                                                <span>{rec}</span>
-                                            </li>
-                                        ))}
-                                    </ul>
-                                </div>
-                            )}
+                            ))}
                         </div>
-                    ))}
-                </div>
 
-                {/* Debug / Transparency Info */}
-                {result.debug_info && (
-                    <div className="mt-4 pt-4 border-t border-hairline space-y-3">
-                        {!!result.debug_info.detected_headers && (
-                            <div>
-                                <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
-                                    Found Headers (Scope Check):
-                                </h5>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {(result.debug_info.detected_headers as string[]).map((header, i) => (
-                                        <span key={i} className="inline-block px-2 py-0.5 bg-surface text-ink text-xs rounded-control border border-hairline">
-                                            {header}
-                                        </span>
-                                    ))}
-                                    {(result.debug_info.detected_headers as string[]).length === 0 && (
-                                        <span className="text-xs text-ink-3 italic">No headers found in main content scope.</span>
-                                    )}
-                                </div>
+                        {/* Debug / Transparency Info */}
+                        {result.debug_info && (
+                            <div className="mt-4 pt-4 border-t border-hairline space-y-3">
+                                {!!result.debug_info.detected_headers && (
+                                    <div>
+                                        <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
+                                            Found Headers (Scope Check):
+                                        </h5>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {(result.debug_info.detected_headers as string[]).map((header, i) => (
+                                                <span key={i} className="inline-block px-2 py-0.5 bg-surface text-ink text-xs rounded-control border border-hairline">
+                                                    {header}
+                                                </span>
+                                            ))}
+                                            {(result.debug_info.detected_headers as string[]).length === 0 && (
+                                                <span className="text-xs text-ink-3 italic">No headers found in main content scope.</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {!!result.debug_info.detected_entities && (
+                                    <div>
+                                        <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
+                                            Found Entities (Likely topics):
+                                        </h5>
+                                        <div className="flex flex-wrap gap-1.5">
+                                            {(result.debug_info.detected_entities as string[]).map((ent, i) => (
+                                                <span key={i} className="inline-block px-2 py-0.5 bg-surface-2 text-ink text-xs rounded-control border border-hairline">
+                                                    🏷️ {ent}
+                                                </span>
+                                            ))}
+                                            {(result.debug_info.detected_entities as string[]).length === 0 && (
+                                                <span className="text-xs text-ink-3 italic">No specific property entities found.</span>
+                                            )}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {Array.isArray(result.debug_info.citation_links) && result.debug_info.citation_links.length > 0 && (
+                                    <div>
+                                        <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
+                                            Citation Links (Counted):
+                                        </h5>
+                                        <div className="flex flex-col gap-1">
+                                            {(result.debug_info.citation_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
+                                                const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
+                                                return (
+                                                    <a
+                                                        key={i}
+                                                        href={linkStr}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        title={linkStr}
+                                                        className="text-micro text-good hover:underline font-mono truncate bg-good-soft px-2.5 py-1 rounded-control border border-good/30 transition-colors block"
+                                                    >
+                                                        🔗 {linkStr}
+                                                    </a>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
+
+                                {Array.isArray(result.debug_info.utility_links) && result.debug_info.utility_links.length > 0 && (
+                                    <div>
+                                        <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
+                                            Utility Links (Ignored):
+                                        </h5>
+                                        <div className="flex flex-col gap-1">
+                                            {(result.debug_info.utility_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
+                                                const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
+                                                return (
+                                                    <span
+                                                        key={i}
+                                                        className="text-micro text-ink-3 font-mono truncate bg-surface-2 px-2.5 py-1 rounded-control border border-hairline block"
+                                                        title={linkStr}
+                                                    >
+                                                        ⚙️ {linkStr}
+                                                    </span>
+                                                );
+                                            })}
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
-
-                        {!!result.debug_info.detected_entities && (
-                            <div>
-                                <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
-                                    Found Entities (Likely topics):
-                                </h5>
-                                <div className="flex flex-wrap gap-1.5">
-                                    {(result.debug_info.detected_entities as string[]).map((ent, i) => (
-                                        <span key={i} className="inline-block px-2 py-0.5 bg-surface-2 text-ink text-xs rounded-control border border-hairline">
-                                            🏷️ {ent}
-                                        </span>
-                                    ))}
-                                    {(result.debug_info.detected_entities as string[]).length === 0 && (
-                                        <span className="text-xs text-ink-3 italic">No specific property entities found.</span>
-                                    )}
-                                </div>
-                            </div>
-                        )}
-
-                        {Array.isArray(result.debug_info.citation_links) && result.debug_info.citation_links.length > 0 && (
-                            <div>
-                                <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
-                                    Citation Links (Counted):
-                                </h5>
-                                <div className="flex flex-col gap-1">
-                                    {(result.debug_info.citation_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
-                                        const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
-                                        return (
-                                            <a
-                                                key={i}
-                                                href={linkStr}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                title={linkStr}
-                                                className="text-micro text-good hover:underline font-mono truncate bg-good-soft px-2.5 py-1 rounded-control border border-good/30 transition-colors block"
-                                            >
-                                                🔗 {linkStr}
-                                            </a>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
-
-                        {Array.isArray(result.debug_info.utility_links) && result.debug_info.utility_links.length > 0 && (
-                            <div>
-                                <h5 className="text-micro font-bold text-ink-3 uppercase tracking-wider mb-1.5">
-                                    Utility Links (Ignored):
-                                </h5>
-                                <div className="flex flex-col gap-1">
-                                    {(result.debug_info.utility_links as (string | { url?: string; domain?: string })[]).map((link, i) => {
-                                        const linkStr = typeof link === 'string' ? link : (link?.url || link?.domain || String(link || ''));
-                                        return (
-                                            <span
-                                                key={i}
-                                                className="text-micro text-ink-3 font-mono truncate bg-surface-2 px-2.5 py-1 rounded-control border border-hairline block"
-                                                title={linkStr}
-                                            >
-                                                ⚙️ {linkStr}
-                                            </span>
-                                        );
-                                    })}
-                                </div>
-                            </div>
-                        )}
-                    </div>
+                    </>
                 )}
 
                 {/* Errors */}

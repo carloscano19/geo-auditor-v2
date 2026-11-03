@@ -19,6 +19,7 @@ from src.models.schemas import (
     AuditRequest,
     AuditResponse,
     DimensionScore,
+    DetectorResult,
     PageData,
     AIContext,
     FailingSubmetric,
@@ -111,10 +112,16 @@ async def run_single_audit(
     url = str(request.url) if request.url else "text-mode"
 
     # Step 1: Acquisition (Scrape or use provided HTML/text)
-    from src.utils.text_processing import sanitize_pasted_html
+    # Step 1: Acquisition (Scrape or use provided HTML/text)
+    from src.utils.text_processing import sanitize_pasted_html, extract_editorial_metadata_from_text
+    is_draft_mode = bool(request.content_text or request.content_html)
+    editorial_metadata_detected: list[str] = []
+    inferred_headings_warning: Optional[str] = None
+
     if request.content_html:
         # Sanitize pasted HTML using tag whitelist and Google Docs / Word cleaning
-        html_input = sanitize_pasted_html(request.content_html)
+        html_input, detected_meta = sanitize_pasted_html(request.content_html, return_metadata=True)
+        editorial_metadata_detected = detected_meta
         # Derive clean text from sanitized HTML
         from bs4 import BeautifulSoup
         parsed_soup = BeautifulSoup(html_input, "lxml")
@@ -136,15 +143,21 @@ async def run_single_audit(
         )
     elif request.content_text:
         raw_text = request.content_text.strip()
-        # Check if content_text contains Markdown syntax (headings, lists, tables)
-        has_markdown_headings = bool(re.search(r'(?m)^#{1,6}\s+\S', raw_text))
-        has_markdown_lists = bool(re.search(r'(?m)^(?:\*|-|\d+\.)\s+\S', raw_text))
-        has_markdown_tables = bool(re.search(r'(?m)^\|.+\|', raw_text))
+        clean_text, detected_meta = extract_editorial_metadata_from_text(raw_text)
+        editorial_metadata_detected = detected_meta
+
+        # Check if clean_text contains Markdown syntax (headings, lists, tables)
+        has_markdown_headings = bool(re.search(r'(?m)^#{1,6}\s+\S', clean_text))
+        has_markdown_lists = bool(re.search(r'(?m)^(?:\*|-|\d+\.)\s+\S', clean_text))
+        has_markdown_tables = bool(re.search(r'(?m)^\|.+\|', clean_text))
 
         if has_markdown_headings or has_markdown_lists or has_markdown_tables:
             import markdown
-            converted_html = markdown.markdown(raw_text, extensions=['tables', 'fenced_code'])
-            cleaned_html = sanitize_pasted_html(converted_html)
+            converted_html = markdown.markdown(clean_text, extensions=['tables', 'fenced_code'])
+            cleaned_html, extra_meta = sanitize_pasted_html(converted_html, return_metadata=True)
+            for em in extra_meta:
+                if em not in editorial_metadata_detected:
+                    editorial_metadata_detected.append(em)
             from bs4 import BeautifulSoup
             parsed_soup = BeautifulSoup(cleaned_html, "lxml")
             derived_text = re.sub(r'\s+', ' ', parsed_soup.get_text(separator=' ')).strip()
@@ -164,27 +177,66 @@ async def run_single_audit(
                 robots_txt_content=None
             )
         else:
-            # Plain text: separate by blank lines into multiple <p> tags, no fake 'Analysis' H1
-            paragraphs = [p.strip() for p in re.split(r'\n\s*\n', raw_text) if p.strip()]
-            if not paragraphs:
-                paragraphs = [raw_text] if raw_text else [""]
-            
-            # First line as H1 if short (< 120 chars) and multiple paragraphs exist
-            first_p = paragraphs[0]
-            if len(paragraphs) > 1 and len(first_p) <= 120 and "\n" not in first_p:
-                h1_chunk = f"<h1>{first_p}</h1>"
-                p_chunks = "\n".join(f"<p>{p}</p>" for p in paragraphs[1:])
-                body_content = f"{h1_chunk}\n{p_chunks}"
-            else:
-                body_content = "\n".join(f"<p>{p}</p>" for p in paragraphs)
+            # Plain text without Markdown:
+            # Divide also by single newlines (\n) and infer headings:
+            # A line of 2 to 14 words, without ending period, followed by a paragraph of > 25 words becomes H2 (the first one becomes H1).
+            # Emits warning: "Headings inferred from plain text — paste with formatting for an accurate score"
+            lines = [ln.strip() for ln in clean_text.split("\n") if ln.strip()]
+            inferred_headings_count = 0
+            elements = []
+            n = len(lines)
+            i = 0
 
-            text_len = len(raw_text.split())
+            while i < n:
+                line = lines[i]
+                words = line.split()
+                word_count = len(words)
+                has_no_period = not bool(re.search(r'[.!?]["\')\]]?$', line))
+
+                is_heading = False
+                if 2 <= word_count <= 14 and has_no_period and i + 1 < n:
+                    # Look ahead to see if followed by a paragraph of > 25 words
+                    following_words = []
+                    j = i + 1
+                    while j < n:
+                        next_line = lines[j]
+                        next_words = next_line.split()
+                        if 2 <= len(next_words) <= 14 and (not re.search(r'[.!?]["\')\]]?$', next_line)) and j + 1 < n and len(following_words) > 0:
+                            break
+                        following_words.extend(next_words)
+                        j += 1
+                        if len(following_words) > 25:
+                            break
+
+                    if len(following_words) > 25:
+                        is_heading = True
+
+                if is_heading:
+                    tag = "h1" if inferred_headings_count == 0 else "h2"
+                    elements.append((tag, line))
+                    inferred_headings_count += 1
+                    i += 1
+                else:
+                    elements.append(("p", line))
+                    i += 1
+
+            if inferred_headings_count > 0:
+                inferred_headings_warning = "Headings inferred from plain text — paste with formatting for an accurate score"
+            elif elements and len(elements) > 1 and len(elements[0][1]) <= 120 and not re.search(r'[.!?]$', elements[0][1]):
+                # Fallback: if no headings inferred, promote short first line if multiple paragraphs exist
+                elements[0] = ("h1", elements[0][1])
+
+            body_chunks = [f"<{tag}>{text}</{tag}>" for tag, text in elements]
+            body_content = "\n".join(body_chunks) if body_chunks else (f"<p>{clean_text}</p>" if clean_text else "")
+
+            derived_text = clean_text
+            text_len = len(derived_text.split())
             page_data = PageData(
                 url=request.url or "https://manual-input.local",
                 final_url=request.url or "https://manual-input.local",
                 html_raw=f"<html><body>{body_content}</body></html>",
                 html_rendered=f"<html><body><div class='content'>{body_content}</div></body></html>",
-                text_content=raw_text,
+                text_content=derived_text,
                 status_code=200,
                 load_time_ms=0,
                 word_count=text_len,
@@ -232,8 +284,26 @@ async def run_single_audit(
     detector_results = []
     all_recommendations = []
 
+    DRAFT_EXCLUDED_DIMENSIONS = {
+        "technical_infrastructure",
+        "metadata_schema",
+        "freshness",
+        "eeat_authority",
+    }
+
     # --- Layer 1: Technical Infrastructure (10%) ---
-    if not request.content_text and not request.content_html:
+    if is_draft_mode:
+        detector_results.append(DetectorResult(
+            dimension="technical_infrastructure",
+            score=0.0,
+            weight=0.0,
+            contribution=0.0,
+            status="yellow",
+            breakdown=[],
+            errors=[],
+            debug_info={"draft_mode_excluded": True}
+        ))
+    else:
         try:
             infra_detector = InfrastructureDetector()
             infra_result = await infra_detector.analyze(page_data)
@@ -244,15 +314,27 @@ async def run_single_audit(
             logger.error(f"Infrastructure detector error: {e}")
 
     # --- Layer 2: Metadata (4%) ---
-    try:
-        from src.detectors.metadata import MetadataDetector
-        metadata_detector = MetadataDetector()
-        metadata_result = await metadata_detector.analyze(page_data)
-        detector_results.append(metadata_result)
-        for breakdown in metadata_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        logger.error(f"Metadata detector error: {e}")
+    if is_draft_mode:
+        detector_results.append(DetectorResult(
+            dimension="metadata_schema",
+            score=0.0,
+            weight=0.0,
+            contribution=0.0,
+            status="yellow",
+            breakdown=[],
+            errors=[],
+            debug_info={"draft_mode_excluded": True}
+        ))
+    else:
+        try:
+            from src.detectors.metadata import MetadataDetector
+            metadata_detector = MetadataDetector()
+            metadata_result = await metadata_detector.analyze(page_data)
+            detector_results.append(metadata_result)
+            for breakdown in metadata_result.breakdown:
+                all_recommendations.extend(breakdown.recommendations)
+        except Exception as e:
+            logger.error(f"Metadata detector error: {e}")
 
     # --- Layer 3: AEO Structure (12%) ---
     try:
@@ -287,15 +369,27 @@ async def run_single_audit(
         logger.error(f"Evidence detector error: {e}")
 
     # --- Layer 5: E-E-A-T Authority (12%) ---
-    try:
-        from src.detectors.authority import AuthorityDetector
-        authority_detector = AuthorityDetector()
-        authority_result = await authority_detector.analyze(page_data)
-        detector_results.append(authority_result)
-        for breakdown in authority_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        logger.error(f"Authority detector error: {e}")
+    if is_draft_mode:
+        detector_results.append(DetectorResult(
+            dimension="eeat_authority",
+            score=0.0,
+            weight=0.0,
+            contribution=0.0,
+            status="yellow",
+            breakdown=[],
+            errors=[],
+            debug_info={"draft_mode_excluded": True}
+        ))
+    else:
+        try:
+            from src.detectors.authority import AuthorityDetector
+            authority_detector = AuthorityDetector()
+            authority_result = await authority_detector.analyze(page_data)
+            detector_results.append(authority_result)
+            for breakdown in authority_result.breakdown:
+                all_recommendations.extend(breakdown.recommendations)
+        except Exception as e:
+            logger.error(f"Authority detector error: {e}")
 
     # --- Layer 8: Formatting & UX (6%) ---
     try:
@@ -309,15 +403,27 @@ async def run_single_audit(
         logger.error(f"Formatting detector error: {e}")
 
     # --- Layer 7: Freshness (4%) ---
-    try:
-        from src.detectors.freshness import FreshnessDetector
-        freshness_detector = FreshnessDetector()
-        freshness_result = await freshness_detector.analyze(page_data)
-        detector_results.append(freshness_result)
-        for breakdown in freshness_result.breakdown:
-            all_recommendations.extend(breakdown.recommendations)
-    except Exception as e:
-        logger.error(f"Freshness detector error: {e}")
+    if is_draft_mode:
+        detector_results.append(DetectorResult(
+            dimension="freshness",
+            score=0.0,
+            weight=0.0,
+            contribution=0.0,
+            status="yellow",
+            breakdown=[],
+            errors=[],
+            debug_info={"draft_mode_excluded": True}
+        ))
+    else:
+        try:
+            from src.detectors.freshness import FreshnessDetector
+            freshness_detector = FreshnessDetector()
+            freshness_result = await freshness_detector.analyze(page_data)
+            detector_results.append(freshness_result)
+            for breakdown in freshness_result.breakdown:
+                all_recommendations.extend(breakdown.recommendations)
+        except Exception as e:
+            logger.error(f"Freshness detector error: {e}")
 
     # --- Layer 9: Links & Verifiability (6%) ---
     try:
@@ -344,7 +450,15 @@ async def run_single_audit(
     # --- Layer: Query Match (10%, optional) ---
     if request.target_query and request.target_query.strip():
         try:
-            from src.detectors.query_match import QueryMatchDetector
+            from src.detectors.query_match import QueryMatchDetector, extract_query_terms, tokenize
+            q_terms = extract_query_terms(request.target_query.strip(), lang=detected_lang)
+            content_tokens = set(tokenize(page_data.text_content))
+            content_lower = page_data.text_content.lower()
+            if q_terms and not any(t in content_tokens or t in content_lower for t in q_terms):
+                q_mismatch = "None of the target query terms appear in this content — check the query"
+                if q_mismatch not in all_recommendations:
+                    all_recommendations.insert(0, q_mismatch)
+
             query_detector = QueryMatchDetector(target_query=request.target_query.strip())
             query_result = await query_detector.analyze(page_data)
             detector_results.append(query_result)
@@ -353,14 +467,32 @@ async def run_single_audit(
         except Exception as e:
             logger.error(f"Query match detector error: {e}")
 
+    # Add inferred headings warning if plain text heading inference was triggered
+    if inferred_headings_warning and inferred_headings_warning not in all_recommendations:
+        all_recommendations.insert(0, inferred_headings_warning)
+
     # Step 3: Calculate total score and normalized contribution
-    active_weights_sum = sum(r.weight for r in detector_results)
-    if active_weights_sum > 0:
-        for r in detector_results:
-            r.contribution = (r.score * r.weight) / active_weights_sum
-        total_score = sum(r.contribution for r in detector_results)
+    if is_draft_mode:
+        active_detectors = [r for r in detector_results if r.dimension not in DRAFT_EXCLUDED_DIMENSIONS]
+        active_weights_sum = sum(r.weight for r in active_detectors)
+        if active_weights_sum > 0:
+            for r in detector_results:
+                if r.dimension in DRAFT_EXCLUDED_DIMENSIONS:
+                    r.contribution = 0.0
+                    r.weight = 0.0
+                else:
+                    r.contribution = (r.score * r.weight) / active_weights_sum
+            total_score = sum(r.contribution for r in active_detectors)
+        else:
+            total_score = 0.0
     else:
-        total_score = 0.0
+        active_weights_sum = sum(r.weight for r in detector_results)
+        if active_weights_sum > 0:
+            for r in detector_results:
+                r.contribution = (r.score * r.weight) / active_weights_sum
+            total_score = sum(r.contribution for r in detector_results)
+        else:
+            total_score = 0.0
 
     # Critical bot block check
     has_critical_bot_block = False
@@ -390,7 +522,7 @@ async def run_single_audit(
             score=r.score,
             weight=r.weight,
             contribution=r.contribution,
-            status=r.status,
+            status=r.status if not (is_draft_mode and r.dimension in DRAFT_EXCLUDED_DIMENSIONS) else "yellow",
         )
         for r in detector_results
     ]
@@ -424,7 +556,10 @@ async def run_single_audit(
         cap_reason=cap_reason,
         detector_results=detector_results,
         ai_context=ai_context,
+        is_draft_mode=is_draft_mode,
+        editorial_metadata=editorial_metadata_detected,
     )
+
 
 
 def _build_ai_context(

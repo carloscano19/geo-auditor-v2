@@ -6108,6 +6108,147 @@ Renzo Barbera was an Italian sports executive and club president.
     assert "### Who was Renzo Barbera?" not in draft
 
 
+def test_draft_mode_audit_scoring_and_dimension_exclusion():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    html_content = """
+    <h1>Why Barcelona Fans Are Called Culés</h1>
+    <p>FC Barcelona is one of the most famous football clubs in the world with millions of supporters globally. For more than a century their fans have been known as Culés.</p>
+    <h2>Origins of the Stadium</h2>
+    <p>According to historical records from the club archive in 1909, Barça played at Camp del Carrer Indústria, which had an official capacity of 6,000 spectators.</p>
+    """
+
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        res = client.post("/api/audit", json={"content_html": html_content})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_draft_mode"] is True
+
+    excluded_names = {"technical_infrastructure", "metadata_schema", "freshness", "eeat_authority"}
+    dims = {d["name"]: d for d in data["dimensions"]}
+
+    for name in excluded_names:
+        assert name in dims, f"Dimension {name} should remain visible in dimensions"
+        assert dims[name]["weight"] == 0.0, f"Dimension {name} weight should be 0 in draft mode"
+        assert dims[name]["contribution"] == 0.0, f"Dimension {name} contribution should be 0 in draft mode"
+
+    # Detector results check for draft_mode_excluded
+    det_map = {d["dimension"]: d for d in data["detector_results"]}
+    for name in excluded_names:
+        assert name in det_map
+        assert det_map[name]["debug_info"].get("draft_mode_excluded") is True
+
+    # Active dimensions should sum up to total_score
+    active_contribs = sum(d["contribution"] for d in data["dimensions"] if d["name"] not in excluded_names)
+    assert round(active_contribs, 1) == round(data["total_score"], 1)
+    assert data["total_score"] > 40.0, "Content score should be properly normalized, not diluted by excluded technical dimensions"
+
+
+def test_editorial_metadata_stripped_and_returned():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    html_content = """
+    <h1>Meta title (55): Why Barcelona fans are called Culés</h1>
+    <p>Meta description [132]: Discover the full history and origin of Barcelona supporters.</p>
+    <p>Slug: why-barcelona-fans-called-cules<br>Focus keyword: Barcelona fans</p>
+    <h1>Why Barcelona Fans Are Called Culés</h1>
+    <p>FC Barcelona is one of the most celebrated football clubs in the world with millions of loyal fans.</p>
+    <h2>Historic Stadium</h2>
+    <p>In 1909 the club moved to Carrer Indústria where supporters sat on the surrounding wall.</p>
+    """
+
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        res = client.post("/api/audit", json={"content_html": html_content})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_draft_mode"] is True
+
+    meta = data["editorial_metadata"]
+    assert any("Meta title" in m for m in meta)
+    assert any("Meta description" in m for m in meta)
+    assert any("Slug:" in m for m in meta)
+    assert any("Focus keyword:" in m for m in meta)
+
+    # Real H1 should be the actual title, NOT the Meta title line
+    assert data["ai_context"]["h1"] == "Why Barcelona Fans Are Called Culés"
+
+
+def test_editorial_metadata_spanish_plain_text():
+    from src.utils.text_processing import extract_editorial_metadata_from_text
+
+    raw_text = """Meta título (55): Por qué a los hinchas del Barcelona se les llama Culés
+Meta descripción [130]: Descubre el fascinante origen histórico del apodo de la afición culé.
+Slug: por-que-hinchas-barcelona-cules
+Palabra clave principal: aficionados del barcelona
+Por qué a los hinchas del Barcelona se les llama Culés
+El FC Barcelona es uno de los clubes más emblemáticos del fútbol mundial.
+"""
+    cleaned, meta = extract_editorial_metadata_from_text(raw_text)
+    assert len(meta) == 4
+    assert "Meta título (55):" in meta[0]
+    assert "Meta descripción [130]:" in meta[1]
+    assert "Slug:" in meta[2]
+    assert "Palabra clave principal:" in meta[3]
+    assert not cleaned.startswith("Meta")
+    assert cleaned.startswith("Por qué a los hinchas")
+
+
+def test_plain_text_heading_inference_and_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    # Plain text without Markdown hashes:
+    # Line 1: Title (7 words, no period) followed by substantive paragraph of > 25 words -> H1
+    # Line 3: Heading (4 words, no period) followed by substantive paragraph of > 25 words -> H2
+    plain_content = """Why Barcelona fans are called Cules
+FC Barcelona is one of the most famous football clubs in the entire world with supporters across every single continent. For more than a century their passionate supporters have been affectionately known as Cules.
+Origins of the Stadium
+During the early decades of the twentieth century, Barça played at the Camp del Carrer Industria stadium which was often completely overflowing with fans on matchdays.
+"""
+
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        res = client.post("/api/audit", json={"content_text": plain_content})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["is_draft_mode"] is True
+    assert data["ai_context"]["h1"] == "Why Barcelona fans are called Cules"
+    assert "Origins of the Stadium" in data["ai_context"]["existing_h2s"]
+
+    # Must emit the exact warning required
+    assert "Headings inferred from plain text — paste with formatting for an accurate score" in data["recommendations"]
+
+
+def test_target_query_mismatch_warning():
+    from fastapi.testclient import TestClient
+    from main import app
+    client = TestClient(app)
+
+    html_content = """
+    <h1>Why Barcelona Fans Are Called Culés</h1>
+    <p>FC Barcelona is one of the most famous football clubs in the world with millions of supporters globally.</p>
+    """
+
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        res = client.post("/api/audit", json={
+            "content_html": html_content,
+            "target_query": "quantum computing quantum algorithms"
+        })
+
+    assert res.status_code == 200
+    data = res.json()
+    # Mismatch warning must be in recommendations
+    assert "None of the target query terms appear in this content — check the query" in data["recommendations"]
+
+
+
 
 
 

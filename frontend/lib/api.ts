@@ -235,6 +235,8 @@ export interface AuditResponse {
     cap_reason?: string;
     detector_results: DetectorResult[];
     ai_context?: AIContext;
+    is_draft_mode?: boolean;
+    editorial_metadata?: string[];
 }
 
 export interface HealthStatus {

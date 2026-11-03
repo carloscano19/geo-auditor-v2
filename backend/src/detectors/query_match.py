@@ -201,10 +201,13 @@ class QueryMatchDetector(BaseDetector):
             full_status = "None"
 
         full_recs = []
-        if full_score < 75.0:
+        if len(matched_terms) == 0:
+            full_recs.append("None of the target query terms appear in this content — check the query")
+        elif full_score < 75.0:
             missing_terms = [t for t in query_terms if t not in matched_terms]
             if missing_terms:
                 full_recs.append(f"Incorporate missing query concepts: {', '.join(missing_terms[:3])}.")
+
 
         breakdown.append(ScoreBreakdown(
             name="Full Content Match",
