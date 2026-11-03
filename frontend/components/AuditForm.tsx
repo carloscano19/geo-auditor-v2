@@ -29,6 +29,14 @@ const QUERY_STOP_WORDS = new Set([
     "ha", "han", "hay", "que", "como", "cual", "cuales", "este", "esta", "estos", "estas", "ese", "esa"
 ]);
 
+const EDITORIAL_METADATA_REGEX = /^\s*(?:meta\s+title|meta\s+t[ií]tulo|meta\s+description|meta\s+descripci[oó]n|seo\s+title|t[ií]tulo\s+seo|slug|url|focus\s+keyword|focus\s+keyphrase|target\s+keyword|primary\s+keyword|palabra\s+clave(?:\s+(?:principal|objetivo))?|frase\s+clave(?:\s+(?:principal|objetivo))?)(?:\s*[\(\[][^\)\]]*[\)\]]|\s*[:\-–—])+\s*(.*)$/i;
+
+function isEditorialMetadataText(str: string): boolean {
+    if (!str) return false;
+    const cleaned = str.replace(/\s+([:\-–—])/g, "$1").replace(/\s+/g, " ").trim();
+    return EDITORIAL_METADATA_REGEX.test(cleaned);
+}
+
 function cleanClientPastedHtml(rawHtml: string): string {
     const parser = new DOMParser();
     const doc = parser.parseFromString(rawHtml, "text/html");
@@ -140,10 +148,24 @@ export default function AuditForm({
         const text = el.innerText || "";
         setHasBodyContent(Boolean(text.trim()));
 
-        const h1Count = el.querySelectorAll("h1").length;
-        const h2Count = el.querySelectorAll("h2").length;
-        const h3Count = el.querySelectorAll("h3").length;
-        const listCount = el.querySelectorAll("ul, ol").length;
+        const isValidHeading = (heading: Element) => {
+            const headingText = (heading.textContent || "").trim();
+            const parentLi = heading.closest("li");
+            const liText = parentLi ? (parentLi.textContent || "").trim() : "";
+            return !isEditorialMetadataText(headingText) && !isEditorialMetadataText(liText);
+        };
+
+        const h1Count = Array.from(el.querySelectorAll("h1")).filter(isValidHeading).length;
+        const h2Count = Array.from(el.querySelectorAll("h2")).filter(isValidHeading).length;
+        const h3Count = Array.from(el.querySelectorAll("h3")).filter(isValidHeading).length;
+
+        const listElements = Array.from(el.querySelectorAll("ul, ol"));
+        const listCount = listElements.filter(list => {
+            const lis = Array.from(list.querySelectorAll("li"));
+            if (lis.length === 0) return false;
+            return lis.some(li => !isEditorialMetadataText((li.textContent || "").trim()));
+        }).length;
+
         const tableCount = el.querySelectorAll("table").length;
         const linkCount = el.querySelectorAll("a[href]").length;
 

@@ -935,7 +935,7 @@ EDITORIAL_METADATA_REGEX = re.compile(
     r"primary\s+keyword|"
     r"palabra\s+clave(?:\s+(?:principal|objetivo))?|"
     r"frase\s+clave(?:\s+(?:principal|objetivo))?"
-    r")(?:\s*[\(\[][^\)\]]+[\)\]])?\s*[:\-–—]\s*(.*)$",
+    r")(?:\s*[\(\[][^\)\]]*[\)\]]|\s*[:\-–—])+\s*(.*)$",
     re.IGNORECASE
 )
 
@@ -944,7 +944,9 @@ def is_editorial_metadata_line(line: str) -> bool:
     """Check if a line matches editorial/CMS metadata patterns in English or Spanish."""
     if not line:
         return False
-    return bool(EDITORIAL_METADATA_REGEX.match(line.strip()))
+    cleaned = re.sub(r"\s+([:\-–—])", r"\1", line)
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    return bool(EDITORIAL_METADATA_REGEX.match(cleaned))
 
 
 

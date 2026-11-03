@@ -386,38 +386,70 @@ def sanitize_pasted_html(raw_html: str, return_metadata: bool = False) -> str | 
     from src.utils.lang_patterns import is_editorial_metadata_line
     detected_metadata: list[str] = []
 
+    def _clean_str(s: str) -> str:
+        s = re.sub(r"\s+([:\-–—])", r"\1", s)
+        return re.sub(r"\s+", " ", s).strip()
+
     # Check headings, paragraphs, divs, and list items
-    for el in list(container.find_all(["h1", "h2", "h3", "h4", "h5", "h6", "p", "div", "li"])):
+    for el in list(container.find_all(["li", "p", "h1", "h2", "h3", "h4", "h5", "h6", "div"])):
         # If element was already decomposed, skip
         if not el.parent:
             continue
-        # Check text lines in element (handling <br> or single-line strings)
-        text_content = el.get_text(separator="\n", strip=True)
-        lines = [ln.strip() for ln in text_content.split("\n") if ln.strip()]
-        if not lines:
+        # If element is inside an li that is also in the container, let the li be the evaluated block
+        parent_li = el.find_parent("li")
+        if parent_li and el != parent_li:
+            continue
+        # If element is inside a p, let the p be the block
+        parent_p = el.find_parent("p")
+        if parent_p and el != parent_p:
             continue
 
-        matching_lines = [ln for ln in lines if is_editorial_metadata_line(ln)]
-        if matching_lines:
-            for ml in matching_lines:
-                if ml not in detected_metadata:
-                    detected_metadata.append(ml)
-
-            if len(matching_lines) == len(lines):
-                # All lines in this element are metadata -> decompose element
+        if el.find("br"):
+            # Has linebreaks inside
+            br_parts = []
+            for child in el.contents:
+                if getattr(child, "name", None) == "br":
+                    br_parts.append("\n")
+                elif hasattr(child, "get_text"):
+                    br_parts.append(child.get_text(separator=" ", strip=True))
+                else:
+                    br_parts.append(str(child))
+            block_lines = [_clean_str(ln) for ln in "".join(br_parts).split("\n") if ln.strip()]
+            meta_lines = [ln for ln in block_lines if is_editorial_metadata_line(ln)]
+            if meta_lines:
+                for ml in meta_lines:
+                    if ml not in detected_metadata:
+                        detected_metadata.append(ml)
+                if len(meta_lines) == len(block_lines):
+                    parent = el.parent
+                    el.decompose()
+                    while parent and parent.name in ["ul", "ol"] and not parent.find_all("li"):
+                        grandparent = parent.parent
+                        parent.decompose()
+                        parent = grandparent
+                else:
+                    non_meta = [ln for ln in block_lines if not is_editorial_metadata_line(ln)]
+                    el.clear()
+                    for idx, nm in enumerate(non_meta):
+                        if idx > 0:
+                            el.append(soup.new_tag("br"))
+                        el.append(nm)
+        else:
+            clean_text = _clean_str(el.get_text(separator=" ", strip=True))
+            if is_editorial_metadata_line(clean_text):
+                if clean_text not in detected_metadata:
+                    detected_metadata.append(clean_text)
                 parent = el.parent
                 el.decompose()
-                # If it was an li in a ul/ol and list is now empty, remove list
-                if parent and parent.name in ["ul", "ol"] and not parent.find_all("li"):
+                while parent and parent.name in ["ul", "ol"] and not parent.find_all("li"):
+                    grandparent = parent.parent
                     parent.decompose()
-            else:
-                # Some lines remain -> replace element content with remaining lines
-                remaining_lines = [ln for ln in lines if not is_editorial_metadata_line(ln)]
-                el.clear()
-                for i, r_line in enumerate(remaining_lines):
-                    if i > 0:
-                        el.append(soup.new_tag("br"))
-                    el.append(r_line)
+                    parent = grandparent
+
+    # Extra pass: remove any ul or ol tags that have no li elements
+    for list_tag in list(container.find_all(["ul", "ol"])):
+        if not list_tag.find_all("li"):
+            list_tag.decompose()
 
     # 6. Ensure an H1 exists
     h1_tag = container.find("h1")

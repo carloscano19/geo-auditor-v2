@@ -6248,6 +6248,48 @@ def test_target_query_mismatch_warning():
     assert "None of the target query terms appear in this content — check the query" in data["recommendations"]
 
 
+def test_google_docs_real_metadata_format_and_h1():
+    from src.utils.text_processing import sanitize_pasted_html
+    from bs4 import BeautifulSoup
+    from fastapi.testclient import TestClient
+    from main import app
+
+    html = """<ul>
+<li><h1><strong>Meta title (55):</strong> Why Are Barcelona Fans Called Culés? Meaning and Origin</h1></li>
+<li><h1><strong>Meta description (132)</strong>: Discover why Barça fans are called Culés and how a stadium wall in 1909 gave supporters a nickname they still wear with pride today.</h1></li>
+<li><h1><strong>Slug:</strong> /why-barcelona-fans-are-called-cules/</h1></li>
+</ul>
+<h1><strong>Why Barcelona fans are called Culés: the story behind the nickname</strong></h1>"""
+
+    clean_html, meta = sanitize_pasted_html(html, return_metadata=True)
+
+    soup = BeautifulSoup(clean_html, "lxml")
+    h1s = soup.find_all("h1")
+
+    assert len(h1s) == 1
+    assert "Why Barcelona fans are called Culés: the story behind the nickname" in h1s[0].get_text()
+    assert clean_html.strip().startswith("<h1>")
+    assert "Why Are Barcelona Fans Called Culés? Meaning and Origin" not in clean_html
+    assert "/why-barcelona-fans-are-called-cules/" not in clean_html
+    assert "<ul>" not in clean_html
+    assert "<li>" not in clean_html
+
+    assert len(meta) == 3
+    assert meta[0] == "Meta title (55): Why Are Barcelona Fans Called Culés? Meaning and Origin"
+    assert meta[1] == "Meta description (132): Discover why Barça fans are called Culés and how a stadium wall in 1909 gave supporters a nickname they still wear with pride today."
+    assert meta[2] == "Slug: /why-barcelona-fans-are-called-cules/"
+
+    # Also verify via API endpoint
+    client = TestClient(app)
+    with patch("src.services.audit_service.get_settings", return_value=_rewrite_settings()):
+        res = client.post("/api/audit", json={"content_html": html})
+
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ai_context"]["h1"] == "Why Barcelona fans are called Culés: the story behind the nickname"
+    assert data["editorial_metadata"] == meta
+
+
 
 
 
