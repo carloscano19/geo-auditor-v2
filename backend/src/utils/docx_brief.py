@@ -1071,6 +1071,8 @@ def generate_rewrite_draft_docx(
        and [EDITOR: ...] placeholders highlighted in yellow bold.
     """
     import re
+    from src.utils.text_processing import normalize_markdown_blocks
+    draft_markdown = normalize_markdown_blocks(draft_markdown or "")
     doc = Document()
 
     for section in doc.sections:

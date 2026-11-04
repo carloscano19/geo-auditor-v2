@@ -910,14 +910,15 @@ def test_tokenize_variations():
     1. 'buy $CHZ now' -> removes '$'
     2. 'CHZ's buyback' -> removes possessive ''s'
     3. 'chz-token price' -> returns 'chz-token', 'chz', 'token', 'price'
-    4. 'qué es un fan token' -> keeps accents and words with len > 1
+    4. 'qué es un fan token' -> normalizes vowel accents ('que') and words with len > 1
     """
     from src.detectors.query_match import tokenize
 
     assert tokenize("buy $CHZ now") == ["buy", "chz", "now"]
     assert tokenize("CHZ's buyback") == ["chz", "buyback"]
     assert tokenize("chz-token price") == ["chz-token", "chz", "token", "price"]
-    assert tokenize("qué es un fan token") == ["qué", "es", "un", "fan", "token"]
+    assert tokenize("qué es un fan token") == ["que", "es", "un", "fan", "token"]
+    assert tokenize("culés") == ["cules"]
 
 
 @pytest.mark.asyncio

@@ -515,3 +515,145 @@ def extract_editorial_metadata_from_text(raw_text: str) -> tuple[str, list[str]]
     return "\n".join(cleaned_lines).strip(), detected_metadata
 
 
+def normalize_markdown_blocks(md: str) -> str:
+    """
+    Normalize Markdown blocks to guarantee a blank line before and after:
+    - each table block (lines starting with '|')
+    - each list block (lines starting with '[-*+] ' or r'\\d+\\. ')
+    - each heading (lines starting with '#', '##', etc.)
+    without modifying the content inside the blocks.
+    Ensures Python-Markdown recognizes tables, lists, and headings properly.
+    """
+    if not md:
+        return ""
+
+    lines = md.split("\n")
+    output: list[str] = []
+    state = "none"  # "none", "table", "list"
+    in_code_fence = False
+
+    def is_heading(line: str) -> bool:
+        return bool(re.match(r"^\s*#{1,6}\s+\S", line))
+
+    def is_table_row(line: str) -> bool:
+        return bool(re.match(r"^\s*\|", line))
+
+    def is_list_item(line: str) -> bool:
+        return bool(re.match(r"^\s*([-*+]|\d+\.)\s+\S", line))
+
+    def is_list_continuation(line: str) -> bool:
+        return bool(re.match(r"^\s{2,}\S", line))
+
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+
+        if stripped.startswith("```"):
+            in_code_fence = not in_code_fence
+            if output and output[-1] != "":
+                output.append("")
+            output.append(line)
+            if not in_code_fence and i + 1 < len(lines) and lines[i + 1].strip() != "":
+                output.append("")
+            state = "none"
+            continue
+
+        if in_code_fence:
+            output.append(line)
+            continue
+
+        if not stripped:
+            if output and output[-1] != "":
+                output.append("")
+            state = "none"
+            continue
+
+        if is_heading(line):
+            if output and output[-1] != "":
+                output.append("")
+            output.append(line)
+            output.append("")
+            state = "none"
+        elif is_table_row(line):
+            if state != "table":
+                if output and output[-1] != "":
+                    output.append("")
+                state = "table"
+            output.append(line)
+        elif is_list_item(line):
+            if state != "list":
+                if output and output[-1] != "":
+                    output.append("")
+                state = "list"
+            output.append(line)
+        elif state == "list" and is_list_continuation(line):
+            output.append(line)
+        else:
+            if state in ("table", "list"):
+                if output and output[-1] != "":
+                    output.append("")
+                state = "none"
+            output.append(line)
+
+    res: list[str] = []
+    prev_blank = False
+    for l in output:
+        if l == "":
+            if not prev_blank and res:
+                res.append("")
+                prev_blank = True
+        else:
+            res.append(l)
+            prev_blank = False
+
+    return "\n".join(res).strip()
+
+
+def extract_tables_as_markdown(html: str) -> list[str]:
+    """
+    Extract <table> elements from HTML and convert each to a clean Markdown table with pipes.
+    """
+    if not html:
+        return []
+
+    soup = BeautifulSoup(html, "lxml")
+    tables_md: list[str] = []
+
+    for table in soup.find_all("table"):
+        rows = table.find_all("tr")
+        if not rows:
+            continue
+
+        table_rows_data = []
+        for tr in rows:
+            cells = tr.find_all(["th", "td"])
+            row_data = [re.sub(r"\s+", " ", c.get_text(separator=" ", strip=True)).replace("|", "\\|") for c in cells]
+            if any(row_data):
+                table_rows_data.append(row_data)
+
+        if not table_rows_data:
+            continue
+
+        num_cols = max(len(r) for r in table_rows_data)
+        if num_cols == 0:
+            continue
+
+        padded_rows = [r + [""] * (num_cols - len(r)) for r in table_rows_data]
+
+        header = padded_rows[0]
+        header = [c if c else f"Column {idx + 1}" for idx, c in enumerate(header)]
+        sep = ["---"] * num_cols
+
+        lines = [
+            "| " + " | ".join(header) + " |",
+            "| " + " | ".join(sep) + " |",
+        ]
+
+        for r in padded_rows[1:]:
+            lines.append("| " + " | ".join(r) + " |")
+
+        tables_md.append("\n".join(lines))
+
+    return tables_md
+
+
+

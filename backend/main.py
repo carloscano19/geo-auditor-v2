@@ -29,6 +29,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Response, Request
 from fastapi.responses import StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 import httpx
+from bs4 import BeautifulSoup
 
 import hashlib
 from config.settings import get_settings
@@ -98,6 +99,10 @@ from src.utils.docx_brief import (
     generate_rewrite_draft_docx,
     sanitize_domain_for_filename,
 )
+from src.utils.text_processing import (
+    normalize_markdown_blocks,
+    extract_tables_as_markdown,
+)
 import markdown
 from src.detectors.query_match import get_missing_lead_query_terms
 from src.detectors.passage_quality import extract_eval_paragraphs
@@ -135,6 +140,12 @@ scrape_semaphore = asyncio.Semaphore(1)
 
 # In-memory batch job store
 batch_jobs: Dict[str, Dict[str, Any]] = {}
+
+# In-memory tracking for active article rewrites
+rewrite_statuses: Dict[str, str] = {}
+
+# In-memory cache for fair content score comparisons between original and draft
+rewrite_score_cache: Dict[str, Any] = {}
 
 
 def cleanup_batch_jobs(max_jobs: int = 10, max_age_hours: int = 2) -> None:
@@ -2107,16 +2118,156 @@ async def export_editor_brief(request: BriefExportRequest):
     )
 
 
+def check_content_elements_counts(orig_html: str, draft_markdown: str) -> list[str]:
+    """
+    Deterministic check comparing counts of tables, lists (ul/ol), and images between
+    original HTML and the draft rendered to HTML.
+    Emits warnings if any elements are lost.
+    """
+    warnings: list[str] = []
+    if not orig_html:
+        return warnings
+
+    orig_soup = BeautifulSoup(orig_html, "html.parser")
+    norm_md = normalize_markdown_blocks(draft_markdown)
+    draft_html = markdown.markdown(norm_md, extensions=['tables', 'fenced_code'])
+    draft_soup = BeautifulSoup(draft_html, "html.parser")
+
+    # 1. Tables count
+    orig_tables = len(orig_soup.find_all("table"))
+    draft_tables = len(draft_soup.find_all("table"))
+    if draft_tables < orig_tables:
+        lost = orig_tables - draft_tables
+        warnings.append(f"Original tables lost: {lost} of {orig_tables}")
+
+    # 2. Lists count (ul and ol)
+    orig_lists = len(orig_soup.find_all(["ul", "ol"]))
+    draft_lists = len(draft_soup.find_all(["ul", "ol"]))
+    if draft_lists < orig_lists:
+        lost = orig_lists - draft_lists
+        warnings.append(f"Original lists lost: {lost} of {orig_lists}")
+
+    # 3. Images count (img)
+    orig_images = len(orig_soup.find_all("img"))
+    draft_images = len(draft_soup.find_all("img"))
+    if draft_images < orig_images:
+        lost = orig_images - draft_images
+        warnings.append(f"Original images lost: {lost} of {orig_images}")
+
+    return warnings
+
+
+async def compute_rewrite_score_comparison(
+    orig_html: str,
+    draft_markdown: str,
+    target_query: Optional[str] = None
+) -> AIRewriteScoreResponse:
+    """
+    Fair content-only audit comparison between original HTML and draft Markdown.
+    Normalizes markdown blocks before HTML conversion.
+    Excludes technical_infrastructure, metadata_schema, freshness, eeat_authority.
+    """
+    effective_orig_html = orig_html.strip() if (orig_html and orig_html.strip()) else "<article><p>No content</p></article>"
+
+    norm_draft_md = normalize_markdown_blocks(draft_markdown)
+    draft_html = markdown.markdown(norm_draft_md, extensions=['tables', 'fenced_code']).strip()
+    if not draft_html:
+        draft_html = "<article><p>No content</p></article>"
+
+    orig_req = AuditRequest(content_html=effective_orig_html, target_query=target_query)
+    draft_req = AuditRequest(content_html=draft_html, target_query=target_query)
+
+    orig_audit = await run_single_audit(
+        orig_req,
+        scraper,
+        scrape_semaphore,
+        fetch_robots_fn=fetch_robots_txt,
+        measure_ttfb_fn=measure_ttfb
+    )
+    draft_audit = await run_single_audit(
+        draft_req,
+        scraper,
+        scrape_semaphore,
+        fetch_robots_fn=fetch_robots_txt,
+        measure_ttfb_fn=measure_ttfb
+    )
+
+    EXCLUDED_DIMENSIONS = {
+        "technical_infrastructure",
+        "metadata_schema",
+        "freshness",
+        "eeat_authority",
+    }
+
+    orig_dims = {d.name: d for d in orig_audit.dimensions}
+    draft_dims = {d.name: d for d in draft_audit.dimensions}
+
+    included_names = [d.name for d in orig_audit.dimensions if d.name not in EXCLUDED_DIMENSIONS and d.name in draft_dims]
+
+    comp_list: list[DimensionScoreComparison] = []
+    weight_sum = 0.0
+    weighted_orig_sum = 0.0
+    weighted_draft_sum = 0.0
+
+    for name in included_names:
+        od = orig_dims[name]
+        dd = draft_dims[name]
+        diff = round(dd.score - od.score, 1)
+        comp_list.append(DimensionScoreComparison(
+            name=name,
+            score_before=round(od.score, 1),
+            score_after=round(dd.score, 1),
+            difference=diff,
+        ))
+        w = od.weight
+        weight_sum += w
+        weighted_orig_sum += (od.score * w)
+        weighted_draft_sum += (dd.score * w)
+
+    if weight_sum > 0:
+        total_before = round(weighted_orig_sum / weight_sum, 1)
+        total_after = round(weighted_draft_sum / weight_sum, 1)
+    else:
+        total_before = 0.0
+        total_after = 0.0
+
+    total_diff = round(total_after - total_before, 1)
+
+    return AIRewriteScoreResponse(
+        total_score_before=total_before,
+        total_score_after=total_after,
+        difference=total_diff,
+        dimensions=comp_list,
+        excluded_dimensions=sorted(list(EXCLUDED_DIMENSIONS)),
+    )
+
+
+@app.get("/api/ai/rewrite/status/{request_id}")
+async def get_rewrite_status_endpoint(request_id: str):
+    """
+    Get current progress status of an active rewrite job ('generating', 'improving', 'completed').
+    """
+    status = rewrite_statuses.get(request_id, "unknown")
+    return {"status": status}
+
+
 @app.post("/api/ai/rewrite", response_model=AIRewriteResponse)
 async def rewrite_article(request: AIRewriteRequest):
     """
     Generate complete draft article rewrite based on the audited page context and AI plan.
     Applies safety rules: preserves all original facts/legal phrases, flags invented figures,
-    keeps [EDITOR: ...] placeholders, and removes meta-references/URLs.
+    keeps [EDITOR: ...] placeholders, preserves tables, lists, and images, normalizes markdown blocks,
+    and runs a regression safety net with score comparison.
     """
     current_settings = get_settings()
     if not current_settings.ai_enabled:
         raise HTTPException(status_code=503, detail="AI layer is not configured")
+
+    req_id = request.request_id
+    if req_id:
+        if len(rewrite_statuses) > 100:
+            rewrite_statuses.clear()
+        rewrite_statuses[req_id] = "generating"
 
     ctx = request.ai_context
     plan = request.ai_plan
@@ -2155,6 +2306,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
     - Merge suggested actionable paragraphs into their appropriate sections.
 13. AUTONOMOUS & SELF-CONTAINED PASSAGES: Every paragraph throughout the article and every FAQ answer must be completely self-contained and clear when quoted out of context. Always begin each paragraph and each answer by explicitly naming the entity, person, or subject (e.g. 'The Stadio La Favorita name came from...', 'Renzo Barbera was...'). NEVER start any paragraph or FAQ answer with pronouns or referential phrases such as 'It', 'They', 'This', 'These', 'Those', 'Such', 'As mentioned...', 'Como hemos visto...', 'Esto...', or any anaphoric reference.
+14. ORIGINAL TABLES & LISTS: You MUST keep and preserve ALL original tables and bullet/numbered lists. Never drop a table or convert it into plain text paragraphs. Preserve all columns, rows, and comparative data.
 """
 
     plan_summary_parts = []
@@ -2199,6 +2351,10 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     # Detect original FAQ
     orig_faq_h2, orig_faq_questions = extract_original_faq(ctx.main_html or "", ctx.main_text or "")
 
+    # Extract original tables as markdown
+    orig_tables_list = extract_tables_as_markdown(ctx.main_html or "")
+    original_tables_text = "\n\n".join(orig_tables_list) if orig_tables_list else "(none)"
+
     if original_links:
         original_links_text = "\n".join(f"- [{l['text']}]({l['url']})" for l in original_links)
     else:
@@ -2238,6 +2394,9 @@ Target Query: {target_q + ' (The opening paragraph MUST naturally and literally 
 ORIGINAL PAGE TEXT CONTENT:
 {ctx.main_text}
 
+ORIGINAL TABLES (keep ALL data and compare in Markdown tables):
+{original_tables_text}
+
 ORIGINAL LINKS (keep ALL of them as Markdown links; add no other URLs):
 {original_links_text}
 
@@ -2262,7 +2421,6 @@ Write the complete rewritten article in Markdown now following all editorial and
     orig_text = ctx.main_text or ""
     orig_words = len(orig_text.split())
 
-    # Build prompt payload
     url = f"{llm.base_url}/chat/completions"
     headers = {
         "Authorization": f"Bearer {llm.api_key}",
@@ -2270,652 +2428,720 @@ Write the complete rewritten article in Markdown now following all editorial and
     }
     rewrite_model = current_settings.llm_rewrite_model or llm.model
     rewrite_max_tokens = current_settings.llm_rewrite_max_tokens or 32000
-    payload = {
-        "model": rewrite_model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.2,
-        "max_tokens": rewrite_max_tokens,
-    }
-
-    # Check and increment daily counter
-    from src.services.llm_client import daily_tracker
-    daily_tracker.check_and_increment(llm.daily_limit)
-
     timeout_config = httpx.Timeout(llm.timeout, read=60.0) if llm.streaming else httpx.Timeout(llm.timeout)
 
-    max_attempts = 2
-    final_content = ""
-    final_finish_reason: Optional[str] = None
-    attempt = 0
+    from src.services.llm_client import daily_tracker
 
-    while attempt < max_attempts:
-        attempt += 1
-        try:
-            async with httpx.AsyncClient(timeout=timeout_config) as http_client:
-                if llm.streaming:
-                    content, finish_reason = await llm._stream_and_extract_content(http_client, url, headers, payload)
-                else:
-                    content, finish_reason = await llm._post_and_extract_content(http_client, url, headers, payload)
-        except DailyLimitExceededError as e:
-            raise HTTPException(status_code=429, detail=str(e))
-        except Exception as e:
-            logger.error(f"LLM rewrite error on attempt {attempt}: {traceback.format_exc()}")
-            if attempt < max_attempts:
-                logger.warning(f"Retrying AI rewrite after error on attempt {attempt}...")
-                await asyncio.sleep(1.0)
-                continue
-            raise HTTPException(status_code=502, detail=f"AI rewrite generation failed: {str(e)}")
+    async def _call_llm_draft(messages_payload: list[dict]) -> tuple[str, Optional[str]]:
+        max_draft_attempts = 2
+        attempt_idx = 0
+        last_content = ""
+        last_reason: Optional[str] = None
 
-        clean_content = content.strip()
-        fence_m = re.match(r"^```(?:markdown)?\s*\n?([\s\S]*?)\n?```$", clean_content, re.I)
-        if fence_m:
-            clean_content = fence_m.group(1).strip()
-
-        draft_words = len(clean_content.split())
-        logger.info(
-            f"AI rewrite attempt {attempt}/{max_attempts}: length={len(clean_content)} chars, "
-            f"words={draft_words} (original={orig_words}), finish_reason={finish_reason}"
-        )
-
-        final_content = clean_content
-        final_finish_reason = finish_reason
-
-        is_empty = (not clean_content) or draft_words == 0
-        is_under_50 = (orig_words > 0 and draft_words < orig_words * 0.5)
-        is_length = (finish_reason == "length")
-
-        if is_empty or is_under_50 or is_length:
-            if attempt < max_attempts:
-                logger.warning(
-                    f"AI rewrite attempt {attempt} returned empty or incomplete draft "
-                    f"(empty={is_empty}, words={draft_words}/{orig_words}, finish_reason={finish_reason}). "
-                    f"Retrying once..."
-                )
-                await asyncio.sleep(1.0)
-                continue
-
-        break
-
-    draft_words = len(final_content.split())
-    is_empty = (not final_content) or draft_words == 0
-    is_under_50 = (orig_words > 0 and draft_words < orig_words * 0.5)
-
-    if is_empty or is_under_50:
-        reason_str = final_finish_reason if final_finish_reason else "none"
-        logger.error(
-            f"AI rewrite failed quality check after attempt {attempt}: empty={is_empty}, "
-            f"words={draft_words}/{orig_words}, finish_reason={reason_str}"
-        )
-        raise HTTPException(
-            status_code=502,
-            detail=f"The AI returned an empty or incomplete draft (finish reason: {reason_str}). Please try again."
-        )
-
-    warnings: list[str] = []
-
-    # If the draft finished due to length limit on attempt 2 (or kept), but exceeded 50%, add prominent warning
-    if final_finish_reason == "length":
-        warnings.append("The draft may be incomplete: the AI reached its length limit. Check the end of the article.")
-
-    draft_markdown = final_content
-
-    # 1. Verification of sensitive phrases (financial risk / disclaimers / T&C)
-    # Detect sensitive sentences in original text and ensure they are literally present in the draft
-    orig_text = ctx.main_text or ""
-    orig_sentences = re.split(r'(?<=[.!?])\s+', orig_text)
-    
-    sens_keywords = SENSITIVE_LEGAL_KEYWORDS.get(lang if lang in ("en", "es") else "en", SENSITIVE_LEGAL_KEYWORDS["en"])
-    missing_sensitive: list[str] = []
-
-    for s in orig_sentences:
-        s_clean = s.strip()
-        if len(s_clean) < 15:
-            continue
-        s_lower = s_clean.lower()
-        if any(kw in s_lower for kw in sens_keywords):
-            # Check if this sentence appears in draft_markdown (case-insensitive or partial)
-            s_clean_norm = re.sub(r'[^\w\s]', '', s_clean.lower())
-            draft_norm = re.sub(r'[^\w\s]', '', draft_markdown.lower())
-            if s_clean_norm not in draft_norm:
-                missing_sensitive.append(s_clean)
-
-    if missing_sensitive:
-        draft_markdown += "\n\n" + " ".join(missing_sensitive)
-        for ms in missing_sensitive:
-            warnings.append(f"Restored required sensitive legal disclaimer: \"{ms[:80]}...\"")
-
-    # 2. Verification of figures / numbers
-    plan_full_text = plan_context_text
-    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
-    ext_source_urls = [s.url for s in valid_external_sources]
-    orig_and_plan_numbers = set(
-        num_pattern.findall(
-            orig_text
-            + " "
-            + plan_full_text
-            + " "
-            + " ".join(l["url"] for l in original_links)
-            + " "
-            + " ".join(img["src"] for img in original_images)
-            + " "
-            + " ".join(ext_source_urls)
-        )
-    )
-
-    def _check_and_mark_figures(md_text: str) -> tuple[str, list[str]]:
-        flagged_warnings = []
-        lines = md_text.split("\n")
-        new_lines = []
-        for line in lines:
-            # Skip heading lines, table borders, or image lines
-            if line.strip().startswith("#") or line.strip().startswith("|---") or line.strip().startswith("!["):
-                new_lines.append(line)
-                continue
-            
-            # Split line into sentences
-            parts = re.split(r'(?<=[.!?])\s+', line)
-            new_parts = []
-            for part in parts:
-                p_clean = part.strip()
-                if not p_clean:
-                    new_parts.append(part)
+        while attempt_idx < max_draft_attempts:
+            attempt_idx += 1
+            daily_tracker.check_and_increment(llm.daily_limit)
+            payload = {
+                "model": rewrite_model,
+                "messages": messages_payload,
+                "temperature": 0.2,
+                "max_tokens": rewrite_max_tokens,
+            }
+            try:
+                async with httpx.AsyncClient(timeout=timeout_config) as http_client:
+                    if llm.streaming:
+                        content, finish_reason = await llm._stream_and_extract_content(http_client, url, headers, payload)
+                    else:
+                        content, finish_reason = await llm._post_and_extract_content(http_client, url, headers, payload)
+            except DailyLimitExceededError as e:
+                raise HTTPException(status_code=429, detail=str(e))
+            except Exception as e:
+                logger.error(f"LLM draft error on sub-attempt {attempt_idx}: {traceback.format_exc()}")
+                if attempt_idx < max_draft_attempts:
+                    await asyncio.sleep(1.0)
                     continue
-                # If part already has an editor tag, skip
-                if "[EDITOR:" in p_clean:
-                    new_parts.append(part)
+                raise HTTPException(status_code=502, detail=f"AI rewrite generation failed: {str(e)}")
+
+            clean_c = content.strip()
+            fence_m = re.match(r"^```(?:markdown)?\s*\n?([\s\S]*?)\n?```$", clean_c, re.I)
+            if fence_m:
+                clean_c = fence_m.group(1).strip()
+
+            c_words = len(clean_c.split())
+            last_content = clean_c
+            last_reason = finish_reason
+
+            is_empty = (not clean_c) or c_words == 0
+            is_under_50 = (orig_words > 0 and c_words < orig_words * 0.5)
+            is_length = (finish_reason == "length")
+
+            if is_empty or is_under_50 or is_length:
+                if attempt_idx < max_draft_attempts:
+                    logger.warning(
+                        f"Draft returned incomplete (empty={is_empty}, words={c_words}/{orig_words}, "
+                        f"finish_reason={finish_reason}). Retrying..."
+                    )
+                    await asyncio.sleep(1.0)
                     continue
-                
-                # Check figures in part
-                figs = num_pattern.findall(p_clean)
-                unverified_figs = [f for f in figs if f not in orig_and_plan_numbers and len(f) > 1 and not re.match(r'^(?:19\d\d|20\d\d)$', f)]
-                if unverified_figs:
-                    flag_note = f" [EDITOR: verify this figure ({', '.join(unverified_figs)}) — not in the original page]"
-                    new_parts.append(part + flag_note)
-                    flagged_warnings.append(f"Unverified figure detected ({', '.join(unverified_figs)}) — editor verification flag added.")
-                else:
-                    new_parts.append(part)
-            new_lines.append(" ".join(new_parts))
-        return "\n".join(new_lines), flagged_warnings
+            break
 
-    draft_markdown, fig_warnings = _check_and_mark_figures(draft_markdown)
-    warnings.extend(fig_warnings)
+        c_words = len(last_content.split())
+        if (not last_content) or c_words == 0 or (orig_words > 0 and c_words < orig_words * 0.5):
+            reason_str = last_reason or "none"
+            raise HTTPException(
+                status_code=502,
+                detail=f"The AI returned an empty or incomplete draft (finish reason: {reason_str}). Please try again."
+            )
 
-    # 3. Apply URL filtering and external sources enforcement
-    # Protect editor gaps before running filters
-    gaps: list[str] = []
-    def _gap_stash(m: re.Match) -> str:
-        gaps.append(m.group(0))
-        return f"___EDITOR_GAP_PRESERVE_{len(gaps)-1}___"
+        return last_content, last_reason
 
-    stashed = re.sub(r'\[EDITOR:[^\]]*\]', _gap_stash, draft_markdown)
+    def _post_process_draft(draft_raw: str, current_finish_reason: Optional[str]) -> tuple[str, list[str]]:
+        warnings: list[str] = []
 
-    seen_ext_urls = set()
-    current_section = ""
-    is_fan_token_section = False
-    is_legal_section = False
-    is_faq_section = False
+        if current_finish_reason == "length":
+            warnings.append("The draft may be incomplete: the AI reached its length limit. Check the end of the article.")
 
-    FAN_TOKEN_RE = re.compile(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?', re.I)
-    sens_kws = list(SENSITIVE_LEGAL_KEYWORDS.get("en", [])) + list(SENSITIVE_LEGAL_KEYWORDS.get("es", []))
+        draft_markdown = draft_raw
 
-    raw_blocks = re.split(r'(\n\s*\n)', stashed)
-    processed_blocks = []
+        # 1. Verification of sensitive phrases
+        orig_sentences = re.split(r'(?<=[.!?])\s+', orig_text)
+        sens_keywords = SENSITIVE_LEGAL_KEYWORDS.get(lang if lang in ("en", "es") else "en", SENSITIVE_LEGAL_KEYWORDS["en"])
+        missing_sensitive: list[str] = []
 
-    for block in raw_blocks:
-        if not block.strip():
-            processed_blocks.append(block)
-            continue
+        for s in orig_sentences:
+            s_clean = s.strip()
+            if len(s_clean) < 15:
+                continue
+            s_lower = s_clean.lower()
+            if any(kw in s_lower for kw in sens_keywords):
+                s_clean_norm = re.sub(r'[^\w\s]', '', s_clean.lower())
+                draft_norm = re.sub(r'[^\w\s]', '', draft_markdown.lower())
+                if s_clean_norm not in draft_norm:
+                    missing_sensitive.append(s_clean)
 
-        # Check headings inside block
-        for line in block.split("\n"):
-            line_s = line.strip()
-            if line_s.startswith("#"):
-                current_section = line_s.lower()
-                is_fan_token_section = bool(re.search(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?|\$|\btoken\b', current_section))
-                is_legal_section = bool(re.search(r'(?i)\b(?:disclaimer|terms|risk|legal|aviso\s+legal)\b', current_section))
-                is_faq_section = bool(re.search(r'\b(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes)\b', current_section)) or (
-                    orig_faq_h2 is not None and normalize_heading(orig_faq_h2) in normalize_heading(current_section)
-                )
+        if missing_sensitive:
+            draft_markdown += "\n\n" + " ".join(missing_sensitive)
+            for ms in missing_sensitive:
+                warnings.append(f"Restored required sensitive legal disclaimer: \"{ms[:80]}...\"")
 
-        # Paragraph-level check: contains "fan token" (any form) or any word from SENSITIVE_LEGAL_KEYWORDS
-        block_lower = block.lower()
-        has_fan_token = bool(FAN_TOKEN_RE.search(block))
-        has_legal_kw = any(kw in block_lower for kw in sens_kws)
-        is_prohibited_para = is_fan_token_section or is_legal_section or is_faq_section or has_fan_token or has_legal_kw
+        # 2. Verification of figures / numbers
+        plan_full_text = plan_context_text
+        num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
+        ext_source_urls = [s.url for s in valid_external_sources]
+        orig_and_plan_numbers = set(
+            num_pattern.findall(
+                orig_text
+                + " "
+                + plan_full_text
+                + " "
+                + " ".join(l["url"] for l in original_links)
+                + " "
+                + " ".join(img["src"] for img in original_images)
+                + " "
+                + " ".join(ext_source_urls)
+            )
+        )
 
-        # Convert external source links in prohibited sections or paragraphs (or if already seen) into plain anchor text
-        def _check_ext_link(m: re.Match) -> str:
-            anchor = m.group(1)
-            u = m.group(2)
-            u_norm = normalize_link_url(u)
-            if u_norm in allowed_ext_urls:
-                if is_prohibited_para:
-                    return anchor
-                if u_norm in seen_ext_urls:
-                    return anchor
-                seen_ext_urls.add(u_norm)
-            return m.group(0)
+        def _check_and_mark_figures(md_text: str) -> tuple[str, list[str]]:
+            flagged_warnings = []
+            lines = md_text.split("\n")
+            new_lines = []
+            for line in lines:
+                if line.strip().startswith("#") or line.strip().startswith("|---") or line.strip().startswith("!["):
+                    new_lines.append(line)
+                    continue
+                parts = re.split(r'(?<=[.!?])\s+', line)
+                new_parts = []
+                for part in parts:
+                    p_clean = part.strip()
+                    if not p_clean:
+                        new_parts.append(part)
+                        continue
+                    if "[EDITOR:" in p_clean:
+                        new_parts.append(part)
+                        continue
+                    figs = num_pattern.findall(p_clean)
+                    unverified_figs = [f for f in figs if f not in orig_and_plan_numbers and len(f) > 1 and not re.match(r'^(?:19\d\d|20\d\d)$', f)]
+                    if unverified_figs:
+                        flag_note = f" [EDITOR: verify this figure ({', '.join(unverified_figs)}) — not in the original page]"
+                        new_parts.append(part + flag_note)
+                        flagged_warnings.append(f"Unverified figure detected ({', '.join(unverified_figs)}) — editor verification flag added.")
+                    else:
+                        new_parts.append(part)
+                new_lines.append(" ".join(new_parts))
+            return "\n".join(new_lines), flagged_warnings
 
-        block_with_ext = _MD_LINK_RE.sub(_check_ext_link, block)
+        draft_markdown, fig_warnings = _check_and_mark_figures(draft_markdown)
+        warnings.extend(fig_warnings)
 
-        new_lines = []
-        for line in block_with_ext.split("\n"):
-            line_s = line.strip()
-            if not line_s:
-                new_lines.append(line)
-            elif line_s.startswith("#") or line_s.startswith("|") or line_s.startswith("!["):
-                new_lines.append(filter_draft_urls(line, allowed_urls))
-            else:
-                l_clean = filter_draft_urls(line, allowed_urls)
-                l_clean = strip_page_meta_references(l_clean)
-                if l_clean.strip():
-                    new_lines.append(l_clean)
+        # 3. Apply URL filtering and external sources enforcement
+        gaps: list[str] = []
+        def _gap_stash(m: re.Match) -> str:
+            gaps.append(m.group(0))
+            return f"___EDITOR_GAP_PRESERVE_{len(gaps)-1}___"
 
-        processed_blocks.append("\n".join(new_lines))
+        stashed = re.sub(r'\[EDITOR:[^\]]*\]', _gap_stash, draft_markdown)
+        seen_ext_urls = set()
+        current_section = ""
+        is_fan_token_section = False
+        is_legal_section = False
+        is_faq_section = False
 
-    stashed = "".join(processed_blocks)
+        FAN_TOKEN_RE = re.compile(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?', re.I)
+        sens_kws = list(SENSITIVE_LEGAL_KEYWORDS.get("en", [])) + list(SENSITIVE_LEGAL_KEYWORDS.get("es", []))
 
-    for idx, gap in enumerate(gaps):
-        stashed = stashed.replace(f"___EDITOR_GAP_PRESERVE_{idx}___", gap)
+        raw_blocks = re.split(r'(\n\s*\n)', stashed)
+        processed_blocks = []
 
-    draft_markdown = stashed.strip()
-
-    # Standalone link anchor text restoration
-    # If a line in draft_markdown contains solely a Markdown link whose URL matches an original link,
-    # restore the exact original anchor text.
-    orig_anchor_by_url = {
-        normalize_link_url(l["url"]): l["text"]
-        for l in (original_links or []) if l.get("text") and l.get("url")
-    }
-    restored_lines = []
-    for line in draft_markdown.split("\n"):
-        line_s = line.strip()
-        btn_m = re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[([^\]]+)\]\((https?://[^\s)]+)(?:\s+"[^"]*")?\)\s*$', line_s)
-        if btn_m:
-            curr_anchor = btn_m.group(1)
-            url_target = btn_m.group(2)
-            u_norm = normalize_link_url(url_target)
-            if u_norm in orig_anchor_by_url:
-                orig_anc = orig_anchor_by_url[u_norm]
-                old_target = f"[{curr_anchor}]("
-                new_target = f"[{orig_anc}]("
-                line = line.replace(old_target, new_target, 1)
-        restored_lines.append(line)
-    draft_markdown = "\n".join(restored_lines)
-
-    # 4. Warn about original links that did not make it into the draft
-    draft_urls = {
-        normalize_link_url(u)
-        for u in re.findall(r'https?://[^\s)\]]+', draft_markdown)
-    }
-    if original_links:
-        for l in original_links:
-            if normalize_link_url(l["url"]) not in draft_urls:
-                warnings.append(f"Original link not preserved: {l['text']} ({l['url']})")
-
-    # 5. Warn about original images that did not make it into the draft
-    if original_images:
-        draft_image_urls = {
-            normalize_link_url(m.group(2))
-            for m in _MD_IMG_RE.finditer(draft_markdown)
-        }
-        for img in original_images:
-            if normalize_link_url(img["src"]) not in draft_image_urls:
-                alt_desc = img["alt"] if img["alt"] else "unnamed image"
-                warnings.append(f"Original image not preserved: {alt_desc} ({img['src']})")
-
-    # 6. Warn about external sources added to the draft and check citation formatting
-    for s in valid_external_sources:
-        s_norm = normalize_link_url(s.url)
-        if s_norm in draft_urls:
-            dom = s.domain or urllib.parse.urlparse(s.url).netloc
-            warnings.append(f"External source added: {dom} — check that it supports the claim next to it")
-            for m in _MD_LINK_RE.finditer(draft_markdown):
-                if normalize_link_url(m.group(2)) == s_norm:
-                    anchor = m.group(1).strip()
-                    full_link = m.group(0)
-                    is_ellipsis = anchor.endswith("...") or anchor.endswith("…")
-                    is_in_parens = bool(re.search(r'\(\s*' + re.escape(full_link) + r'\s*\)', draft_markdown))
-                    if is_ellipsis or is_in_parens:
-                        warnings.append(f"Citation anchor looks like a page title: {anchor}")
-
-    # 7. Check for duplicated content (content-word set overlap before FAQ)
-    body_for_dupes = draft_markdown
-    faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
-    if not faq_match and orig_faq_h2:
-        faq_match = re.search(r'(?mi)^##\s+' + re.escape(orig_faq_h2) + r'$', draft_markdown)
-    if faq_match:
-        body_for_dupes = draft_markdown[:faq_match.start()]
-
-    raw_paras = [p.strip() for p in re.split(r'\n\s*\n', body_for_dupes) if p.strip()]
-    candidate_paras: list[str] = []
-    para_word_sets: list[set[str]] = []
-
-    for p in raw_paras:
-        if p.startswith("#") or p.startswith("|") or p.startswith("!["):
-            continue
-        p_no_gaps = re.sub(r'\[EDITOR:[^\]]*\]', '', p).strip()
-        # Exclude paragraphs that are solely a single link or button
-        if re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[[^\]]+\]\([^)]+\)\s*$', p_no_gaps):
-            continue
-
-        # Replace markdown images and links with alt/anchor text, remove loose URLs and editor gaps
-        p_clean = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', p_no_gaps)
-        p_clean = re.sub(r'\[([^\]]*)\]\([^)]+\)', r'\1', p_clean)
-        p_clean = re.sub(r'https?://[^\s)\]]+', '', p_clean)
-
-        # Content words of more than 2 letters without stop words
-        words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', p_clean.lower())
-        cwords = set(w for w in words if w not in EN_ES_STOP_WORDS)
-        # Exclude paragraphs with fewer than 8 content words
-        if len(cwords) < 8:
-            continue
-        candidate_paras.append(p)
-        para_word_sets.append(cwords)
-
-    # Remove words appearing in >= 50% of candidate body paragraphs (entity names like "stadio", "renzo", "barbera", "palermo")
-    word_doc_freq: dict[str, int] = {}
-    for wset in para_word_sets:
-        for w in wset:
-            word_doc_freq[w] = word_doc_freq.get(w, 0) + 1
-
-    num_body_paras = len(candidate_paras)
-    if num_body_paras >= 3:
-        frequent_words = {
-            w for w, count in word_doc_freq.items()
-            if count >= 3 and count >= num_body_paras * 0.5
-        }
-    else:
-        frequent_words = set()
-
-    filtered_para_sets = [wset - frequent_words for wset in para_word_sets]
-
-    seen_dupe_pairs = set()
-    for i in range(num_body_paras):
-        set_a = filtered_para_sets[i]
-        for j in range(i + 1, num_body_paras):
-            set_b = filtered_para_sets[j]
-            if len(set_a) >= 8 and len(set_b) >= 8:
-                overlap = len(set_a & set_b)
-                denom = min(len(set_a), len(set_b))
-                if denom > 0 and (overlap / denom) >= 0.45:
-                    pair_key = (min(i, j), max(i, j))
-                    if pair_key not in seen_dupe_pairs:
-                        seen_dupe_pairs.add(pair_key)
-                        snip_a = " ".join(candidate_paras[i].split()[:8])
-                        snip_b = " ".join(candidate_paras[j].split()[:8])
-                        warnings.append(f"Possible duplicated content: '{snip_a}…' / '{snip_b}…'")
-
-    # 8. Check for original figures missing from draft
-    orig_figs = num_pattern.findall(orig_text)
-    unique_orig_figs = []
-    seen_ofigs = set()
-    for f in orig_figs:
-        if f not in seen_ofigs:
-            seen_ofigs.add(f)
-            unique_orig_figs.append(f)
-
-    draft_figs = set(num_pattern.findall(draft_markdown))
-    for f in unique_orig_figs:
-        f_norm = f.replace(",", "").replace(".", "")
-        if f not in draft_figs and f not in draft_markdown and f_norm not in draft_markdown:
-            warnings.append(f"Original figure missing from draft: {f}")
-
-    # 9. Check for unresolved inconsistencies (normalized to handle punctuation & quotes)
-    TM_SYMBOLS_RE = re.compile(r'[\u2122\xae\xa9]')
-    draft_norm_incons = normalize_heading(draft_markdown)
-    for inc in (plan.inconsistencies or []):
-        if inc.values and len(inc.values) >= 2:
-            val_stripped_set = {normalize_heading(TM_SYMBOLS_RE.sub('', v)) for v in inc.values}
-            if len(val_stripped_set) == 1 and len(set(inc.values)) > 1:
-                tm_warn = "Trademark notation differs (™ vs ®) — check with legal, not changed by the AI"
-                if tm_warn not in warnings:
-                    warnings.append(tm_warn)
+        for block in raw_blocks:
+            if not block.strip():
+                processed_blocks.append(block)
                 continue
 
-            all_present = True
-            for val in inc.values:
-                val_norm = normalize_heading(val)
-                if not val_norm or val_norm not in draft_norm_incons:
-                    all_present = False
-                    break
-            if all_present:
-                warnings.append(f"Inconsistency not resolved: {inc.issue}")
+            for line in block.split("\n"):
+                line_s = line.strip()
+                if line_s.startswith("#"):
+                    current_section = line_s.lower()
+                    is_fan_token_section = bool(re.search(r'(?i)\bfan\s*tokens?[\u2122\xae\xa9]?|\$|\btoken\b', current_section))
+                    is_legal_section = bool(re.search(r'(?i)\b(?:disclaimer|terms|risk|legal|aviso\s+legal)\b', current_section))
+                    is_faq_section = bool(re.search(r'\b(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes)\b', current_section)) or (
+                        orig_faq_h2 is not None and normalize_heading(orig_faq_h2) in normalize_heading(current_section)
+                    )
 
-    # 10. Process and rebuild FAQ section (deduplication, max 2 editor gaps, format with ###)
-    faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
-    if not faq_match and orig_faq_h2:
-        faq_match = re.search(r'(?mi)^##\s+' + re.escape(orig_faq_h2) + r'$', draft_markdown)
+            block_lower = block.lower()
+            has_fan_token = bool(FAN_TOKEN_RE.search(block))
+            has_legal_kw = any(kw in block_lower for kw in sens_kws)
+            is_prohibited_para = is_fan_token_section or is_legal_section or is_faq_section or has_fan_token or has_legal_kw
 
-    if faq_match:
-        faq_start = faq_match.start()
-        faq_header_line = draft_markdown[faq_start:draft_markdown.find("\n", faq_start) if "\n" in draft_markdown[faq_start:] else len(draft_markdown)]
-        after_match = draft_markdown[faq_match.end():]
-        next_h2 = re.search(r'(?mi)^##\s+(?!#)', after_match)
-        if next_h2:
-            faq_end = faq_match.end() + next_h2.start()
-            after_faq = draft_markdown[faq_end:]
+            def _check_ext_link(m: re.Match) -> str:
+                anchor = m.group(1)
+                u = m.group(2)
+                u_norm = normalize_link_url(u)
+                if u_norm in allowed_ext_urls:
+                    if is_prohibited_para:
+                        return anchor
+                    if u_norm in seen_ext_urls:
+                        return anchor
+                    seen_ext_urls.add(u_norm)
+                return m.group(0)
+
+            block_with_ext = _MD_LINK_RE.sub(_check_ext_link, block)
+
+            new_lines = []
+            for line in block_with_ext.split("\n"):
+                line_s = line.strip()
+                if not line_s:
+                    new_lines.append(line)
+                elif line_s.startswith("#") or line_s.startswith("|") or line_s.startswith("!["):
+                    new_lines.append(filter_draft_urls(line, allowed_urls))
+                else:
+                    l_clean = filter_draft_urls(line, allowed_urls)
+                    l_clean = strip_page_meta_references(l_clean)
+                    if l_clean.strip():
+                        new_lines.append(l_clean)
+
+            processed_blocks.append("\n".join(new_lines))
+
+        stashed = "".join(processed_blocks)
+        for idx, gap in enumerate(gaps):
+            stashed = stashed.replace(f"___EDITOR_GAP_PRESERVE_{idx}___", gap)
+
+        draft_markdown = stashed.strip()
+
+        # Standalone link anchor text restoration
+        orig_anchor_by_url = {
+            normalize_link_url(l["url"]): l["text"]
+            for l in (original_links or []) if l.get("text") and l.get("url")
+        }
+        restored_lines = []
+        for line in draft_markdown.split("\n"):
+            line_s = line.strip()
+            btn_m = re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[([^\]]+)\]\((https?://[^\s)]+)(?:\s+"[^"]*")?\)\s*$', line_s)
+            if btn_m:
+                curr_anchor = btn_m.group(1)
+                url_target = btn_m.group(2)
+                u_norm = normalize_link_url(url_target)
+                if u_norm in orig_anchor_by_url:
+                    orig_anc = orig_anchor_by_url[u_norm]
+                    old_target = f"[{curr_anchor}]("
+                    new_target = f"[{orig_anc}]("
+                    line = line.replace(old_target, new_target, 1)
+            restored_lines.append(line)
+        draft_markdown = "\n".join(restored_lines)
+
+        # 4. Warn about original links that did not make it into the draft
+        draft_urls = {
+            normalize_link_url(u)
+            for u in re.findall(r'https?://[^\s)\]]+', draft_markdown)
+        }
+        if original_links:
+            for l in original_links:
+                if normalize_link_url(l["url"]) not in draft_urls:
+                    warnings.append(f"Original link not preserved: {l['text']} ({l['url']})")
+
+        # 5. Warn about original images that did not make it into the draft
+        if original_images:
+            draft_image_urls = {
+                normalize_link_url(m.group(2))
+                for m in _MD_IMG_RE.finditer(draft_markdown)
+            }
+            for img in original_images:
+                if normalize_link_url(img["src"]) not in draft_image_urls:
+                    alt_desc = img["alt"] if img["alt"] else "unnamed image"
+                    warnings.append(f"Original image not preserved: {alt_desc} ({img['src']})")
+
+        # 6. Warn about external sources added to the draft
+        for s in valid_external_sources:
+            s_norm = normalize_link_url(s.url)
+            if s_norm in draft_urls:
+                dom = s.domain or urllib.parse.urlparse(s.url).netloc
+                warnings.append(f"External source added: {dom} — check that it supports the claim next to it")
+                for m in _MD_LINK_RE.finditer(draft_markdown):
+                    if normalize_link_url(m.group(2)) == s_norm:
+                        anchor = m.group(1).strip()
+                        full_link = m.group(0)
+                        is_ellipsis = anchor.endswith("...") or anchor.endswith("…")
+                        is_in_parens = bool(re.search(r'\(\s*' + re.escape(full_link) + r'\s*\)', draft_markdown))
+                        if is_ellipsis or is_in_parens:
+                            warnings.append(f"Citation anchor looks like a page title: {anchor}")
+
+        # 7. Check for duplicated content
+        body_for_dupes = draft_markdown
+        faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
+        if not faq_match and orig_faq_h2:
+            faq_match = re.search(r'(?mi)^##\s+' + re.escape(orig_faq_h2) + r'$', draft_markdown)
+        if faq_match:
+            body_for_dupes = draft_markdown[:faq_match.start()]
+
+        raw_paras = [p.strip() for p in re.split(r'\n\s*\n', body_for_dupes) if p.strip()]
+        candidate_paras: list[str] = []
+        para_word_sets: list[set[str]] = []
+
+        for p in raw_paras:
+            if p.startswith("#") or p.startswith("|") or p.startswith("!["):
+                continue
+            p_no_gaps = re.sub(r'\[EDITOR:[^\]]*\]', '', p).strip()
+            if re.match(r'^(?:[\*\-\+]\s+|\d+\.\s+)?\[[^\]]+\]\([^)]+\)\s*$', p_no_gaps):
+                continue
+
+            p_clean = re.sub(r'!\[([^\]]*)\]\([^)]+\)', r'\1', p_no_gaps)
+            p_clean = re.sub(r'\[([^\]]*)\]\([^)]+\)', r'\1', p_clean)
+            p_clean = re.sub(r'https?://[^\s)\]]+', '', p_clean)
+
+            words = re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', p_clean.lower())
+            cwords = set(w for w in words if w not in EN_ES_STOP_WORDS)
+            if len(cwords) < 8:
+                continue
+            candidate_paras.append(p)
+            para_word_sets.append(cwords)
+
+        word_doc_freq: dict[str, int] = {}
+        for wset in para_word_sets:
+            for w in wset:
+                word_doc_freq[w] = word_doc_freq.get(w, 0) + 1
+
+        num_body_paras = len(candidate_paras)
+        if num_body_paras >= 3:
+            frequent_words = {
+                w for w, count in word_doc_freq.items()
+                if count >= 3 and count >= num_body_paras * 0.5
+            }
         else:
-            faq_end = len(draft_markdown)
-            after_faq = ""
-        before_faq = draft_markdown[:faq_start]
-        faq_full = draft_markdown[faq_start:faq_end]
+            frequent_words = set()
 
-        faq_inner = faq_full[len(faq_header_line):]
-        blocks = re.split(r'(?m)^(?=###\s+|Q:\s*|\*\*\s*Q:\s*|\*\*(?:Q:\s*)?[^\n]+\?\*\*)', faq_inner)
-        intro_text = blocks[0].strip() if blocks else ""
+        filtered_para_sets = [wset - frequent_words for wset in para_word_sets]
+        seen_dupe_pairs = set()
+        for i in range(num_body_paras):
+            set_a = filtered_para_sets[i]
+            for j in range(i + 1, num_body_paras):
+                set_b = filtered_para_sets[j]
+                if len(set_a) >= 8 and len(set_b) >= 8:
+                    overlap = len(set_a & set_b)
+                    denom = min(len(set_a), len(set_b))
+                    if denom > 0 and (overlap / denom) >= 0.45:
+                        pair_key = (min(i, j), max(i, j))
+                        if pair_key not in seen_dupe_pairs:
+                            seen_dupe_pairs.add(pair_key)
+                            snip_a = " ".join(candidate_paras[i].split()[:8])
+                            snip_b = " ".join(candidate_paras[j].split()[:8])
+                            warnings.append(f"Possible duplicated content: '{snip_a}…' / '{snip_b}…'")
 
-        orig_norm_set = {normalize_heading(q) for q in orig_faq_questions}
-        paa_norm_set = set()
-        paa_words_list: list[set[str]] = []
-        for pq in (plan.questions_to_answer or []):
-            is_paa = (getattr(pq, "origin", None) == "google_paa" or getattr(pq, "answer_source", None) in ("paa", "organic", "google_paa"))
-            if is_paa and pq.question:
-                paa_norm_set.add(normalize_heading(pq.question))
-                pw = set(w for w in re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', pq.question.lower()) if w not in EN_ES_STOP_WORDS)
-                if pw:
-                    paa_words_list.append(pw)
+        # 8. Check for original figures missing from draft
+        orig_figs = num_pattern.findall(orig_text)
+        unique_orig_figs = []
+        seen_ofigs = set()
+        for f in orig_figs:
+            if f not in seen_ofigs:
+                seen_ofigs.add(f)
+                unique_orig_figs.append(f)
 
-        def _clean_faq_q(q: str) -> str:
-            q = re.sub(r'^(?:###\s*|(?:\*|\s)*(?:Q|Question)(?:\*\*|\*|\s)*:\s*|\*+|\s+)+', '', q, flags=re.IGNORECASE).strip()
-            q = re.sub(r'[\*#:\s]+$', '', q).strip()
-            return q
+        draft_figs = set(num_pattern.findall(draft_markdown))
+        for f in unique_orig_figs:
+            f_norm = f.replace(",", "").replace(".", "")
+            if f not in draft_figs and f not in draft_markdown and f_norm not in draft_markdown:
+                warnings.append(f"Original figure missing from draft: {f}")
 
-        def _clean_faq_rem(a: str) -> str:
-            a = re.sub(r'^(?:\*|\s)*(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
-            a = re.sub(r'^(?:\*|\s)+', '', a).strip()
-            return a
-
-        def _clean_faq_next_line(a: str) -> str:
-            a = re.sub(r'^(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
-            return a
-
-        class _ParsedFAQ:
-            def __init__(self, raw_block: str):
-                lines = raw_block.strip().split("\n")
-                first_line = lines[0].strip()
-                rest_lines = lines[1:]
-
-                q_idx = first_line.find("?")
-                if q_idx != -1:
-                    q_raw = first_line[:q_idx + 1]
-                    rem_raw = first_line[q_idx + 1:].strip()
-                else:
-                    m_bold = re.match(r'^\*\*(.*?)\*\*\s*(.*)$', first_line)
-                    if m_bold:
-                        q_raw = m_bold.group(1)
-                        rem_raw = m_bold.group(2).strip()
-                    else:
-                        m_h3 = re.match(r'^###\s+(.*)$', first_line)
-                        if m_h3:
-                            q_raw = m_h3.group(1)
-                            rem_raw = ""
-                        else:
-                            q_raw = first_line
-                            rem_raw = ""
-
-                self.question = _clean_faq_q(q_raw)
-                ans_parts: list[str] = []
-                if rem_raw:
-                    clean_rem = _clean_faq_rem(rem_raw)
-                    if clean_rem:
-                        ans_parts.append(clean_rem)
-                if rest_lines:
-                    if not ans_parts:
-                        clean_first_rest = _clean_faq_next_line(rest_lines[0])
-                        if clean_first_rest:
-                            ans_parts.append(clean_first_rest)
-                        ans_parts.extend(rest_lines[1:])
-                    else:
-                        ans_parts.extend(rest_lines)
-
-                self.answer_text = "\n".join(ans_parts).strip()
-                self.is_original = normalize_heading(self.question) in orig_norm_set
-
-                # Question words without stop words
-                self.raw_q_words = get_heading_words(self.question)
-                self.content_words = set(self.raw_q_words)
-                self.has_gap = "[EDITOR:" in self.answer_text
-
-                # Check PAA priority
-                q_norm = normalize_heading(self.question)
-                matched_paa = q_norm in paa_norm_set
-                if not matched_paa and self.raw_q_words:
-                    for pw in paa_words_list:
-                        denom = min(len(self.raw_q_words), len(pw)) if self.raw_q_words else 0
-                        if denom > 0 and (len(self.raw_q_words & pw) / denom) >= 0.60:
-                            matched_paa = True
-                            break
-                self.is_paa = matched_paa
-
-        parsed_items = [_ParsedFAQ(b) for b in blocks[1:] if b.strip()]
-
-        # Compute entity words (words appearing in >= 50% of FAQ questions, like H2s in rename-fix, plus FAQ heading entity words)
-        GENERIC_FAQ_WORDS = {'faq', 'faqs', 'frequently', 'asked', 'questions', 'preguntas', 'frecuentes'}
-        faq_entity_words: set[str] = set()
-        if faq_header_line:
-            header_words = get_heading_words(faq_header_line) - GENERIC_FAQ_WORDS
-            faq_entity_words.update(header_words)
-
-        eval_faq_questions = [q for q in orig_faq_questions] if len(orig_faq_questions) >= 2 else ([it.question for it in parsed_items] if len(parsed_items) >= 3 else [])
-        if eval_faq_questions:
-            faq_word_freq: dict[str, int] = {}
-            for q in eval_faq_questions:
-                for w in get_heading_words(q):
-                    faq_word_freq[w] = faq_word_freq.get(w, 0) + 1
-
-            total_eval = len(eval_faq_questions)
-            for w, cnt in faq_word_freq.items():
-                if cnt >= 2 and (cnt / total_eval) >= 0.5:
-                    faq_entity_words.add(w)
-
-        # Update content_words for each FAQ item by stripping entity words (falling back to raw_q_words if empty)
-        for it in parsed_items:
-            filtered_q = it.raw_q_words - faq_entity_words
-            it.content_words = filtered_q if filtered_q else it.raw_q_words
-
-        # 1. Deduplicate questions sharing >= 60% of content words
-        # Regla A: Deduplication NEVER eliminates an original question. If two original questions seem similar, keep BOTH.
-        # Regla B: Entity words are removed before comparing.
-        kept_items: list[_ParsedFAQ] = []
-        for item in parsed_items:
-            dupe_idx = None
-            for idx, kept in enumerate(kept_items):
-                # Regla A: two original questions are never deduplicated against each other
-                if kept.is_original and item.is_original:
+        # 9. Check for unresolved inconsistencies
+        TM_SYMBOLS_RE = re.compile(r'[\u2122\xae\xa9]')
+        draft_norm_incons = normalize_heading(draft_markdown)
+        for inc in (plan.inconsistencies or []):
+            if inc.values and len(inc.values) >= 2:
+                val_stripped_set = {normalize_heading(TM_SYMBOLS_RE.sub('', v)) for v in inc.values}
+                if len(val_stripped_set) == 1 and len(set(inc.values)) > 1:
+                    tm_warn = "Trademark notation differs (™ vs ®) — check with legal, not changed by the AI"
+                    if tm_warn not in warnings:
+                        warnings.append(tm_warn)
                     continue
-                is_exact = normalize_heading(kept.question) == normalize_heading(item.question)
-                wa = kept.content_words
-                wb = item.content_words
-                denom = min(len(wa), len(wb)) if (wa and wb) else 0
-                is_overlap = denom > 0 and (len(wa & wb) / denom) >= 0.60
-                if is_exact or is_overlap:
-                    dupe_idx = idx
-                    break
 
-            if dupe_idx is not None:
-                kept = kept_items[dupe_idx]
-                if item.is_original and not kept.is_original:
-                    removed = kept
-                    kept_items[dupe_idx] = item
-                    warnings.append(f"Duplicate FAQ question removed: {removed.question}")
-                elif not item.is_original:
-                    warnings.append(f"Duplicate FAQ question removed: {item.question}")
+                all_present = True
+                for val in inc.values:
+                    val_norm = normalize_heading(val)
+                    if not val_norm or val_norm not in draft_norm_incons:
+                        all_present = False
+                        break
+                if all_present:
+                    warnings.append(f"Inconsistency not resolved: {inc.issue}")
+
+        # 10. Process and rebuild FAQ section
+        faq_match = re.search(r'(?mi)^##\s+.*(?:faq|faqs|frequently\s+asked\s+questions|preguntas\s+frecuentes).*$', draft_markdown)
+        if not faq_match and orig_faq_h2:
+            faq_match = re.search(r'(?mi)^##\s+' + re.escape(orig_faq_h2) + r'$', draft_markdown)
+
+        if faq_match:
+            faq_start = faq_match.start()
+            faq_header_line = draft_markdown[faq_start:draft_markdown.find("\n", faq_start) if "\n" in draft_markdown[faq_start:] else len(draft_markdown)]
+            after_match = draft_markdown[faq_match.end():]
+            next_h2 = re.search(r'(?mi)^##\s+(?!#)', after_match)
+            if next_h2:
+                faq_end = faq_match.end() + next_h2.start()
+                after_faq = draft_markdown[faq_end:]
             else:
-                kept_items.append(item)
+                faq_end = len(draft_markdown)
+                after_faq = ""
+            before_faq = draft_markdown[:faq_start]
+            faq_full = draft_markdown[faq_start:faq_end]
 
-        # 2. Limit questions with [EDITOR: ...] gaps to max 2, prioritizing PAA
-        gap_items = [it for it in kept_items if it.has_gap]
-        if len(gap_items) > 2:
-            sorted_gaps = sorted(gap_items, key=lambda it: (0 if it.is_paa else 1))
-            to_keep_gaps = set(sorted_gaps[:2])
-            to_remove_gaps = sorted_gaps[2:]
-            for rem in to_remove_gaps:
-                warnings.append(f"Suggested FAQ question not included (needs data): {rem.question}")
-            kept_items = [it for it in kept_items if not it.has_gap or it in to_keep_gaps]
+            faq_inner = faq_full[len(faq_header_line):]
+            blocks = re.split(r'(?m)^(?=###\s+|Q:\s*|\*\*\s*Q:\s*|\*\*(?:Q:\s*)?[^\n]+\?\*\*)', faq_inner)
+            intro_text = blocks[0].strip() if blocks else ""
 
-        # 3. Partition: non-gap questions first, followed by at most 2 gap questions at the end
-        non_gap_items = [it for it in kept_items if not it.has_gap]
-        final_gap_items = [it for it in kept_items if it.has_gap]
+            orig_norm_set = {normalize_heading(q) for q in orig_faq_questions}
+            paa_norm_set = set()
+            paa_words_list: list[set[str]] = []
+            for pq in (plan.questions_to_answer or []):
+                is_paa = (getattr(pq, "origin", None) == "google_paa" or getattr(pq, "answer_source", None) in ("paa", "organic", "google_paa"))
+                if is_paa and pq.question:
+                    paa_norm_set.add(normalize_heading(pq.question))
+                    pw = set(w for w in re.findall(r'\b[a-zA-Z0-9áéíóúÁÉÍÓÚñÑüÜ]{3,}\b', pq.question.lower()) if w not in EN_ES_STOP_WORDS)
+                    if pw:
+                        paa_words_list.append(pw)
 
-        # 4. Check unsupported claims before editor gap in first sentence & emit gap warning
-        for it in final_gap_items:
-            m_sent = re.search(r'^(.*?[.!?])(?:\s+|$)', it.answer_text.strip(), flags=re.DOTALL)
-            first_sentence = m_sent.group(1).strip() if m_sent else it.answer_text.strip()
-            if "[EDITOR:" not in first_sentence:
-                warnings.append(f"Possible unsupported claim before the editor gap: {first_sentence}")
-            warnings.append(f"FAQ with editor gap: {it.question} — fill it or remove it before publishing")
+            def _clean_faq_q(q: str) -> str:
+                q = re.sub(r'^(?:###\s*|(?:\*|\s)*(?:Q|Question)(?:\*\*|\*|\s)*:\s*|\*+|\s+)+', '', q, flags=re.IGNORECASE).strip()
+                q = re.sub(r'[\*#:\s]+$', '', q).strip()
+                return q
 
-        # 5. Reconstruct FAQ markdown with ### headings
-        faq_sections: list[str] = []
-        if intro_text:
-            faq_sections.append(intro_text)
-        for it in non_gap_items + final_gap_items:
-            faq_sections.append(f"### {it.question}\n\n{it.answer_text}")
+            def _clean_faq_rem(a: str) -> str:
+                a = re.sub(r'^(?:\*|\s)*(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
+                a = re.sub(r'^(?:\*|\s)+', '', a).strip()
+                return a
 
-        reconstructed_faq = faq_header_line + "\n\n" + "\n\n".join(faq_sections) + ("\n\n" if after_faq else "\n")
-        draft_markdown = before_faq + reconstructed_faq + after_faq
+            def _clean_faq_next_line(a: str) -> str:
+                a = re.sub(r'^(?:\*\*|\*|\s)*(?:A|Answer)(?:\*\*|\*|\s)*:\s*(?:\*\*|\*|\s)*', '', a, flags=re.IGNORECASE).strip()
+                return a
 
-    # 11. Check for dropped original FAQ questions
-    draft_norm_headings = normalize_heading(draft_markdown)
-    for q in orig_faq_questions:
-        q_norm = normalize_heading(q)
-        if q_norm and q_norm not in draft_norm_headings:
-            warnings.append(f"Original FAQ question dropped: {q}")
+            class _ParsedFAQ:
+                def __init__(self, raw_block: str):
+                    lines = raw_block.strip().split("\n")
+                    first_line = lines[0].strip()
+                    rest_lines = lines[1:]
 
-    # 12. Check for missing target query terms in opening paragraph
-    if target_q:
-        draft_lead = extract_draft_opening_paragraph(draft_markdown)
-        missing_lead_terms = get_missing_lead_query_terms(draft_lead, target_q, lang)
-        if missing_lead_terms:
-            warnings.append(f"Draft opening paragraph is missing target query term(s): {', '.join(missing_lead_terms)}")
+                    q_idx = first_line.find("?")
+                    if q_idx != -1:
+                        q_raw = first_line[:q_idx + 1]
+                        rem_raw = first_line[q_idx + 1:].strip()
+                    else:
+                        m_bold = re.match(r'^\*\*(.*?)\*\*\s*(.*)$', first_line)
+                        if m_bold:
+                            q_raw = m_bold.group(1)
+                            rem_raw = m_bold.group(2).strip()
+                        else:
+                            m_h3 = re.match(r'^###\s+(.*)$', first_line)
+                            if m_h3:
+                                q_raw = m_h3.group(1)
+                                rem_raw = ""
+                            else:
+                                q_raw = first_line
+                                rem_raw = ""
 
-    # 13. Check for non-autonomous paragraphs (Passage Quality - Autonomous Passages)
-    patterns = get_lang_patterns(lang)
-    referential_starters = patterns.get("referential_starters", [])
-    if referential_starters:
-        draft_html = markdown.markdown(draft_markdown, extensions=['tables', 'fenced_code'])
-        eval_paragraphs = extract_eval_paragraphs(draft_html, draft_markdown)
-        for p in eval_paragraphs:
-            is_referential = any(bool(re.search(pat, p, re.IGNORECASE)) for pat in referential_starters)
-            if is_referential:
-                words = p.split()[:4]
-                first_four = " ".join(words)
-                w_msg = f"Paragraph not self-contained (starts with '{first_four}…') — name the subject explicitly"
-                if w_msg not in warnings:
-                    warnings.append(w_msg)
+                    self.question = _clean_faq_q(q_raw)
+                    ans_parts: list[str] = []
+                    if rem_raw:
+                        clean_rem = _clean_faq_rem(rem_raw)
+                        if clean_rem:
+                            ans_parts.append(clean_rem)
+                    if rest_lines:
+                        if not ans_parts:
+                            clean_first_rest = _clean_faq_next_line(rest_lines[0])
+                            if clean_first_rest:
+                                ans_parts.append(clean_first_rest)
+                            ans_parts.extend(rest_lines[1:])
+                        else:
+                            ans_parts.extend(rest_lines)
+
+                    self.answer_text = "\n".join(ans_parts).strip()
+                    self.is_original = normalize_heading(self.question) in orig_norm_set
+                    self.raw_q_words = get_heading_words(self.question)
+                    self.content_words = set(self.raw_q_words)
+                    self.has_gap = "[EDITOR:" in self.answer_text
+
+                    q_norm = normalize_heading(self.question)
+                    matched_paa = q_norm in paa_norm_set
+                    if not matched_paa and self.raw_q_words:
+                        for pw in paa_words_list:
+                            denom = min(len(self.raw_q_words), len(pw)) if self.raw_q_words else 0
+                            if denom > 0 and (len(self.raw_q_words & pw) / denom) >= 0.60:
+                                matched_paa = True
+                                break
+                    self.is_paa = matched_paa
+
+            parsed_items = [_ParsedFAQ(b) for b in blocks[1:] if b.strip()]
+
+            GENERIC_FAQ_WORDS = {'faq', 'faqs', 'frequently', 'asked', 'questions', 'preguntas', 'frecuentes'}
+            faq_entity_words: set[str] = set()
+            if faq_header_line:
+                header_words = get_heading_words(faq_header_line) - GENERIC_FAQ_WORDS
+                faq_entity_words.update(header_words)
+
+            eval_faq_questions = [q for q in orig_faq_questions] if len(orig_faq_questions) >= 2 else ([it.question for it in parsed_items] if len(parsed_items) >= 3 else [])
+            if eval_faq_questions:
+                faq_word_freq: dict[str, int] = {}
+                for q in eval_faq_questions:
+                    for w in get_heading_words(q):
+                        faq_word_freq[w] = faq_word_freq.get(w, 0) + 1
+
+                total_eval = len(eval_faq_questions)
+                for w, cnt in faq_word_freq.items():
+                    if cnt >= 2 and (cnt / total_eval) >= 0.5:
+                        faq_entity_words.add(w)
+
+            for it in parsed_items:
+                filtered_q = it.raw_q_words - faq_entity_words
+                it.content_words = filtered_q if filtered_q else it.raw_q_words
+
+            kept_items: list[_ParsedFAQ] = []
+            for item in parsed_items:
+                dupe_idx = None
+                for idx, kept in enumerate(kept_items):
+                    if kept.is_original and item.is_original:
+                        continue
+                    is_exact = normalize_heading(kept.question) == normalize_heading(item.question)
+                    wa = kept.content_words
+                    wb = item.content_words
+                    denom = min(len(wa), len(wb)) if (wa and wb) else 0
+                    is_overlap = denom > 0 and (len(wa & wb) / denom) >= 0.60
+                    if is_exact or is_overlap:
+                        dupe_idx = idx
+                        break
+
+                if dupe_idx is not None:
+                    kept = kept_items[dupe_idx]
+                    if item.is_original and not kept.is_original:
+                        removed = kept
+                        kept_items[dupe_idx] = item
+                        warnings.append(f"Duplicate FAQ question removed: {removed.question}")
+                    elif not item.is_original:
+                        warnings.append(f"Duplicate FAQ question removed: {item.question}")
+                else:
+                    kept_items.append(item)
+
+            gap_items = [it for it in kept_items if it.has_gap]
+            if len(gap_items) > 2:
+                sorted_gaps = sorted(gap_items, key=lambda it: (0 if it.is_paa else 1))
+                to_keep_gaps = set(sorted_gaps[:2])
+                to_remove_gaps = sorted_gaps[2:]
+                for rem in to_remove_gaps:
+                    warnings.append(f"Suggested FAQ question not included (needs data): {rem.question}")
+                kept_items = [it for it in kept_items if not it.has_gap or it in to_keep_gaps]
+
+            non_gap_items = [it for it in kept_items if not it.has_gap]
+            final_gap_items = [it for it in kept_items if it.has_gap]
+
+            for it in final_gap_items:
+                m_sent = re.search(r'^(.*?[.!?])(?:\s+|$)', it.answer_text.strip(), flags=re.DOTALL)
+                first_sentence = m_sent.group(1).strip() if m_sent else it.answer_text.strip()
+                if "[EDITOR:" not in first_sentence:
+                    warnings.append(f"Possible unsupported claim before the editor gap: {first_sentence}")
+                warnings.append(f"FAQ with editor gap: {it.question} — fill it or remove it before publishing")
+
+            faq_sections: list[str] = []
+            if intro_text:
+                faq_sections.append(intro_text)
+            for it in non_gap_items + final_gap_items:
+                faq_sections.append(f"### {it.question}\n\n{it.answer_text}")
+
+            reconstructed_faq = faq_header_line + "\n\n" + "\n\n".join(faq_sections) + ("\n\n" if after_faq else "\n")
+            draft_markdown = before_faq + reconstructed_faq + after_faq
+
+        # 11. Check for dropped original FAQ questions
+        draft_norm_headings = normalize_heading(draft_markdown)
+        for q in orig_faq_questions:
+            q_norm = normalize_heading(q)
+            if q_norm and q_norm not in draft_norm_headings:
+                warnings.append(f"Original FAQ question dropped: {q}")
+
+        # 12. Check for missing target query terms in opening paragraph
+        if target_q:
+            draft_lead = extract_draft_opening_paragraph(draft_markdown)
+            missing_lead_terms = get_missing_lead_query_terms(draft_lead, target_q, lang)
+            if missing_lead_terms:
+                warnings.append(f"Draft opening paragraph is missing target query term(s): {', '.join(missing_lead_terms)}")
+
+        # 13. Check for non-autonomous paragraphs
+        patterns = get_lang_patterns(lang)
+        referential_starters = patterns.get("referential_starters", [])
+        if referential_starters:
+            draft_html_eval = markdown.markdown(draft_markdown, extensions=['tables', 'fenced_code'])
+            eval_paragraphs = extract_eval_paragraphs(draft_html_eval, draft_markdown)
+            for p in eval_paragraphs:
+                is_referential = any(bool(re.search(pat, p, re.IGNORECASE)) for pat in referential_starters)
+                if is_referential:
+                    words = p.split()[:4]
+                    first_four = " ".join(words)
+                    w_msg = f"Paragraph not self-contained (starts with '{first_four}…') — name the subject explicitly"
+                    if w_msg not in warnings:
+                        warnings.append(w_msg)
+
+        # 14. Deterministic checks: tables, lists, and images count vs original HTML
+        element_count_warnings = check_content_elements_counts(ctx.main_html or "", draft_markdown)
+        warnings.extend(element_count_warnings)
+
+        # 15. Normalize Markdown blocks (blank lines around tables, lists, headings)
+        draft_markdown = normalize_markdown_blocks(draft_markdown)
+
+        return draft_markdown, warnings
+
+    # Attempt 1: Initial rewrite
+    draft_1_raw, finish_reason_1 = await _call_llm_draft([
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ])
+
+    orig_html_to_compare = ctx.main_html or (f"<article><p>{ctx.main_text or ''}</p></article>" if ctx.main_text else "")
+
+    draft_1, warnings_1 = _post_process_draft(draft_1_raw, finish_reason_1)
+    comp_1 = await compute_rewrite_score_comparison(orig_html_to_compare, draft_1, target_q)
+    regressions_1 = [dim for dim in comp_1.dimensions if dim.difference < -2.0]
+
+    chosen_draft = draft_1
+    chosen_warnings = warnings_1
+    chosen_comp = comp_1
+
+    # Attempt 2: Regression Safety Net (second pass retry if any included dimension dropped by > 2.0)
+    if regressions_1:
+        logger.info(f"AI rewrite draft 1 regressed on dimensions: {[d.name for d in regressions_1]}. Starting second pass...")
+        if req_id:
+            rewrite_statuses[req_id] = "improving"
+
+        feedback_items = []
+        for r in regressions_1:
+            dim_title = r.name.replace("_", " ").title()
+            drop_pts = abs(r.difference)
+            reasons = []
+            if r.name == "formatting_scannability":
+                if any("Original tables lost" in w for w in warnings_1):
+                    reasons.append("tables were dropped or missing markdown table format with blank lines")
+                if any("Original lists lost" in w for w in warnings_1):
+                    reasons.append("bullet or numbered lists were dropped")
+                if not reasons:
+                    reasons.append("ensure clear visual layout, markdown tables with pipes, and bullet lists")
+            elif r.name == "passage_quality":
+                reasons.append("ensure all paragraphs are self-contained without pronouns/referential starters like 'It', 'They', 'This'")
+            elif r.name == "information_gain":
+                reasons.append("ensure unique factual data, numbers, and comparative points from the original are fully retained")
+            elif r.name == "search_intent_aeo":
+                reasons.append("ensure the opening lead answers the target query directly with all significant query terms included")
+            else:
+                reasons.append("maintain original depth, specific entity details, and structural quality")
+            reason_str = f" ({'; '.join(reasons)})" if reasons else ""
+            feedback_items.append(f"- {dim_title}: dropped by {drop_pts:.1f} points (before: {r.score_before}, after: {r.score_after}){reason_str}")
+
+        feedback_msg = "\n".join(feedback_items)
+        pass2_user_prompt = f"""SECOND PASS IMPROVEMENT REQUIRED:
+The first draft regressed on key quality dimensions compared to the original content:
+{feedback_msg}
+
+CRITICAL FIXES FOR THIS SECOND PASS:
+1. Fix all regressed dimensions listed above:
+   - Include ALL original tables formatted as clean Markdown tables with pipes, and ensure blank lines before and after each table.
+   - Include ALL original bullet and numbered lists.
+   - Retain ALL original facts, figures, links, and images.
+   - Ensure every paragraph and FAQ answer is autonomous and self-contained, starting by naming the subject explicitly.
+2. Review the first draft below and fix the issues to produce the complete, improved article rewrite in Markdown:
+
+FIRST DRAFT:
+{draft_1}
+"""
+        try:
+            draft_2_raw, finish_reason_2 = await _call_llm_draft([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt},
+                {"role": "assistant", "content": draft_1_raw},
+                {"role": "user", "content": pass2_user_prompt},
+            ])
+            draft_2, warnings_2 = _post_process_draft(draft_2_raw, finish_reason_2)
+            comp_2 = await compute_rewrite_score_comparison(orig_html_to_compare, draft_2, target_q)
+            regressions_2 = [dim for dim in comp_2.dimensions if dim.difference < -2.0]
+
+            if not regressions_2:
+                # Second pass completely fixed regressions!
+                chosen_draft = draft_2
+                chosen_warnings = warnings_2
+                chosen_comp = comp_2
+            else:
+                # Both have regressions -> pick the one with higher total score
+                if comp_2.total_score_after >= comp_1.total_score_after:
+                    chosen_draft = draft_2
+                    chosen_warnings = warnings_2
+                    chosen_comp = comp_2
+                    active_regs = regressions_2
+                else:
+                    chosen_draft = draft_1
+                    chosen_warnings = warnings_1
+                    chosen_comp = comp_1
+                    active_regs = regressions_1
+
+                for reg in active_regs:
+                    dim_label = reg.name.replace("_", " ").title()
+                    chosen_warnings.append(
+                        f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: score changed from {reg.score_before} to {reg.score_after}"
+                    )
+        except Exception as e:
+            logger.error(f"Error during AI rewrite second pass: {traceback.format_exc()}")
+            for reg in regressions_1:
+                dim_label = reg.name.replace("_", " ").title()
+                chosen_warnings.append(
+                    f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: score changed from {reg.score_before} to {reg.score_after}"
+                )
+
+    if req_id:
+        rewrite_statuses[req_id] = "completed"
+
+    # Cache precomputed score comparison
+    cache_key = hashlib.sha256(f"{ctx.main_html or ''}::{chosen_draft}::{target_q}".encode("utf-8")).hexdigest()
+    if len(rewrite_score_cache) > 100:
+        rewrite_score_cache.clear()
+    rewrite_score_cache[cache_key] = chosen_comp
 
     word_count_original = len(orig_text.split())
-    word_count_draft = len(draft_markdown.split())
+    word_count_draft = len(chosen_draft.split())
 
     return AIRewriteResponse(
-        draft_markdown=draft_markdown,
-        warnings=warnings,
+        draft_markdown=chosen_draft,
+        warnings=chosen_warnings,
         word_count_original=word_count_original,
         word_count_draft=word_count_draft,
+        score_comparison=chosen_comp,
     )
 
 
@@ -2923,85 +3149,28 @@ Write the complete rewritten article in Markdown now following all editorial and
 async def score_rewrite_comparison(request: AIRewriteScoreRequest):
     """
     Fair content-only audit comparison between original HTML and rewritten draft Markdown.
+    Checks memory cache first for instant response when precomputed during rewrite.
     Excludes whole-page technical and metadata dimensions (technical_infrastructure, metadata_schema, freshness, eeat_authority)
     and renormalizes scores across active content dimensions.
     """
-    import markdown
-    draft_html = markdown.markdown(request.draft_markdown, extensions=['tables', 'fenced_code'])
+    cache_key = hashlib.sha256(
+        f"{request.original_html or ''}::{request.draft_markdown or ''}::{request.target_query or ''}".encode("utf-8")
+    ).hexdigest()
 
-    # Audit both using content_html
-    orig_req = AuditRequest(content_html=request.original_html, target_query=request.target_query)
-    draft_req = AuditRequest(content_html=draft_html, target_query=request.target_query)
+    if cache_key in rewrite_score_cache:
+        return rewrite_score_cache[cache_key]
 
-    orig_audit = await run_single_audit(
-        orig_req,
-        scraper,
-        scrape_semaphore,
-        fetch_robots_fn=fetch_robots_txt,
-        measure_ttfb_fn=measure_ttfb
-    )
-    draft_audit = await run_single_audit(
-        draft_req,
-        scraper,
-        scrape_semaphore,
-        fetch_robots_fn=fetch_robots_txt,
-        measure_ttfb_fn=measure_ttfb
+    comp = await compute_rewrite_score_comparison(
+        request.original_html or "",
+        request.draft_markdown or "",
+        request.target_query,
     )
 
-    # Dimensions to exclude: technical_infrastructure, metadata_schema, freshness, eeat_authority
-    # technical_infrastructure: depends on server TTFB, HTTP headers, robots.txt, SSL.
-    # metadata_schema: depends on <head> title, meta tags, and JSON-LD schema.
-    # freshness: depends on article meta dates and ISO time tags not in content body.
-    # eeat_authority: author bios and publisher credentials reside in site template / author pages, not article content body.
-    EXCLUDED_DIMENSIONS = {
-        "technical_infrastructure",
-        "metadata_schema",
-        "freshness",
-        "eeat_authority",
-    }
+    if len(rewrite_score_cache) > 100:
+        rewrite_score_cache.clear()
+    rewrite_score_cache[cache_key] = comp
+    return comp
 
-    orig_dims = {d.name: d for d in orig_audit.dimensions}
-    draft_dims = {d.name: d for d in draft_audit.dimensions}
-
-    # Filter dimensions
-    included_names = [d.name for d in orig_audit.dimensions if d.name not in EXCLUDED_DIMENSIONS and d.name in draft_dims]
-
-    comp_list: list[DimensionScoreComparison] = []
-    weight_sum = 0.0
-    weighted_orig_sum = 0.0
-    weighted_draft_sum = 0.0
-
-    for name in included_names:
-        od = orig_dims[name]
-        dd = draft_dims[name]
-        diff = round(dd.score - od.score, 1)
-        comp_list.append(DimensionScoreComparison(
-            name=name,
-            score_before=round(od.score, 1),
-            score_after=round(dd.score, 1),
-            difference=diff,
-        ))
-        w = od.weight
-        weight_sum += w
-        weighted_orig_sum += (od.score * w)
-        weighted_draft_sum += (dd.score * w)
-
-    if weight_sum > 0:
-        total_before = round(weighted_orig_sum / weight_sum, 1)
-        total_after = round(weighted_draft_sum / weight_sum, 1)
-    else:
-        total_before = 0.0
-        total_after = 0.0
-
-    total_diff = round(total_after - total_before, 1)
-
-    return AIRewriteScoreResponse(
-        total_score_before=total_before,
-        total_score_after=total_after,
-        difference=total_diff,
-        dimensions=comp_list,
-        excluded_dimensions=sorted(list(EXCLUDED_DIMENSIONS)),
-    )
 
 
 @app.post("/api/export/rewrite")

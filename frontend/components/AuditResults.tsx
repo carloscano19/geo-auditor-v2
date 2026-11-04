@@ -112,6 +112,86 @@ const FRIENDLY_SUBMETRIC_NAMES: Record<string, string> = {
     "Trust Pages": "About & Editorial Policy",
 };
 
+function normalizeMarkdownBlocks(md: string): string {
+    if (!md) return "";
+    const lines = md.split("\n");
+    const output: string[] = [];
+    let state: "none" | "table" | "list" = "none";
+    let inCodeFence = false;
+
+    const isHeading = (l: string) => /^\s*#{1,6}\s+\S/.test(l);
+    const isTableRow = (l: string) => /^\s*\|/.test(l);
+    const isListItem = (l: string) => /^\s*([-*+]|\d+\.)\s+\S/.test(l);
+    const isListContinuation = (l: string) => /^\s{2,}\S/.test(l);
+
+    for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        const stripped = line.trim();
+
+        if (stripped.startsWith("```")) {
+            inCodeFence = !inCodeFence;
+            if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+            output.push(line);
+            if (!inCodeFence && i + 1 < lines.length && lines[i + 1].trim() !== "") output.push("");
+            state = "none";
+            continue;
+        }
+
+        if (inCodeFence) {
+            output.push(line);
+            continue;
+        }
+
+        if (!stripped) {
+            if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+            state = "none";
+            continue;
+        }
+
+        if (isHeading(line)) {
+            if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+            output.push(line);
+            output.push("");
+            state = "none";
+        } else if (isTableRow(line)) {
+            if (state !== "table") {
+                if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+                state = "table";
+            }
+            output.push(line);
+        } else if (isListItem(line)) {
+            if (state !== "list") {
+                if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+                state = "list";
+            }
+            output.push(line);
+        } else if (state === "list" && isListContinuation(line)) {
+            output.push(line);
+        } else {
+            if (state === "table" || state === "list") {
+                if (output.length > 0 && output[output.length - 1] !== "") output.push("");
+                state = "none";
+            }
+            output.push(line);
+        }
+    }
+
+    const res: string[] = [];
+    let prevBlank = false;
+    for (const l of output) {
+        if (l === "") {
+            if (!prevBlank && res.length > 0) {
+                res.push("");
+                prevBlank = true;
+            }
+        } else {
+            res.push(l);
+            prevBlank = false;
+        }
+    }
+    return res.join("\n").trim();
+}
+
 interface TopAction {
     friendlyName: string;
     submetricName: string;
@@ -146,6 +226,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
 
     // AI Rewrite state
     const [isRewriting, setIsRewriting] = useState(false);
+    const [rewriteProgressMessage, setRewriteProgressMessage] = useState("Rewriting & Auditing… (this can take a few minutes)");
     const [rewriteDraft, setRewriteDraft] = useState<AIRewriteResponse | null>(null);
     const [rewriteScore, setRewriteScore] = useState<AIRewriteScoreResponse | null>(null);
     const [rewriteError, setRewriteError] = useState<string | null>(null);
@@ -280,29 +361,48 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
         setRewriteError(null);
         setRewriteScoreError(null);
         setDraftDownloadError(null);
+        const reqId = "rw_" + Date.now().toString(36) + "_" + Math.random().toString(36).slice(2, 7);
+        setRewriteProgressMessage("Rewriting & Auditing… (this can take a few minutes)");
+        const intervalId = setInterval(async () => {
+            try {
+                const st = await apiClient.getRewriteStatus(reqId);
+                if (st.status === "second_pass") {
+                    setRewriteProgressMessage("Improving the draft (second pass)…");
+                }
+            } catch {
+                // Ignore status polling errors
+            }
+        }, 1500);
+
         try {
             const rewriteResp = await apiClient.rewriteArticle({
                 ai_context: results.ai_context,
                 ai_plan: aiPlan,
                 target_query: customQuery || undefined,
+                request_id: reqId,
             });
             setRewriteDraft(rewriteResp);
 
-            // Audit & score rewrite
-            const origHtml = results.ai_context.main_html || `<p>${results.ai_context.main_text || ""}</p>`;
-            try {
-                const scoreResp = await apiClient.scoreRewrite({
-                    original_html: origHtml,
-                    draft_markdown: rewriteResp.draft_markdown,
-                    target_query: customQuery || undefined,
-                });
-                setRewriteScore(scoreResp);
+            if (rewriteResp.score_comparison) {
+                setRewriteScore(rewriteResp.score_comparison);
                 setRewriteScoreError(null);
-            } catch (scoreErr) {
-                console.error("Failed to calculate score comparison:", scoreErr);
-                const scoreMsg = scoreErr instanceof Error ? scoreErr.message : "Failed to calculate score comparison";
-                setRewriteScoreError(scoreMsg);
-                setRewriteScore(null);
+            } else {
+                // Audit & score rewrite fallback
+                const origHtml = results.ai_context.main_html || `<p>${results.ai_context.main_text || ""}</p>`;
+                try {
+                    const scoreResp = await apiClient.scoreRewrite({
+                        original_html: origHtml,
+                        draft_markdown: rewriteResp.draft_markdown,
+                        target_query: customQuery || undefined,
+                    });
+                    setRewriteScore(scoreResp);
+                    setRewriteScoreError(null);
+                } catch (scoreErr) {
+                    console.error("Failed to calculate score comparison:", scoreErr);
+                    const scoreMsg = scoreErr instanceof Error ? scoreErr.message : "Failed to calculate score comparison";
+                    setRewriteScoreError(scoreMsg);
+                    setRewriteScore(null);
+                }
             }
         } catch (err: unknown) {
             const errorMsg = err instanceof Error ? err.message : "Failed to generate rewrite draft";
@@ -311,7 +411,9 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             setRewriteScore(null);
             setRewriteScoreError(null);
         } finally {
+            clearInterval(intervalId);
             setIsRewriting(false);
+            setRewriteProgressMessage("Rewriting & Auditing… (this can take a few minutes)");
         }
     };
 
@@ -363,7 +465,8 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             }
             return out + formatText(s.slice(last));
         };
-        const lines = rewriteDraft.draft_markdown.split('\n');
+        const normalized = normalizeMarkdownBlocks(rewriteDraft.draft_markdown);
+        const lines = normalized.split('\n');
         const htmlParts: string[] = [];
         let inTable = false;
         let tableHeaderDone = false;
@@ -1819,7 +1922,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                         {isRewriting ? (
                                             <>
                                                 <span className="animate-spin inline-block w-3.5 h-3.5 border-2 border-white border-t-transparent rounded-full" />
-                                                <span>Rewriting &amp; Auditing… (this can take a few minutes)</span>
+                                                <span>{rewriteProgressMessage}</span>
                                             </>
                                         ) : (
                                             <>
@@ -2125,7 +2228,7 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                         });
                                                     };
 
-                                                    return rewriteDraft.draft_markdown.split('\n\n').map((block, bIdx) => {
+                                                    return normalizeMarkdownBlocks(rewriteDraft.draft_markdown).split('\n\n').map((block, bIdx) => {
                                                         const trimmed = block.trim();
                                                         if (!trimmed) return null;
 

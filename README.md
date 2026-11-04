@@ -258,7 +258,8 @@ All endpoints except `/api/health` and `/api/version` enforce `X-Access-Code` au
 | `GET` | `/api/scoring-weights` | Returns current scoring weights configuration JSON | Yes |
 | `POST` | `/api/audit` | Executes full on-page analysis for a URL, plain text, or pasted HTML | Yes |
 | `POST` | `/api/ai/plan` | Generates unified editorial improvement plan (used by the frontend) | Yes |
-| `POST` | `/api/ai/rewrite` | Generates complete draft rewrite applying the AI plan | Yes |
+| `POST` | `/api/ai/rewrite` | Generates complete draft rewrite with regression prevention and table/list preservation | Yes |
+| `GET` | `/api/ai/rewrite/status/{request_id}` | Polls progress status of an active rewrite job | Yes |
 | `POST` | `/api/ai/rewrite/score` | Fair before/after content score comparison for rewrites | Yes |
 | `POST` | `/api/ai/fixes` | Legacy quick fixes endpoint (kept for backward compatibility) | Yes |
 | `POST` | `/api/offpage` | Retrieves Ahrefs off-page authority metrics | Yes |

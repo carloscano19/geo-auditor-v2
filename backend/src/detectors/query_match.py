@@ -19,12 +19,19 @@ from src.utils.lang_patterns import resolve_language, get_lang_patterns
 from src.utils.text_processing import extract_main_content, clean_html_for_analysis
 
 
+_ACCENT_MAP = str.maketrans(
+    "áéíóúüÁÉÍÓÚÜàèìòùÀÈÌÒÙâêîôûÂÊÎÔÛäëïöüÄËÏÖÜ",
+    "aeiouuaeiouaeiouaeiouaeiouaeiouaeiouuaeiou"
+)
+
+
 def tokenize(text: str) -> List[str]:
     """
     Tokenize text for query and content matching:
     - Removes '$' symbol
     - Removes possessive endings ('s / ’s)
-    - Normalizes to lowercase, preserving accents (á, é, í, ó, ú, ü) and ñ
+    - Normalizes to lowercase and strips accents/tildes on vowels (e.g. 'culés' -> 'cules')
+    - Preserves ñ
     - For hyphenated words, returns the full word and each subpart
     - Excludes single-letter tokens (length > 1 required)
     """
@@ -37,8 +44,11 @@ def tokenize(text: str) -> List[str]:
     # 2. Remove possessives ('s / ’s at word boundaries)
     cleaned = re.sub(r"['’]s\b", "", cleaned, flags=re.IGNORECASE)
 
-    # 3. Match words with letters (including accents and ñ), numbers, and internal hyphens
-    pattern = r'[a-zA-ZÁÉÍÓÚÜÑáéíóúüñ0-9]+(?:-[a-zA-ZÁÉÍÓÚÜÑáéíóúüñ0-9]+)*'
+    # 3. Strip vowel accents / diacritics so queries and texts compare accent-insensitively
+    cleaned = cleaned.translate(_ACCENT_MAP)
+
+    # 4. Match words with letters (including ñ), numbers, and internal hyphens
+    pattern = r'[a-zA-ZÑñ0-9]+(?:-[a-zA-ZÑñ0-9]+)*'
     raw_tokens = re.findall(pattern, cleaned)
 
     tokens: List[str] = []

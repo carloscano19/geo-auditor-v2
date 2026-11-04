@@ -75,7 +75,7 @@ function cleanClientPastedHtml(rawHtml: string): string {
     const ALLOWED = new Set([
         "H1", "H2", "H3", "H4", "H5", "H6",
         "P", "UL", "OL", "LI", "TABLE", "THEAD", "TBODY", "TR", "TH", "TD",
-        "A", "STRONG", "B", "EM", "I", "BR", "BLOCKQUOTE"
+        "A", "IMG", "STRONG", "B", "EM", "I", "BR", "BLOCKQUOTE"
     ]);
 
     doc.body.querySelectorAll("*").forEach(el => {
@@ -91,6 +91,22 @@ function cleanClientPastedHtml(rawHtml: string): string {
                     });
                 } else {
                     while (el.firstChild) el.parentNode?.insertBefore(el.firstChild, el);
+                    el.remove();
+                }
+            } else if (el.tagName === "IMG") {
+                const src = (el.getAttribute("src") || el.getAttribute("data-src") || "").trim();
+                const alt = (el.getAttribute("alt") || "").trim();
+                if (/^https?:\/\//i.test(src)) {
+                    Array.from(el.attributes).forEach(attr => {
+                        if (attr.name !== "src" && attr.name !== "alt") el.removeAttribute(attr.name);
+                    });
+                    el.setAttribute("src", src);
+                    if (alt) {
+                        el.setAttribute("alt", alt);
+                    } else {
+                        el.removeAttribute("alt");
+                    }
+                } else {
                     el.remove();
                 }
             } else {
@@ -128,6 +144,7 @@ export default function AuditForm({
         lists: number;
         tables: number;
         links: number;
+        images: number;
     } | null>(null);
 
     useEffect(() => {
@@ -168,8 +185,9 @@ export default function AuditForm({
 
         const tableCount = el.querySelectorAll("table").length;
         const linkCount = el.querySelectorAll("a[href]").length;
+        const imageCount = el.querySelectorAll("img[src]").length;
 
-        const total = h1Count + h2Count + h3Count + listCount + tableCount + linkCount;
+        const total = h1Count + h2Count + h3Count + listCount + tableCount + linkCount + imageCount;
         if (total > 0) {
             setFormattedStats({
                 h1: h1Count,
@@ -178,6 +196,7 @@ export default function AuditForm({
                 lists: listCount,
                 tables: tableCount,
                 links: linkCount,
+                images: imageCount,
             });
         } else {
             setFormattedStats(null);
@@ -217,6 +236,7 @@ export default function AuditForm({
         lists: number;
         tables: number;
         links: number;
+        images: number;
     }) => {
         const parts: string[] = [];
         if (stats.h1 > 0) parts.push(`${stats.h1} H1`);
@@ -225,6 +245,7 @@ export default function AuditForm({
         if (stats.lists > 0) parts.push(`${stats.lists} ${stats.lists === 1 ? "list" : "lists"}`);
         if (stats.tables > 0) parts.push(`${stats.tables} ${stats.tables === 1 ? "table" : "tables"}`);
         if (stats.links > 0) parts.push(`${stats.links} ${stats.links === 1 ? "link" : "links"}`);
+        if (stats.images > 0) parts.push(`${stats.images} ${stats.images === 1 ? "image" : "images"}`);
         return parts.join(" · ");
     };
 

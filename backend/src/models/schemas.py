@@ -281,25 +281,6 @@ class BriefExportRequest(BaseModel):
     ahrefs_offpage: Optional[AhrefsOffpageResponse] = None
 
 
-class AIRewriteRequest(BaseModel):
-    ai_context: AIContext
-    ai_plan: AIPlanResponse
-    target_query: Optional[str] = None
-
-
-class AIRewriteResponse(BaseModel):
-    draft_markdown: str
-    warnings: list[str] = Field(default_factory=list)
-    word_count_original: int
-    word_count_draft: int
-
-
-class AIRewriteScoreRequest(BaseModel):
-    original_html: str
-    draft_markdown: str
-    target_query: Optional[str] = None
-
-
 class DimensionScoreComparison(BaseModel):
     name: str
     score_before: float
@@ -313,6 +294,27 @@ class AIRewriteScoreResponse(BaseModel):
     difference: float
     dimensions: list[DimensionScoreComparison] = Field(default_factory=list)
     excluded_dimensions: list[str] = Field(default_factory=list)
+
+
+class AIRewriteScoreRequest(BaseModel):
+    original_html: str
+    draft_markdown: str
+    target_query: Optional[str] = None
+
+
+class AIRewriteRequest(BaseModel):
+    ai_context: AIContext
+    ai_plan: AIPlanResponse
+    target_query: Optional[str] = None
+    request_id: Optional[str] = None
+
+
+class AIRewriteResponse(BaseModel):
+    draft_markdown: str
+    warnings: list[str] = Field(default_factory=list)
+    word_count_original: int
+    word_count_draft: int
+    score_comparison: Optional[AIRewriteScoreResponse] = None
 
 
 class RewriteBriefExportRequest(BaseModel):

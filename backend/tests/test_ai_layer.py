@@ -4731,6 +4731,7 @@ def test_rewrite_settings_applied_only_to_rewrite():
     rewrite_req = {
         "ai_context": {
             "main_text": "A brief article about testing configurations and settings.",
+            "main_html": "<h1>Config Test</h1><p>A brief article about testing configurations and settings.</p>",
             "language": "en"
         },
         "ai_plan": {
@@ -6288,6 +6289,162 @@ def test_google_docs_real_metadata_format_and_h1():
     data = res.json()
     assert data["ai_context"]["h1"] == "Why Barcelona fans are called Culés: the story behind the nickname"
     assert data["editorial_metadata"] == meta
+
+
+def test_normalize_markdown_blocks_table_without_blank_line():
+    """Verify normalize_markdown_blocks ensures Python-Markdown parses tables preceded by text without a blank line."""
+    import markdown
+    from src.utils.text_processing import normalize_markdown_blocks
+    raw_md = "Intro sentence.\n| Col A | Col B |\n|---|---|\n| Val 1 | Val 2 |"
+
+    # Un-normalized: markdown tables extension fails to create <table>
+    unnorm_html = markdown.markdown(raw_md, extensions=['tables'])
+    assert "<table>" not in unnorm_html
+
+    # Normalized: blank line inserted before table, converting to <table>
+    norm_md = normalize_markdown_blocks(raw_md)
+    norm_html = markdown.markdown(norm_md, extensions=['tables'])
+    assert "<table>" in norm_html
+    assert "<th>Col A</th>" in norm_html
+    assert "<td>Val 1</td>" in norm_html
+
+
+def test_original_tables_and_lists_lost_warnings():
+    """Verify check_content_elements_counts warns when tables, lists, or images are lost in draft."""
+    from main import check_content_elements_counts
+    orig_html = """
+    <article>
+        <table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table>
+        <ul><li>Item 1</li><li>Item 2</li></ul>
+        <ol><li>Step 1</li></ol>
+        <img src="https://example.com/pic1.jpg" alt="Pic 1" />
+        <img src="https://example.com/pic2.jpg" alt="Pic 2" />
+    </article>
+    """
+
+    # Draft with no tables, 1 list, 1 image
+    draft_md = """# Title
+
+- Just one list item
+
+![Pic 1](https://example.com/pic1.jpg)
+"""
+    warnings = check_content_elements_counts(orig_html, draft_md)
+    assert any("Original tables lost: 1 of 1" in w for w in warnings)
+    assert any("Original lists lost: 1 of 2" in w for w in warnings)
+    assert any("Original images lost: 1 of 2" in w for w in warnings)
+
+
+def test_rewrite_regression_retry_success():
+    """Verify that when draft 1 regresses on a dimension, the endpoint retries (pass 2) and returns draft 2."""
+    orig_html = """
+    <article>
+        <h1>Barcelona FC Supporters</h1>
+        <p>Barcelona supporters are widely known as culés since 1909.</p>
+        <table>
+            <tr><th>Year</th><th>Ground</th></tr>
+            <tr><td>1909</td><td>Carrer de la Indústria</td></tr>
+            <tr><td>1922</td><td>Les Corts</td></tr>
+            <tr><td>1957</td><td>Camp Nou</td></tr>
+        </table>
+    </article>
+    """
+    req = {
+        "ai_context": {
+            "main_html": orig_html,
+            "main_text": "Barcelona supporters are widely known as culés since 1909.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+
+    # Draft 1 drops table (regressing format_citability by 28.5 points)
+    draft_1 = "# Barcelona FC Supporters\n\nBarcelona supporters are widely known as culés since 1909 without any tables."
+    # Draft 2 restores table
+    draft_2 = """# Barcelona FC Supporters
+
+Barcelona supporters are widely known as culés since 1909.
+
+| Year | Ground |
+|---|---|
+| 1909 | Carrer de la Indústria |
+| 1922 | Les Corts |
+| 1957 | Camp Nou |
+"""
+
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [(draft_1, "stop"), (draft_2, "stop")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert mock_stream.call_count == 2
+    assert "| Year | Ground |" in data["draft_markdown"]
+    assert "Original tables lost" not in " ".join(data["warnings"])
+    assert data["score_comparison"] is not None
+
+
+def test_rewrite_both_drafts_regress_returns_higher_total_with_warning():
+    """Verify that if both drafts have regressions, the one with higher total score is returned with a warning."""
+    orig_html = """
+    <article>
+        <h1>Barcelona FC Supporters</h1>
+        <p>Barcelona supporters are widely known as culés since 1909.</p>
+        <table>
+            <tr><th>Year</th><th>Ground</th></tr>
+            <tr><td>1909</td><td>Carrer de la Indústria</td></tr>
+            <tr><td>1922</td><td>Les Corts</td></tr>
+            <tr><td>1957</td><td>Camp Nou</td></tr>
+        </table>
+    </article>
+    """
+    req = {
+        "ai_context": {
+            "main_html": orig_html,
+            "main_text": "Barcelona supporters are widely known as culés since 1909.",
+            "language": "en"
+        },
+        "ai_plan": {
+            "combined_schema": {},
+            "warnings": []
+        }
+    }
+
+    # Both drafts omit table
+    draft_1 = "# Draft 1\n\nShort draft without tables."
+    draft_2 = "# Draft 2\n\nLonger draft with comprehensive content but still without the required table."
+
+    client = TestClient(app)
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", new_callable=AsyncMock) as mock_stream:
+        mock_stream.side_effect = [(draft_1, "stop"), (draft_2, "stop")]
+        res = client.post("/api/ai/rewrite", json=req)
+
+    assert res.status_code == 200
+    data = res.json()
+    assert mock_stream.call_count == 2
+    # Warning about lowered dimension should be present
+    assert any("Draft lowers" in w for w in data["warnings"])
+    assert data["score_comparison"] is not None
+
+
+def test_cules_accent_match_in_missing_lead_query_terms():
+    """Verify that query terms with accents ('culés') match non-accented equivalents ('cules') and vice-versa."""
+    from src.detectors.query_match import get_missing_lead_query_terms
+
+    lead_with_unaccented = "Los aficionados del Barcelona son conocidos como cules desde principios del siglo XX."
+    target_query_with_accent = "por qué a los fans del barcelona se les llama culés"
+
+    missing = get_missing_lead_query_terms(lead_with_unaccented, target_query_with_accent, "es")
+    # 'culés' in query must match 'cules' in lead
+    assert "culés" not in missing
+    assert "cules" not in missing
+
 
 
 

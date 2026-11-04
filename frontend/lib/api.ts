@@ -184,6 +184,7 @@ export interface AIRewriteRequest {
     ai_context: AIContext;
     ai_plan: AIPlanResponse;
     target_query?: string;
+    request_id?: string;
 }
 
 export interface AIRewriteResponse {
@@ -191,6 +192,7 @@ export interface AIRewriteResponse {
     warnings: string[];
     word_count_original: number;
     word_count_draft: number;
+    score_comparison?: AIRewriteScoreResponse | null;
 }
 
 export interface AIRewriteScoreRequest {
@@ -707,6 +709,16 @@ class ApiClient {
             body: JSON.stringify(request),
         });
         return this.parseResponse<AIRewriteResponse>(response, 'Failed to rewrite article');
+    }
+
+    /**
+     * Get status of article rewrite (e.g. "first_pass" or "second_pass")
+     */
+    async getRewriteStatus(requestId: string): Promise<{ status: string }> {
+        const response = await this.fetchWithAuth(`${this.baseUrl}/api/ai/rewrite/status/${encodeURIComponent(requestId)}`, {
+            method: 'GET',
+        });
+        return this.parseResponse<{ status: string }>(response, 'Failed to get rewrite status');
     }
 
     /**
