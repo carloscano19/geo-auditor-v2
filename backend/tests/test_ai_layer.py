@@ -6446,6 +6446,267 @@ def test_cules_accent_match_in_missing_lead_query_terms():
     assert "cules" not in missing
 
 
+@pytest.mark.asyncio
+async def test_google_docs_images_pipeline_without_alt():
+    """Verify that Google Docs images without alt attribute are preserved and score points in multimedia."""
+    from src.utils.text_processing import sanitize_pasted_html
+    from src.detectors.formatting import FormattingDetector
+    from src.models.schemas import PageData
+
+    raw_docs_html = """
+    <h1>Why Are Barcelona Fans Called Culés?</h1>
+    <p>A short historical summary of the nickname and the stadium wall in 1909.</p>
+    <img src="https://lh7-rt.googleusercontent.com/docsz/AD_4nX12345" width="602" height="339">
+    <p>Another paragraph explaining how supporters sat on top of the wall.</p>
+    <img src="https://lh7-rt.googleusercontent.com/docsz/AD_4nX67890" width="602" height="339">
+    """
+
+    cleaned = sanitize_pasted_html(raw_docs_html)
+    assert "https://lh7-rt.googleusercontent.com/docsz/AD_4nX12345" in cleaned
+    assert "https://lh7-rt.googleusercontent.com/docsz/AD_4nX67890" in cleaned
+
+    detector = FormattingDetector()
+    page_data = PageData(
+        url="https://example.com/cules",
+        final_url="https://example.com/cules",
+        html_raw=cleaned,
+        html_rendered=f"<html><body><div class='content'>{cleaned}</div></body></html>",
+        text_content="Why Are Barcelona Fans Called Culés?",
+        status_code=200,
+        load_time_ms=10,
+    )
+    result = await detector.analyze(page_data)
+    multimedia_breakdown = next((b for b in result.breakdown if b.name == "Multimedia Content"), None)
+    assert multimedia_breakdown is not None
+    # Must score points (50.0 for Missing Alt Text), NOT 0
+    assert multimedia_breakdown.raw_score >= 50.0
+    assert "2 items found" in multimedia_breakdown.explanation
+
+
+def test_split_text_walls_deterministic():
+    """Verify that paragraphs > 700 chars are deterministically split into <= 500 chars chunks without altering text."""
+    from src.utils.text_processing import split_text_walls
+    from src.detectors.formatting import FormattingDetector
+
+    # Paragraph with 9 sentences totaling ~900 chars
+    sentence = "Barcelona played at the Camp de la Industria stadium from 1909 to 1922 before moving to Les Corts."
+    long_para = " ".join([f"Sentence {i}: {sentence}" for i in range(1, 10)])
+    assert len(long_para) > FormattingDetector.MAX_CHARS_PER_BLOCK
+
+    content_with_structures = f"""# Main Title
+
+{long_para}
+
+| Stadium | Opened | Capacity |
+|---|---|---|
+| Camp de la Industria | 1909 | 6000 |
+
+- Bullet item one
+- Bullet item two
+
+[EDITOR: verify stadium opening date — official club records]
+"""
+
+    split_content = split_text_walls(content_with_structures, max_chars=FormattingDetector.MAX_CHARS_PER_BLOCK, chunk_max=500)
+
+    # 1. Structure preserved: table, list, heading, editor gap untouched
+    assert "| Stadium | Opened | Capacity |" in split_content
+    assert "- Bullet item one" in split_content
+    assert "# Main Title" in split_content
+    assert "[EDITOR: verify stadium opening date — official club records]" in split_content
+
+    # 2. Every new paragraph is <= 500 characters
+    blocks = [b.strip() for b in split_content.split("\n\n") if b.strip()]
+    normal_paras = [b for b in blocks if not b.startswith("#") and not b.startswith("|") and not b.startswith("-") and "[EDITOR:" not in b]
+    for p in normal_paras:
+        assert len(p) <= 500
+
+    # 3. All original sentences remain present without text corruption
+    for i in range(1, 10):
+        assert f"Sentence {i}: {sentence}" in split_content
+
+
+def test_build_regression_feedback_with_real_submetrics_and_concrete_details():
+    """Verify that regression feedback reports real submetrics, concrete draft details, and valid dimension names."""
+    import json
+    from pathlib import Path
+    from main import build_regression_feedback
+    from src.models.schemas import DimensionScoreComparison, AuditResponse, DetectorResult, ScoreBreakdown
+
+    # 1. Verify all dimension names in config/scoring_weights.json
+    config_path = Path(__file__).resolve().parent.parent / "config" / "scoring_weights.json"
+    with open(config_path) as f:
+        config = json.load(f)
+    valid_dims = set(config["dimensions"].keys())
+
+    # Create mock audits with a regression on format_citability and passage_quality
+    orig_audit = AuditResponse(
+        url="https://example.com",
+        total_score=85.0,
+        dimensions=[],
+        scoring_version="v2.3",
+        analysis_time_ms=10.0,
+        detector_results=[
+            DetectorResult(
+                dimension="format_citability",
+                score=57.1,
+                weight=0.06,
+                contribution=3.4,
+                breakdown=[
+                    ScoreBreakdown(
+                        name="Lists/Tables Used",
+                        raw_score=100.0,
+                        weight=4/7,
+                        weighted_score=57.14,
+                        explanation="✅ Found 5 lists/tables.",
+                    ),
+                    ScoreBreakdown(
+                        name="Multimedia Content",
+                        raw_score=0.0,
+                        weight=3/7,
+                        weighted_score=0.0,
+                        explanation="❌ No Media: 0 items found.",
+                    )
+                ]
+            ),
+            DetectorResult(
+                dimension="passage_quality",
+                score=91.4,
+                weight=0.12,
+                contribution=11.0,
+                breakdown=[
+                    ScoreBreakdown(
+                        name="Autonomous Passages",
+                        raw_score=100.0,
+                        weight=0.25,
+                        weighted_score=25.0,
+                        explanation="✅ 100% autonomous passages.",
+                    )
+                ]
+            )
+        ]
+    )
+
+    draft_audit = AuditResponse(
+        url="https://example.com",
+        total_score=80.0,
+        dimensions=[],
+        scoring_version="v2.3",
+        analysis_time_ms=10.0,
+        detector_results=[
+            DetectorResult(
+                dimension="format_citability",
+                score=28.6,
+                weight=0.06,
+                contribution=1.7,
+                breakdown=[
+                    ScoreBreakdown(
+                        name="Lists/Tables Used",
+                        raw_score=50.0,
+                        weight=4/7,
+                        weighted_score=28.57,
+                        explanation="Found 7 lists/tables. ⚠️ 1 text walls.",
+                    )
+                ]
+            ),
+            DetectorResult(
+                dimension="passage_quality",
+                score=87.5,
+                weight=0.12,
+                contribution=10.5,
+                breakdown=[
+                    ScoreBreakdown(
+                        name="Autonomous Passages",
+                        raw_score=75.0,
+                        weight=0.25,
+                        weighted_score=18.75,
+                        explanation="⚠️ 2 paragraphs start with referential pronouns.",
+                    )
+                ]
+            )
+        ]
+    )
+
+    regressions = [
+        DimensionScoreComparison(name="format_citability", score_before=57.1, score_after=28.6, difference=-28.5),
+        DimensionScoreComparison(name="passage_quality", score_before=91.4, score_after=87.5, difference=-3.9),
+    ]
+
+    for reg in regressions:
+        assert reg.name in valid_dims, f"Dimension {reg.name} is not in scoring_weights.json!"
+
+    draft_md = """# Title
+
+It was founded in 1909 and became one of the most famous clubs in Europe.
+
+Why Are Barcelona Fans Called Culés? In 1909 the stadium wall at Camp de la Industria was always overcrowded with fans sitting on top of the highest perimeter wall with their backsides hanging out into the street below, which gave pedestrians the funny view of a row of bottoms hanging down, and that is why locals started calling them cules in Catalan, a nickname that lasted for more than a century and became a badge of honor for generations of supporters worldwide.
+"""
+
+    orig_html = "<ul><li>First original list item</li><li>Second original list item</li></ul>"
+
+    feedback_items, concrete_reasons = build_regression_feedback(
+        regressions=regressions,
+        orig_audit=orig_audit,
+        draft_audit=draft_audit,
+        draft_markdown=draft_md,
+        ctx_main_html=orig_html,
+        lang="en",
+    )
+
+    # 1. Submetric feedback contains real detector explanations and scores
+    fc_feedback = next((f for f in feedback_items if "Format Citability" in f), "")
+    assert "Lists/Tables Used: 100 → 50 — draft: Found 7 lists/tables. ⚠️ 1 text walls." in fc_feedback
+
+    pq_feedback = next((f for f in feedback_items if "Passage Quality" in f), "")
+    assert "Autonomous Passages: 100 → 75 — draft: ⚠️ 2 paragraphs start with referential pronouns." in pq_feedback
+
+    # 2. Concrete details included:
+    # Paragraph starting with referential starter
+    assert "Paragraphs starting with referential starters" in pq_feedback
+    assert "'It was founded in…'" in pq_feedback
+
+    # Paragraph > 700 chars or lost original list in format citability
+    assert "Paragraphs > 700 chars" in fc_feedback or "Original lists lost" in fc_feedback
+
+    # 3. Concrete reasons map contains detailed explanations
+    assert "Lists/Tables Used: 100 → 50" in concrete_reasons["format_citability"]
+    assert "Autonomous Passages: 100 → 75" in concrete_reasons["passage_quality"]
+
+
+def test_extract_lists_as_markdown_and_prompt_preservation():
+    """Verify that extract_lists_as_markdown formats lists and filters editorial metadata."""
+    from src.utils.text_processing import extract_lists_as_markdown
+
+    html = """
+    <ul>
+        <li>Meta title: Why Are Barcelona Fans Called Cules?</li>
+        <li>Slug: /why-barcelona-fans-are-called-cules/</li>
+    </ul>
+    <h2>Key Historical Moments</h2>
+    <ul>
+        <li>1909: Opening of <a href="https://example.com/camp">Camp de la Industria</a>.</li>
+        <li>1922: Relocation to Les Corts.</li>
+        <li>1957: Camp Nou inauguration.</li>
+    </ul>
+    <ol>
+        <li>Step one: check the dates.</li>
+        <li>Step two: verify facts.</li>
+    </ol>
+    """
+
+    lists = extract_lists_as_markdown(html)
+    assert len(lists) == 2
+    # Metadata list was excluded
+    assert not any("Meta title" in l for l in lists)
+    # Bullet list with link preserved
+    assert "- 1909: Opening of [Camp de la Industria](https://example.com/camp)." in lists[0]
+    assert "- 1922: Relocation to Les Corts." in lists[0]
+    # Numbered list preserved
+    assert "1. Step one: check the dates." in lists[1]
+    assert "2. Step two: verify facts." in lists[1]
+
+
+
 
 
 

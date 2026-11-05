@@ -102,6 +102,8 @@ from src.utils.docx_brief import (
 from src.utils.text_processing import (
     normalize_markdown_blocks,
     extract_tables_as_markdown,
+    extract_lists_as_markdown,
+    split_text_walls,
 )
 import markdown
 from src.detectors.query_match import get_missing_lead_query_terms
@@ -2157,19 +2159,21 @@ def check_content_elements_counts(orig_html: str, draft_markdown: str) -> list[s
     return warnings
 
 
-async def compute_rewrite_score_comparison(
+async def compute_rewrite_score_comparison_with_audits(
     orig_html: str,
     draft_markdown: str,
     target_query: Optional[str] = None
-) -> AIRewriteScoreResponse:
+) -> tuple[AIRewriteScoreResponse, AuditReport, AuditReport]:
     """
     Fair content-only audit comparison between original HTML and draft Markdown.
-    Normalizes markdown blocks before HTML conversion.
+    Splits text walls and normalizes markdown blocks before HTML conversion.
     Excludes technical_infrastructure, metadata_schema, freshness, eeat_authority.
+    Returns (score_response, orig_audit, draft_audit).
     """
     effective_orig_html = orig_html.strip() if (orig_html and orig_html.strip()) else "<article><p>No content</p></article>"
 
-    norm_draft_md = normalize_markdown_blocks(draft_markdown)
+    wall_split_md = split_text_walls(draft_markdown)
+    norm_draft_md = normalize_markdown_blocks(wall_split_md)
     draft_html = markdown.markdown(norm_draft_md, extensions=['tables', 'fenced_code']).strip()
     if not draft_html:
         draft_html = "<article><p>No content</p></article>"
@@ -2233,13 +2237,156 @@ async def compute_rewrite_score_comparison(
 
     total_diff = round(total_after - total_before, 1)
 
-    return AIRewriteScoreResponse(
+    resp = AIRewriteScoreResponse(
         total_score_before=total_before,
         total_score_after=total_after,
         difference=total_diff,
         dimensions=comp_list,
         excluded_dimensions=sorted(list(EXCLUDED_DIMENSIONS)),
     )
+    return resp, orig_audit, draft_audit
+
+
+async def compute_rewrite_score_comparison(
+    orig_html: str,
+    draft_markdown: str,
+    target_query: Optional[str] = None
+) -> AIRewriteScoreResponse:
+    """
+    Fair content-only audit comparison between original HTML and draft Markdown.
+    Normalizes markdown blocks and splits text walls before HTML conversion.
+    Excludes technical_infrastructure, metadata_schema, freshness, eeat_authority.
+    """
+    resp, _, _ = await compute_rewrite_score_comparison_with_audits(orig_html, draft_markdown, target_query)
+    return resp
+
+
+def build_regression_feedback(
+    regressions: list[DimensionScoreComparison],
+    orig_audit: AuditReport,
+    draft_audit: AuditReport,
+    draft_markdown: str,
+    ctx_main_html: str,
+    lang: str = "en",
+) -> tuple[list[str], dict[str, str]]:
+    """
+    Build real submetric feedback and concrete details for regressed dimensions.
+    Returns:
+      feedback_items: list of formatted string lines for prompt feedback
+      concrete_reason_by_dim: map of dim_name -> concrete reason string (for warnings)
+    """
+    from src.detectors.formatting import FormattingDetector
+    from src.utils.lang_patterns import get_lang_patterns
+
+    max_block = FormattingDetector.MAX_CHARS_PER_BLOCK
+    patterns = get_lang_patterns(lang)
+    referential_starters = patterns.get("referential_starters", [])
+
+    orig_results = {dr.dimension: dr for dr in getattr(orig_audit, "detector_results", [])}
+    draft_results = {dr.dimension: dr for dr in getattr(draft_audit, "detector_results", [])}
+
+    # Pre-extract concrete issues from draft:
+    # 1. Paragraphs > 700 chars (first 10 words)
+    long_paras = []
+    blocks = re.split(r'\n\s*\n', draft_markdown)
+    for b in blocks:
+        b_s = b.strip()
+        if not b_s or b_s.startswith("#") or b_s.startswith("|") or re.match(r'^(?:[-*+]|\d+\.)\s+', b_s) or "[EDITOR:" in b_s:
+            continue
+        if len(b_s) > max_block:
+            first_10 = " ".join(b_s.split()[:10])
+            long_paras.append(f"'{first_10}…'")
+
+    # 2. Lost original lists (first 2 items)
+    lost_lists = []
+    orig_lists_list = extract_lists_as_markdown(ctx_main_html or "")
+    if orig_lists_list:
+        for o_list in orig_lists_list:
+            items = [re.sub(r'^(?:[-*+]|\d+\.)\s+', '', line).strip() for line in o_list.split("\n") if line.strip()]
+            if items:
+                present = any(it.lower() in draft_markdown.lower() for it in items[:2] if len(it) > 5)
+                if not present:
+                    first_two = [f"'{it[:40]}'" for it in items[:2]]
+                    lost_lists.append(", ".join(first_two))
+
+    # 3. Paragraphs starting with referential starters (first 4 words)
+    referential_paras = []
+    if referential_starters:
+        # Check markdown blocks directly
+        for b in blocks:
+            b_s = b.strip()
+            if not b_s or b_s.startswith("#") or b_s.startswith("|") or re.match(r'^(?:[-*+]|\d+\.)\s+', b_s) or "[EDITOR:" in b_s:
+                continue
+            if any(bool(re.search(pat, b_s, re.IGNORECASE)) for pat in referential_starters):
+                first_4 = " ".join(b_s.split()[:4])
+                snip = f"'{first_4}…'"
+                if snip not in referential_paras:
+                    referential_paras.append(snip)
+        # Also check eval_paragraphs
+        draft_html_eval = markdown.markdown(draft_markdown, extensions=['tables', 'fenced_code'])
+        eval_paragraphs = extract_eval_paragraphs(draft_html_eval, draft_markdown)
+        for p in eval_paragraphs:
+            if any(bool(re.search(pat, p, re.IGNORECASE)) for pat in referential_starters):
+                first_4 = " ".join(p.split()[:4])
+                snip = f"'{first_4}…'"
+                if snip not in referential_paras:
+                    referential_paras.append(snip)
+
+    feedback_items = []
+    concrete_reason_by_dim = {}
+
+    for r in regressions:
+        dim_title = r.name.replace("_", " ").title()
+        drop_pts = abs(r.difference)
+        od = orig_results.get(r.name)
+        dd = draft_results.get(r.name)
+
+        dropped_submetrics = []
+        if od and dd:
+            draft_bds = {b.name: b for b in getattr(dd, "breakdown", [])}
+            for ob in getattr(od, "breakdown", []):
+                db = draft_bds.get(ob.name)
+                if db and db.raw_score < ob.raw_score - 0.5:
+                    dropped_submetrics.append(
+                        f"{ob.name}: {ob.raw_score:.0f} → {db.raw_score:.0f} — draft: {db.explanation}"
+                    )
+
+        dim_details = []
+        if r.name == "format_citability":
+            if dropped_submetrics:
+                if any("text wall" in s.lower() for s in dropped_submetrics) and long_paras:
+                    dim_details.append(f"Paragraphs > {max_block} chars: {', '.join(long_paras[:2])}")
+                if any("lists/tables" in s.lower() for s in dropped_submetrics) and lost_lists:
+                    dim_details.append(f"Original lists lost starting with: {', '.join(lost_lists[:2])}")
+            else:
+                if long_paras:
+                    dim_details.append(f"Paragraphs > {max_block} chars: {', '.join(long_paras[:2])}")
+                if lost_lists:
+                    dim_details.append(f"Original lists lost starting with: {', '.join(lost_lists[:2])}")
+        elif r.name == "passage_quality":
+            if referential_paras:
+                dim_details.append(f"Paragraphs starting with referential starters: {', '.join(referential_paras[:3])}")
+        elif r.name == "aeo_structure":
+            if lost_lists:
+                dim_details.append(f"Original lists lost starting with: {', '.join(lost_lists[:2])}")
+
+        reason_parts = []
+        if dropped_submetrics:
+            reason_parts.extend(dropped_submetrics)
+        if dim_details:
+            reason_parts.extend(dim_details)
+
+        if not reason_parts and dd and getattr(dd, "breakdown", None):
+            reason_parts = [b.explanation for b in dd.breakdown if getattr(b, "explanation", None)]
+
+        concrete_reason = " | ".join(reason_parts) if reason_parts else "maintain original depth and structural quality"
+        concrete_reason_by_dim[r.name] = concrete_reason
+
+        feedback_items.append(
+            f"- {dim_title}: dropped by {drop_pts:.1f} points (before: {r.score_before}, after: {r.score_after})\n  Reason: {concrete_reason}"
+        )
+
+    return feedback_items, concrete_reason_by_dim
 
 
 @app.get("/api/ai/rewrite/status/{request_id}")
@@ -2306,7 +2453,7 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     - Include the suggested comparison/data table formatted cleanly as a Markdown table with pipes.
     - Merge suggested actionable paragraphs into their appropriate sections.
 13. AUTONOMOUS & SELF-CONTAINED PASSAGES: Every paragraph throughout the article and every FAQ answer must be completely self-contained and clear when quoted out of context. Always begin each paragraph and each answer by explicitly naming the entity, person, or subject (e.g. 'The Stadio La Favorita name came from...', 'Renzo Barbera was...'). NEVER start any paragraph or FAQ answer with pronouns or referential phrases such as 'It', 'They', 'This', 'These', 'Those', 'Such', 'As mentioned...', 'Como hemos visto...', 'Esto...', or any anaphoric reference.
-14. ORIGINAL TABLES & LISTS: You MUST keep and preserve ALL original tables and bullet/numbered lists. Never drop a table or convert it into plain text paragraphs. Preserve all columns, rows, and comparative data.
+14. ORIGINAL TABLES & LISTS: You MUST keep and preserve ALL original tables and bullet/numbered lists. Never drop a table or convert it into plain text paragraphs. Never convert bullet or numbered lists into continuous prose paragraphs; preserve them as Markdown lists (- item or 1. item). Preserve all columns, rows, list items, and comparative data.
 """
 
     plan_summary_parts = []
@@ -2355,6 +2502,10 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     orig_tables_list = extract_tables_as_markdown(ctx.main_html or "")
     original_tables_text = "\n\n".join(orig_tables_list) if orig_tables_list else "(none)"
 
+    # Extract original lists as markdown
+    orig_lists_list = extract_lists_as_markdown(ctx.main_html or "")
+    original_lists_text = "\n\n".join(orig_lists_list) if orig_lists_list else "(none)"
+
     if original_links:
         original_links_text = "\n".join(f"- [{l['text']}]({l['url']})" for l in original_links)
     else:
@@ -2396,6 +2547,9 @@ ORIGINAL PAGE TEXT CONTENT:
 
 ORIGINAL TABLES (keep ALL data and compare in Markdown tables):
 {original_tables_text}
+
+ORIGINAL LISTS (keep ALL lists as Markdown bullet/numbered lists; do not convert them to prose paragraphs):
+{original_lists_text}
 
 ORIGINAL LINKS (keep ALL of them as Markdown links; add no other URLs):
 {original_links_text}
@@ -3016,7 +3170,10 @@ Write the complete rewritten article in Markdown now following all editorial and
         element_count_warnings = check_content_elements_counts(ctx.main_html or "", draft_markdown)
         warnings.extend(element_count_warnings)
 
-        # 15. Normalize Markdown blocks (blank lines around tables, lists, headings)
+        # 15. Deterministic text wall splitter (paragraphs > 700 chars cut into <= 500 chars chunks)
+        draft_markdown = split_text_walls(draft_markdown)
+
+        # 16. Normalize Markdown blocks (blank lines around tables, lists, headings)
         draft_markdown = normalize_markdown_blocks(draft_markdown)
 
         return draft_markdown, warnings
@@ -3030,7 +3187,7 @@ Write the complete rewritten article in Markdown now following all editorial and
     orig_html_to_compare = ctx.main_html or (f"<article><p>{ctx.main_text or ''}</p></article>" if ctx.main_text else "")
 
     draft_1, warnings_1 = _post_process_draft(draft_1_raw, finish_reason_1)
-    comp_1 = await compute_rewrite_score_comparison(orig_html_to_compare, draft_1, target_q)
+    comp_1, orig_audit_1, draft_audit_1 = await compute_rewrite_score_comparison_with_audits(orig_html_to_compare, draft_1, target_q)
     regressions_1 = [dim for dim in comp_1.dimensions if dim.difference < -2.0]
 
     chosen_draft = draft_1
@@ -3043,28 +3200,14 @@ Write the complete rewritten article in Markdown now following all editorial and
         if req_id:
             rewrite_statuses[req_id] = "improving"
 
-        feedback_items = []
-        for r in regressions_1:
-            dim_title = r.name.replace("_", " ").title()
-            drop_pts = abs(r.difference)
-            reasons = []
-            if r.name == "formatting_scannability":
-                if any("Original tables lost" in w for w in warnings_1):
-                    reasons.append("tables were dropped or missing markdown table format with blank lines")
-                if any("Original lists lost" in w for w in warnings_1):
-                    reasons.append("bullet or numbered lists were dropped")
-                if not reasons:
-                    reasons.append("ensure clear visual layout, markdown tables with pipes, and bullet lists")
-            elif r.name == "passage_quality":
-                reasons.append("ensure all paragraphs are self-contained without pronouns/referential starters like 'It', 'They', 'This'")
-            elif r.name == "information_gain":
-                reasons.append("ensure unique factual data, numbers, and comparative points from the original are fully retained")
-            elif r.name == "search_intent_aeo":
-                reasons.append("ensure the opening lead answers the target query directly with all significant query terms included")
-            else:
-                reasons.append("maintain original depth, specific entity details, and structural quality")
-            reason_str = f" ({'; '.join(reasons)})" if reasons else ""
-            feedback_items.append(f"- {dim_title}: dropped by {drop_pts:.1f} points (before: {r.score_before}, after: {r.score_after}){reason_str}")
+        feedback_items, concrete_reasons_1 = build_regression_feedback(
+            regressions=regressions_1,
+            orig_audit=orig_audit_1,
+            draft_audit=draft_audit_1,
+            draft_markdown=draft_1,
+            ctx_main_html=ctx.main_html or "",
+            lang=lang,
+        )
 
         feedback_msg = "\n".join(feedback_items)
         pass2_user_prompt = f"""SECOND PASS IMPROVEMENT REQUIRED:
@@ -3074,7 +3217,7 @@ The first draft regressed on key quality dimensions compared to the original con
 CRITICAL FIXES FOR THIS SECOND PASS:
 1. Fix all regressed dimensions listed above:
    - Include ALL original tables formatted as clean Markdown tables with pipes, and ensure blank lines before and after each table.
-   - Include ALL original bullet and numbered lists.
+   - Include ALL original bullet and numbered lists (- item or 1. item); do not convert them to continuous prose paragraphs.
    - Retain ALL original facts, figures, links, and images.
    - Ensure every paragraph and FAQ answer is autonomous and self-contained, starting by naming the subject explicitly.
 2. Review the first draft below and fix the issues to produce the complete, improved article rewrite in Markdown:
@@ -3090,7 +3233,7 @@ FIRST DRAFT:
                 {"role": "user", "content": pass2_user_prompt},
             ])
             draft_2, warnings_2 = _post_process_draft(draft_2_raw, finish_reason_2)
-            comp_2 = await compute_rewrite_score_comparison(orig_html_to_compare, draft_2, target_q)
+            comp_2, orig_audit_2, draft_audit_2 = await compute_rewrite_score_comparison_with_audits(orig_html_to_compare, draft_2, target_q)
             regressions_2 = [dim for dim in comp_2.dimensions if dim.difference < -2.0]
 
             if not regressions_2:
@@ -3105,23 +3248,34 @@ FIRST DRAFT:
                     chosen_warnings = warnings_2
                     chosen_comp = comp_2
                     active_regs = regressions_2
+                    _, active_concrete_reasons = build_regression_feedback(
+                        regressions=regressions_2,
+                        orig_audit=orig_audit_2,
+                        draft_audit=draft_audit_2,
+                        draft_markdown=draft_2,
+                        ctx_main_html=ctx.main_html or "",
+                        lang=lang,
+                    )
                 else:
                     chosen_draft = draft_1
                     chosen_warnings = warnings_1
                     chosen_comp = comp_1
                     active_regs = regressions_1
+                    active_concrete_reasons = concrete_reasons_1
 
                 for reg in active_regs:
                     dim_label = reg.name.replace("_", " ").title()
+                    reason = active_concrete_reasons.get(reg.name, f"score changed from {reg.score_before} to {reg.score_after}")
                     chosen_warnings.append(
-                        f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: score changed from {reg.score_before} to {reg.score_after}"
+                        f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: {reason}"
                     )
         except Exception as e:
             logger.error(f"Error during AI rewrite second pass: {traceback.format_exc()}")
             for reg in regressions_1:
                 dim_label = reg.name.replace("_", " ").title()
+                reason = concrete_reasons_1.get(reg.name, f"score changed from {reg.score_before} to {reg.score_after}")
                 chosen_warnings.append(
-                    f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: score changed from {reg.score_before} to {reg.score_after}"
+                    f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: {reason}"
                 )
 
     if req_id:

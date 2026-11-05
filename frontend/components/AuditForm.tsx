@@ -185,7 +185,7 @@ export default function AuditForm({
 
         const tableCount = el.querySelectorAll("table").length;
         const linkCount = el.querySelectorAll("a[href]").length;
-        const imageCount = el.querySelectorAll("img[src]").length;
+        const imageCount = Array.from(el.querySelectorAll("img")).filter(img => Boolean(img.getAttribute("src"))).length;
 
         const total = h1Count + h2Count + h3Count + listCount + tableCount + linkCount + imageCount;
         if (total > 0) {
@@ -293,10 +293,11 @@ export default function AuditForm({
                 formattedStats.h3 > 0 ||
                 formattedStats.lists > 0 ||
                 formattedStats.tables > 0 ||
-                formattedStats.links > 0
+                formattedStats.links > 0 ||
+                formattedStats.images > 0
             );
 
-            if (hasStructure || /<(h[1-6]|ul|ol|table|a\s+href)/i.test(editorHtml)) {
+            if (hasStructure || /<(h[1-6]|ul|ol|table|a\s+href|img[\s>])/i.test(editorHtml)) {
                 const hasH1 = (formattedStats && formattedStats.h1 > 0) || /<h1[\s>]/i.test(editorHtml);
                 let combinedHtml = editorHtml;
                 if (title.trim() && !hasH1) {

@@ -656,4 +656,132 @@ def extract_tables_as_markdown(html: str) -> list[str]:
     return tables_md
 
 
+def extract_lists_as_markdown(html: str) -> list[str]:
+    """
+    Extract <ul> and <ol> elements from HTML and convert each to Markdown bullet or numbered lists.
+    Skips editorial metadata list items.
+    Preserves inline links as Markdown links [text](url).
+    """
+    if not html:
+        return []
+
+    from bs4 import BeautifulSoup
+    from src.utils.lang_patterns import is_editorial_metadata_line
+    soup = BeautifulSoup(html, "lxml")
+
+    lists_md: list[str] = []
+
+    # Find top-level ul and ol tags (exclude those nested inside another ul/ol)
+    for list_tag in soup.find_all(["ul", "ol"]):
+        if list_tag.find_parent(["ul", "ol"]):
+            continue
+
+        items = list_tag.find_all("li", recursive=False)
+        if not items:
+            continue
+
+        lines = []
+        is_ol = (list_tag.name == "ol")
+
+        for idx, li in enumerate(items, 1):
+            li_copy = BeautifulSoup(str(li), "lxml").find("li")
+            if not li_copy:
+                continue
+
+            # Process nested lists if any
+            nested_lists = li_copy.find_all(["ul", "ol"])
+            nested_lines = []
+            for nl in nested_lists:
+                nl_is_ol = (nl.name == "ol")
+                for sub_idx, sub_li in enumerate(nl.find_all("li", recursive=False), 1):
+                    prefix = f"    {sub_idx}. " if nl_is_ol else "    - "
+                    clean_sub = re.sub(r"\s+", " ", sub_li.get_text(separator=" ", strip=True))
+                    if clean_sub and not is_editorial_metadata_line(clean_sub):
+                        nested_lines.append(f"{prefix}{clean_sub}")
+                nl.decompose()
+
+            for a in li_copy.find_all("a"):
+                href = (a.get("href") or "").strip()
+                atext = a.get_text(separator=" ", strip=True)
+                if href and atext and re.match(r"^https?://", href, re.I):
+                    a.replace_with(f"[{atext}]({href})")
+
+            item_text = re.sub(r"\s+", " ", li_copy.get_text(separator=" ", strip=True))
+            item_text = re.sub(r"\s+([.,;:!?])", r"\1", item_text)
+            if not item_text or is_editorial_metadata_line(item_text):
+                continue
+
+            prefix = f"{idx}. " if is_ol else "- "
+            lines.append(f"{prefix}{item_text}")
+            lines.extend(nested_lines)
+
+        if lines:
+            lists_md.append("\n".join(lines))
+
+    return lists_md
+
+
+def split_text_walls(md_text: str, max_chars: int | None = None, chunk_max: int = 500) -> str:
+    """
+    Deterministic text wall splitter:
+    Splits any normal paragraph longer than max_chars (default FormattingDetector.MAX_CHARS_PER_BLOCK = 700)
+    at sentence boundaries into sub-paragraphs of at most chunk_max (500) characters,
+    without altering any text.
+    Never splits tables, lists, headings, images, or [EDITOR: ...] gap blocks.
+    """
+    if not md_text:
+        return md_text
+
+    if max_chars is None:
+        from src.detectors.formatting import FormattingDetector
+        max_chars = FormattingDetector.MAX_CHARS_PER_BLOCK
+
+    blocks = re.split(r'(\n\s*\n)', md_text)
+    processed_blocks = []
+
+    for block in blocks:
+        if not block.strip():
+            processed_blocks.append(block)
+            continue
+
+        b_stripped = block.strip()
+
+        is_heading = b_stripped.startswith("#")
+        is_table = b_stripped.startswith("|") or "\n|" in b_stripped
+        is_list = bool(re.match(r'^(?:[-*+]|\d+\.)\s+', b_stripped))
+        is_editor_gap = "[EDITOR:" in b_stripped
+        is_image = b_stripped.startswith("![")
+
+        if is_heading or is_table or is_list or is_editor_gap or is_image or len(b_stripped) <= max_chars:
+            processed_blocks.append(block)
+            continue
+
+        sentences = re.split(r'(?<=[.!?])\s+', b_stripped)
+        if len(sentences) <= 1:
+            processed_blocks.append(block)
+            continue
+
+        chunks = []
+        curr_chunk = []
+        curr_len = 0
+
+        for s in sentences:
+            s_len = len(s)
+            if curr_chunk and (curr_len + 1 + s_len > chunk_max):
+                chunks.append(" ".join(curr_chunk))
+                curr_chunk = [s]
+                curr_len = s_len
+            else:
+                curr_chunk.append(s)
+                curr_len += (1 + s_len) if curr_len > 0 else s_len
+
+        if curr_chunk:
+            chunks.append(" ".join(curr_chunk))
+
+        processed_blocks.append("\n\n".join(chunks))
+
+    return "".join(processed_blocks)
+
+
+
 
