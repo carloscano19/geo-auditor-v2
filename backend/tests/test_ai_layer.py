@@ -6796,6 +6796,197 @@ How to participate:
     assert "Original lists lost" not in fc_feedback, f"False positive list loss reported in feedback: {fc_feedback}"
 
 
+def test_mtld_continuous_interpolation():
+    from src.detectors.passage_quality import interpolate_mtld_score
+    score_68_7 = interpolate_mtld_score(68.7)
+    score_72 = interpolate_mtld_score(72.0)
+    diff = abs(score_72 - score_68_7)
+    assert diff < 5.0, f"Difference between 72 and 68.7 should be < 5.0, got {diff:.2f}"
+    assert 68.0 <= score_68_7 <= 69.0
+    assert score_72 == 72.0
+    assert interpolate_mtld_score(0) == 0.0
+    assert interpolate_mtld_score(40) == 30.0
+    assert interpolate_mtld_score(55) == 50.0
+    assert interpolate_mtld_score(70) == 70.0
+    assert interpolate_mtld_score(85) == 85.0
+    assert interpolate_mtld_score(100) == 100.0
+    assert interpolate_mtld_score(120) == 100.0
+
+
+def test_inconsistency_acknowledged_with_attribution():
+    from main import check_inconsistency_acknowledged
+
+    text_ack = (
+        "The stadium was officially opened in 1920, although another club historian puts "
+        "the inauguration date in 1922 after subsequent renovations."
+    )
+    values = ["1920", "1922"]
+    assert check_inconsistency_acknowledged(values, "", text_ack) is True
+
+    # Spanish attribution
+    text_ack_es = (
+        "El club contaba con 5.000 socios en esa fecha, aunque según otra crónica "
+        "la cifra alcanzaba los 6.000 aficionados."
+    )
+    assert check_inconsistency_acknowledged(["5.000", "6.000"], "", text_ack_es) is True
+
+
+def test_inconsistency_unacknowledged_without_attribution():
+    from main import check_inconsistency_acknowledged
+
+    text_no_ack = (
+        "The match was played in 1920. Later that year the attendance reached 1922 spectators."
+    )
+    # No contrast or attribution marker in this block
+    assert check_inconsistency_acknowledged(["1920", "1922"], "", text_no_ack) is False
+
+    # Different paragraphs without attribution
+    text_separate = (
+        "The initial capacity was 5000 seats.\n\n"
+        "On the official register the registered capacity was 6000 seats."
+    )
+    assert check_inconsistency_acknowledged(["5000", "6000"], "", text_separate) is False
+
+
+@pytest.mark.asyncio
+async def test_draft_mode_multimedia_scoring():
+    from src.detectors.formatting import FormattingDetector
+    from src.models.schemas import PageData
+
+    det = FormattingDetector()
+
+    # Draft without images
+    html_no_img = "<h1>Title</h1><p>Test</p><ul><li>One</li><li>Two</li></ul>"
+    pd_no_img = PageData(
+        url="",
+        final_url="",
+        html_raw=html_no_img,
+        html_rendered=html_no_img,
+        text_content="Title Test One Two",
+        status_code=200,
+        load_time_ms=10.0,
+        title="Title",
+        meta_description="",
+        h1="Title",
+        h2=[],
+        h3=[],
+        paragraphs=["Test"],
+        lists=[["One", "Two"]],
+        tables=[],
+        links=[],
+        images=[],
+        word_count=50,
+        main_html=html_no_img,
+        main_text="Title Test One Two",
+        is_draft_mode=True,
+    )
+    res_no_img = await det.analyze(pd_no_img)
+    mm_breakdown = next((b for b in res_no_img.breakdown if b.name == "Multimedia Content"), None)
+    assert mm_breakdown is not None
+    assert mm_breakdown.weight == 0.0
+    assert mm_breakdown.raw_score == 0.0
+    assert mm_breakdown.explanation == "Not scored in draft mode — images are added in the CMS"
+    lists_breakdown = next((b for b in res_no_img.breakdown if b.name == "Lists/Tables Used"), None)
+    assert lists_breakdown is not None
+    assert lists_breakdown.weight == 1.0
+    assert res_no_img.score == lists_breakdown.raw_score
+
+    # Draft with an http image
+    html_with_img = "<h1>Title</h1><p>Test</p><img src='https://example.com/photo.jpg' alt='Stadium photo' /><ul><li>One</li></ul>"
+    pd_with_img = PageData(
+        url="",
+        final_url="",
+        html_raw=html_with_img,
+        html_rendered=html_with_img,
+        text_content="Title Test One",
+        status_code=200,
+        load_time_ms=10.0,
+        title="Title",
+        meta_description="",
+        h1="Title",
+        h2=[],
+        h3=[],
+        paragraphs=["Test"],
+        lists=[["One"]],
+        tables=[],
+        links=[],
+        images=[{"src": "https://example.com/photo.jpg", "alt": "Stadium photo"}],
+        word_count=50,
+        main_html=html_with_img,
+        main_text="Title Test One",
+        is_draft_mode=True,
+    )
+    res_with_img = await det.analyze(pd_with_img)
+    mm_b2 = next((b for b in res_with_img.breakdown if b.name == "Multimedia Content"), None)
+    assert mm_b2 is not None
+    assert mm_b2.weight > 0.4
+    assert mm_b2.raw_score > 0.0
+
+
+@pytest.mark.asyncio
+async def test_rewrite_missing_figures_feedback_in_attempt2():
+    from main import rewrite_article
+    from src.models.schemas import AIContext, AIPlanResponse, AIRewriteRequest
+
+    ctx = AIContext(
+        title="Origins of Cules",
+        h1="Why are Barcelona fans called Cules?",
+        meta_description="",
+        main_html="<p>In 1909 the club moved to Carrer Industria with 6,000 capacity.</p>",
+        main_text="In 1909 the club moved to Carrer Industria with 6,000 capacity.",
+        word_count=12,
+        lang="en",
+    )
+    plan = AIPlanResponse(
+        questions_to_answer=[],
+        suggested_h2_structure=[],
+        data_opportunities=[],
+        paragraphs_to_add=[],
+        inconsistencies=[],
+        combined_schema={},
+        warnings=[],
+    )
+    req = AIRewriteRequest(
+        ai_context=ctx,
+        ai_plan=plan,
+        target_query="why are barcelona fans called cules",
+        request_id="test_missing_fig",
+    )
+
+    calls = []
+
+    async def fake_stream(http_client, url, headers, payload):
+        calls.append(payload["messages"])
+        if len(calls) == 1:
+            # Attempt 1: misses the number 6,000
+            return (
+                "# Why are Barcelona fans called Cules?\n\n"
+                "In 1909 the club moved to a new stadium in Barcelona.\n\n"
+                "The stadium was always overflowing on matchdays.",
+                "stop"
+            )
+        else:
+            # Attempt 2: includes 6,000
+            return (
+                "# Why are Barcelona fans called Cules?\n\n"
+                "In 1909 the club moved to Carrer Industria with 6,000 capacity.\n\n"
+                "The stadium was always overflowing on matchdays.",
+                "stop"
+            )
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", side_effect=fake_stream):
+        resp = await rewrite_article(req)
+
+    assert len(calls) == 2, "Second attempt should have been triggered due to missing figure 6,000"
+    pass2_prompt = calls[1][-1]["content"]
+    assert "Original numerical figures/statistics missing from the draft" in pass2_prompt
+    assert "6,000" in pass2_prompt
+    assert "6,000 capacity" in pass2_prompt
+    assert "6,000" in resp.draft_markdown
+
+
+
 
 
 

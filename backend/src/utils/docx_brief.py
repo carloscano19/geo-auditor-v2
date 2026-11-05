@@ -541,7 +541,10 @@ def generate_editor_brief_docx(
     # 4. Plan Sections (if AI Plan present)
     if ai_plan:
         # 4.1 Inconsistencies found on the page
-        if ai_plan.inconsistencies and len(ai_plan.inconsistencies) > 0:
+        unresolved_incons = [i for i in (ai_plan.inconsistencies or []) if not getattr(i, "acknowledged", False)]
+        acknowledged_incons = [i for i in (ai_plan.inconsistencies or []) if getattr(i, "acknowledged", False)]
+
+        if unresolved_incons:
             h2_inc = doc.add_heading(level=1)
             h2_inc.paragraph_format.space_before = Pt(16)
             h2_inc.paragraph_format.space_after = Pt(4)
@@ -560,7 +563,7 @@ def generate_editor_brief_docx(
             run_sub_inc.font.size = Pt(9.5)
             run_sub_inc.font.color.rgb = RGBColor(107, 114, 128)
 
-            for inc in ai_plan.inconsistencies:
+            for inc in unresolved_incons:
                 p_inc = doc.add_paragraph(style="List Bullet")
                 p_inc.paragraph_format.space_before = Pt(2)
                 p_inc.paragraph_format.space_after = Pt(4)
@@ -577,6 +580,44 @@ def generate_editor_brief_docx(
                 r_sug = p_inc.add_run(f"Recommendation: {inc.suggestion}")
                 r_sug.font.size = Pt(9.5)
                 r_sug.font.color.rgb = RGBColor(55, 65, 81)
+
+        # 4.1b Already explained in the text — no action needed
+        if acknowledged_incons:
+            h2_ack = doc.add_heading(level=1)
+            h2_ack.paragraph_format.space_before = Pt(16)
+            h2_ack.paragraph_format.space_after = Pt(4)
+            run_h2_ack = h2_ack.add_run("Already explained in the text — no action needed")
+            run_h2_ack.font.name = "Arial"
+            run_h2_ack.font.size = Pt(16)
+            run_h2_ack.bold = True
+            run_h2_ack.font.color.rgb = RGBColor(31, 41, 55)
+
+            sub_ack = doc.add_paragraph()
+            sub_ack.paragraph_format.space_after = Pt(8)
+            run_sub_ack = sub_ack.add_run(
+                "These differing values are already attributed, contrasted, or explained in context in the text."
+            )
+            run_sub_ack.font.italic = True
+            run_sub_ack.font.size = Pt(9.5)
+            run_sub_ack.font.color.rgb = RGBColor(107, 114, 128)
+
+            for inc in acknowledged_incons:
+                p_ack = doc.add_paragraph(style="List Bullet")
+                p_ack.paragraph_format.space_before = Pt(2)
+                p_ack.paragraph_format.space_after = Pt(4)
+
+                r_issue = p_ack.add_run(f"{inc.issue}\n")
+                r_issue.bold = True
+                r_issue.font.size = Pt(10)
+
+                vals_str = " vs ".join([f"\"{v}\"" for v in inc.values])
+                r_vals = p_ack.add_run(f"Mentioned values: {vals_str}\n")
+                r_vals.font.size = Pt(9.5)
+                r_vals.font.color.rgb = RGBColor(75, 85, 99)
+
+                r_sug = p_ack.add_run(f"Context: {inc.suggestion}")
+                r_sug.font.size = Pt(9.5)
+                r_sug.font.color.rgb = RGBColor(107, 114, 128)
 
         # 4.2 Questions your page should answer
         if ai_plan.questions_to_answer and len(ai_plan.questions_to_answer) > 0:

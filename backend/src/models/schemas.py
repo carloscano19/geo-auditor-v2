@@ -65,6 +65,7 @@ class PageData(BaseModel):
     language: str = "en"
     content_type: str = "guide_blog"
     robots_txt_content: Optional[str] = None
+    is_draft_mode: bool = False
 
 
 class ScoreBreakdown(BaseModel):
@@ -211,6 +212,7 @@ class PlanInconsistency(BaseModel):
     issue: str
     values: list[str] = Field(default_factory=list)
     suggestion: str
+    acknowledged: bool = False
 
 
 class PlanSourceToCite(BaseModel):

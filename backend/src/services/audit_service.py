@@ -139,7 +139,8 @@ async def run_single_audit(
             is_ssr=True,
             is_https=True,
             ttfb_ms=None,
-            robots_txt_content=None
+            robots_txt_content=None,
+            is_draft_mode=is_draft_mode
         )
     elif request.content_text:
         raw_text = request.content_text.strip()
@@ -174,7 +175,8 @@ async def run_single_audit(
                 is_ssr=True,
                 is_https=True,
                 ttfb_ms=None,
-                robots_txt_content=None
+                robots_txt_content=None,
+                is_draft_mode=is_draft_mode
             )
         else:
             # Plain text without Markdown:
@@ -243,7 +245,8 @@ async def run_single_audit(
                 is_ssr=True,
                 is_https=True,
                 ttfb_ms=None,
-                robots_txt_content=None
+                robots_txt_content=None,
+                is_draft_mode=is_draft_mode
             )
     elif request.url:
         async with scrape_semaphore:

@@ -193,6 +193,18 @@ PATTERNS_BY_LANG: Dict[str, Dict[str, Any]] = {
             r'^\s*(?:it|they)\s+(?:is|are|was|were|has|have|can|will|also)\b',
             r'^\s*(?:as\s+noted|as\s+described|in\s+addition\s+to\s+the\s+above)\b',
         ],
+        "attribution_contrast_markers": [
+            r'\balthough\b',
+            r'\bwhile\b',
+            r'\bwhereas\b',
+            r'\bbut\b',
+            r'\banother\b',
+            r'\bother\b',
+            r'\baccording\s+to\b',
+            r'\bputs\b',
+            r'\bgives\b',
+            r'\bdates?\b',
+        ],
     },
     "es": {
         "claims": [
@@ -280,8 +292,30 @@ PATTERNS_BY_LANG: Dict[str, Dict[str, Any]] = {
             r'^\s*(?:dichos?|dichas?)\b',
             r'^\s*(?:como\s+se\s+ha\s+explicado|tal\s+como\s+vimos)\b',
         ],
+        "attribution_contrast_markers": [
+            r'\baunque\b',
+            r'\bmientras\b',
+            r'\bseg[uú]n\b',
+            r'\botra\b',
+            r'\botro\b',
+            r'\botros\b',
+            r'\botras\b',
+            r'\bpero\b',
+        ],
     }
 }
+
+ATTRIBUTION_CONTRAST_REGEX = re.compile(
+    r'\b(?:although|while|whereas|but|another|other|according\s+to|puts|gives|dates?|aunque|mientras|seg[uú]n|otra|otro|otros|otras|pero)\b',
+    re.IGNORECASE
+)
+
+
+def has_attribution_or_contrast_marker(text: str) -> bool:
+    """Check if text contains attribution or contrast markers in English or Spanish."""
+    if not text:
+        return False
+    return bool(ATTRIBUTION_CONTRAST_REGEX.search(text))
 
 INTERROGATIVE_WORDS: Set[str] = {
     'what', 'why', 'how', 'when', 'where', 'who', 'which', 'whose', 'whom',

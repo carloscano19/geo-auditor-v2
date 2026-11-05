@@ -629,13 +629,26 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
             }
         }
 
-        if (aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0) {
+        const unresolvedIncons = (aiPlan.inconsistencies || []).filter(inc => !inc.acknowledged);
+        const acknowledgedIncons = (aiPlan.inconsistencies || []).filter(inc => inc.acknowledged);
+
+        if (unresolvedIncons.length > 0) {
             lines.push(`## Inconsistencies Found on the Page`);
             lines.push(`*The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.*\n`);
-            aiPlan.inconsistencies.forEach((inc, i) => {
+            unresolvedIncons.forEach((inc, i) => {
                 lines.push(`### ${i + 1}. ${inc.issue}`);
                 lines.push(`- **Conflicting Values:** ${inc.values.map(v => `\`"${v}"\``).join(" vs ")}`);
                 lines.push(`- **Recommendation:** ${inc.suggestion}\n`);
+            });
+        }
+
+        if (acknowledgedIncons.length > 0) {
+            lines.push(`## Already Explained in the Text — No Action Needed`);
+            lines.push(`*These differing values are already attributed, contrasted, or explained in context.*\n`);
+            acknowledgedIncons.forEach((inc, i) => {
+                lines.push(`### ${i + 1}. ${inc.issue}`);
+                lines.push(`- **Mentioned Values:** ${inc.values.map(v => `\`"${v}"\``).join(" vs ")}`);
+                lines.push(`- **Context:** ${inc.suggestion}\n`);
             });
         }
 
@@ -1557,19 +1570,21 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                             )}
 
                             {/* Inconsistencies found on the page */}
-                            {aiPlan.inconsistencies && aiPlan.inconsistencies.length > 0 && (
+                            {aiPlan.inconsistencies && aiPlan.inconsistencies.some(inc => !inc.acknowledged) && (
                                 <div className="space-y-3">
                                     <div>
                                         <h4 className="text-sm font-semibold text-ink flex items-center gap-2">
                                             <span>⚖️ Inconsistencies found on the page</span>
-                                            <span className="text-xs font-normal text-ink-3">({aiPlan.inconsistencies.length})</span>
+                                            <span className="text-xs font-normal text-ink-3">
+                                                ({aiPlan.inconsistencies.filter(inc => !inc.acknowledged).length})
+                                            </span>
                                         </h4>
                                         <p className="text-xs text-ink-3 mt-0.5">
                                             The page contradicts itself here. Pick one version and use it everywhere, so AI engines extract a single answer.
                                         </p>
                                     </div>
                                     <div className="grid gap-3">
-                                        {aiPlan.inconsistencies.map((inc, i) => (
+                                        {aiPlan.inconsistencies.filter(inc => !inc.acknowledged).map((inc, i) => (
                                             <div key={i} className="p-3.5 rounded-xl bg-amber-50/60 border border-warn/30 space-y-2 text-xs">
                                                 <div className="font-semibold text-amber-900 flex items-center gap-1.5">
                                                     <span>🔍</span> {inc.issue}
@@ -1584,6 +1599,44 @@ export default function AuditResults({ results, originalText, hideAiFixes = fals
                                                 </div>
                                                 <div className="p-2.5 rounded-lg bg-surface/80 border border-hairline text-ink-2">
                                                     <strong className="text-ink">Recommendation: </strong>
+                                                    {inc.suggestion}
+                                                </div>
+                                            </div>
+                                        ))}
+                                    </div>
+                                </div>
+                            )}
+
+                            {/* Already explained in the text — no action needed */}
+                            {aiPlan.inconsistencies && aiPlan.inconsistencies.some(inc => inc.acknowledged) && (
+                                <div className="space-y-3">
+                                    <div>
+                                        <h4 className="text-sm font-semibold text-ink flex items-center gap-2">
+                                            <span>ℹ️ Already explained in the text — no action needed</span>
+                                            <span className="text-xs font-normal text-ink-3">
+                                                ({aiPlan.inconsistencies.filter(inc => inc.acknowledged).length})
+                                            </span>
+                                        </h4>
+                                        <p className="text-xs text-ink-3 mt-0.5">
+                                            These differing figures or dates are already attributed, contrasted, or explained in context in the text.
+                                        </p>
+                                    </div>
+                                    <div className="grid gap-3">
+                                        {aiPlan.inconsistencies.filter(inc => inc.acknowledged).map((inc, i) => (
+                                            <div key={i} className="p-3.5 rounded-xl bg-surface-2 border border-hairline space-y-2 text-xs">
+                                                <div className="font-semibold text-ink flex items-center gap-1.5">
+                                                    <span>✓</span> {inc.issue}
+                                                </div>
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <span className="text-[11px] text-ink-3 uppercase tracking-wider font-medium">Mentioned values:</span>
+                                                    {inc.values.map((val, vIdx) => (
+                                                        <span key={vIdx} className="px-2 py-0.5 rounded bg-surface text-ink-2 border border-hairline font-mono text-[11px]">
+                                                            &ldquo;{val}&rdquo;
+                                                        </span>
+                                                    ))}
+                                                </div>
+                                                <div className="p-2.5 rounded-lg bg-surface/80 border border-hairline text-ink-3">
+                                                    <strong className="text-ink-2">Context: </strong>
                                                     {inc.suggestion}
                                                 </div>
                                             </div>

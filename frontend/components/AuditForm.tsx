@@ -37,9 +37,18 @@ function isEditorialMetadataText(str: string): boolean {
     return EDITORIAL_METADATA_REGEX.test(cleaned);
 }
 
-function cleanClientPastedHtml(rawHtml: string): string {
+export function cleanClientPastedHtml(rawHtml: string): { cleanHtml: string; unimportedImagesCount: number } {
     const parser = new DOMParser();
     const doc = parser.parseFromString(rawHtml, "text/html");
+
+    // Count all <img> tags and find those without valid http/https src
+    let unimportedImagesCount = 0;
+    doc.querySelectorAll("img").forEach(img => {
+        const src = (img.getAttribute("src") || img.getAttribute("data-src") || "").trim();
+        if (!/^https?:\/\//i.test(src)) {
+            unimportedImagesCount++;
+        }
+    });
 
     // Remove technical/non-content tags
     doc.querySelectorAll("script, style, noscript, iframe, svg, form, button, input, textarea, select, option, meta, link, head").forEach(el => el.remove());
@@ -115,7 +124,10 @@ function cleanClientPastedHtml(rawHtml: string): string {
         }
     });
 
-    return doc.body.innerHTML;
+    return {
+        cleanHtml: doc.body.innerHTML,
+        unimportedImagesCount,
+    };
 }
 
 export default function AuditForm({
@@ -133,6 +145,7 @@ export default function AuditForm({
     const [batchUrlsText, setBatchUrlsText] = useState("");
     const [targetQuery, setTargetQuery] = useState("");
     const [batchError, setBatchError] = useState<string | null>(null);
+    const [unimportedImages, setUnimportedImages] = useState(0);
 
     const editorRef = useRef<HTMLDivElement>(null);
 
@@ -209,9 +222,11 @@ export default function AuditForm({
         const text = e.clipboardData.getData("text/plain");
 
         if (html && html.trim()) {
-            const clean = cleanClientPastedHtml(html);
-            document.execCommand("insertHTML", false, clean);
+            const { cleanHtml, unimportedImagesCount } = cleanClientPastedHtml(html);
+            setUnimportedImages(unimportedImagesCount);
+            document.execCommand("insertHTML", false, cleanHtml);
         } else if (text) {
+            setUnimportedImages(0);
             document.execCommand("insertText", false, text);
         }
         setTimeout(inspectEditorContent, 0);
@@ -225,6 +240,7 @@ export default function AuditForm({
         if (editorRef.current) {
             const plain = editorRef.current.innerText || "";
             editorRef.current.innerText = plain;
+            setUnimportedImages(0);
             inspectEditorContent();
         }
     };
@@ -454,18 +470,29 @@ export default function AuditForm({
                             data-placeholder="Paste your article content here (headings, tables, and links will be preserved)..."
                             className="w-full bg-surface-2 border border-hairline rounded-control p-3.5 text-xs font-sans leading-relaxed text-ink focus:outline-none focus:border-accent focus:bg-surface min-h-[180px] max-h-[450px] overflow-y-auto transition-colors whitespace-pre-wrap select-text"
                         />
-                        {formattedStats && (
-                            <div className="flex items-center justify-between text-xs bg-accent/10 border border-accent/20 rounded-control px-3 py-2 text-ink">
-                                <span>
-                                    Formatted paste detected: {formatStatsSummary(formattedStats)}
-                                </span>
-                                <button
-                                    type="button"
-                                    onClick={handleConvertToPlainText}
-                                    className="text-accent underline hover:text-critical ml-2 shrink-0 cursor-pointer text-xs font-medium"
-                                >
-                                    Use plain text instead
-                                </button>
+                        {(formattedStats || unimportedImages > 0) && (
+                            <div className="flex flex-col sm:flex-row sm:items-center justify-between text-xs bg-accent/10 border border-accent/20 rounded-control px-3 py-2 text-ink gap-2">
+                                <div className="space-y-1">
+                                    {formattedStats && (
+                                        <div>
+                                            Formatted paste detected: {formatStatsSummary(formattedStats)}
+                                        </div>
+                                    )}
+                                    {unimportedImages > 0 && (
+                                        <div className="text-amber-700 dark:text-amber-400 font-medium">
+                                            ⚠️ {unimportedImages} imágenes detectadas pero no importadas — añádelas en el CMS
+                                        </div>
+                                    )}
+                                </div>
+                                {formattedStats && (
+                                    <button
+                                        type="button"
+                                        onClick={handleConvertToPlainText}
+                                        className="text-accent underline hover:text-critical shrink-0 cursor-pointer text-xs font-medium self-start sm:self-center"
+                                    >
+                                        Use plain text instead
+                                    </button>
+                                )}
                             </div>
                         )}
                     </div>

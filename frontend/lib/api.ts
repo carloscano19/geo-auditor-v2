@@ -115,6 +115,7 @@ export interface PlanInconsistency {
     issue: string;
     values: string[];
     suggestion: string;
+    acknowledged?: boolean;
 }
 
 export interface PlanSourceToCite {

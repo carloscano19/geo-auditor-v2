@@ -202,6 +202,40 @@ class FormattingDetector(BaseDetector):
                 imgs_with_alt += 1
                 
         total_media = total_imgs + len(video_elements)
+
+        is_draft = getattr(page_data, "is_draft_mode", False)
+        if is_draft and total_media == 0:
+            breakdown = [
+                ScoreBreakdown(
+                    name="Lists/Tables Used",
+                    raw_score=scannability_score,
+                    weight=1.0,
+                    weighted_score=scannability_score,
+                    explanation=f"{'✅' if total_lists > 0 else '❌'} Found {total_lists} lists/tables. {'⚠️ ' + str(text_walls_found) + ' text walls.' if text_walls_found else ''}",
+                    recommendations=scan_recs
+                ),
+                ScoreBreakdown(
+                    name="Multimedia Content",
+                    raw_score=0.0,
+                    weight=0.0,
+                    weighted_score=0.0,
+                    explanation="Not scored in draft mode — images are added in the CMS",
+                    recommendations=[]
+                )
+            ]
+            score = scannability_score
+            for item in breakdown:
+                recommendations.extend(item.recommendations)
+
+            return DetectorResult(
+                dimension=self.dimension_name,
+                score=score,
+                weight=self.weight,
+                contribution=self.calculate_contribution(score),
+                breakdown=breakdown,
+                errors=errors
+            )
+
         media_score = 0.0
         status = ""
         

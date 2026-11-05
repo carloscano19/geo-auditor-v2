@@ -53,6 +53,27 @@ def compute_mtld(tokens: List[str], threshold: float = 0.72) -> float:
     return (mtld_f + mtld_b) / 2.0
 
 
+def interpolate_mtld_score(mtld: float) -> float:
+    """
+    Continuous linear interpolation for MTLD score between calibration points:
+    (0, 0), (40, 30), (55, 50), (70, 70), (85, 85), (100, 100), capped at 100.
+    """
+    if mtld <= 0.0:
+        return 0.0
+    if mtld >= 100.0:
+        return 100.0
+    if mtld <= 40.0:
+        return mtld * (30.0 / 40.0)
+    elif mtld <= 55.0:
+        return 30.0 + (mtld - 40.0) * (20.0 / 15.0)
+    elif mtld <= 70.0:
+        return 50.0 + (mtld - 55.0) * (20.0 / 15.0)
+    elif mtld <= 85.0:
+        return 70.0 + (mtld - 70.0) * (15.0 / 15.0)
+    else:  # mtld < 100.0
+        return 85.0 + (mtld - 85.0) * (15.0 / 15.0)
+
+
 def extract_eval_paragraphs(html: str, fallback_text: str = "") -> List[str]:
     """
     Extract substantive paragraphs (p and blockquote only, excluding li and td)
@@ -112,20 +133,17 @@ class PassageQualityDetector(BaseDetector):
         tokens = [w.lower() for w in re.findall(r'\b[A-Za-zÁÉÍÓÚÜÑáéíóúüñ]+\b', full_text)]
         mtld = compute_mtld(tokens, threshold=0.72)
 
+        mtld_score = round(interpolate_mtld_score(mtld), 1)
+
         if mtld >= 100.0:
-            mtld_score = 100.0
             mtld_status = "High"
         elif mtld >= 85.0:
-            mtld_score = 85.0
             mtld_status = "Good"
         elif mtld >= 70.0:
-            mtld_score = 70.0
             mtld_status = "Moderate"
         elif mtld >= 55.0:
-            mtld_score = 50.0
             mtld_status = "Fair"
         else:
-            mtld_score = 30.0
             mtld_status = "Low"
 
         mtld_recs = []

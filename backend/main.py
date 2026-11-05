@@ -1319,6 +1319,47 @@ Rules:
     return AIFixesResponse(**response_data)
 
 
+def check_inconsistency_acknowledged(values: list[str], html: str, text: str) -> bool:
+    """
+    Check if conflicting values appear in the same paragraph or table row alongside
+    an attribution or contrast marker (e.g. although, while, whereas, but, another, other,
+    according to, puts, gives, dates, aunque, mientras, según, otra/otro).
+    """
+    if not values or len(values) < 2:
+        return False
+
+    from src.utils.lang_patterns import has_attribution_or_contrast_marker
+    candidate_blocks: list[str] = []
+
+    if html:
+        soup = BeautifulSoup(html, "html.parser")
+        for tag in soup.find_all(['p', 'tr', 'li', 'blockquote', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6']):
+            t = tag.get_text(" ", strip=True)
+            if t:
+                candidate_blocks.append(t)
+
+    if text:
+        for p in re.split(r'\n\s*\n', text):
+            t = p.strip()
+            if t:
+                candidate_blocks.append(t)
+
+    for block in candidate_blocks:
+        b_lower = block.lower()
+        all_present = True
+        for v in values:
+            v_str = str(v).strip().lower()
+            v_norm = v_str.replace(",", "").replace(".", "")
+            if v_str not in b_lower and v_norm not in b_lower:
+                all_present = False
+                break
+        if all_present:
+            if has_attribution_or_contrast_marker(block):
+                return True
+
+    return False
+
+
 @app.post("/api/ai/plan", response_model=AIPlanResponse)
 async def generate_ai_plan(request: AIPlanRequest):
     """
@@ -1917,10 +1958,12 @@ Requirements:
             if not all_vals_found:
                 continue
 
+            ack = check_inconsistency_acknowledged(clean_vals, ctx.main_html or "", raw_page_text)
             valid_incons.append({
                 "issue": strip_urls(str(inc.get("issue") or "")).strip(),
                 "values": clean_vals,
                 "suggestion": strip_urls(str(inc.get("suggestion") or "")).strip(),
+                "acknowledged": ack,
             })
             if len(valid_incons) >= 3:
                 break
@@ -2540,14 +2583,32 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     else:
         orig_faq_text = "(none)"
 
-    if plan.inconsistencies:
+    active_incons = [inc for inc in (plan.inconsistencies or []) if not getattr(inc, "acknowledged", False)]
+    if active_incons:
         incons_lines = [
             f"- {inc.issue} | Conflicting values: [{', '.join(inc.values)}] | Recommendation: {inc.suggestion}"
-            for inc in plan.inconsistencies
+            for inc in active_incons
         ]
         incons_text = "\n".join(incons_lines)
     else:
         incons_text = "(none)"
+
+    orig_text = ctx.main_text or ""
+    orig_words = len(orig_text.split())
+
+    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
+    orig_figs = num_pattern.findall(orig_text)
+    unique_orig_figs = []
+    seen_ofigs = set()
+    for f in orig_figs:
+        if f not in seen_ofigs:
+            seen_ofigs.add(f)
+            unique_orig_figs.append(f)
+
+    if unique_orig_figs:
+        original_figures_text = ", ".join(unique_orig_figs)
+    else:
+        original_figures_text = "(none)"
 
     user_prompt = f"""ORIGINAL ARTICLE METADATA:
 Title: {ctx.title or 'N/A'}
@@ -2557,6 +2618,9 @@ Target Query: {target_q + ' (The opening paragraph MUST naturally and literally 
 
 ORIGINAL PAGE TEXT CONTENT:
 {ctx.main_text}
+
+ORIGINAL FIGURES (all must appear in the draft):
+{original_figures_text}
 
 ORIGINAL TABLES (keep ALL data and compare in Markdown tables):
 {original_tables_text}
@@ -2584,9 +2648,6 @@ AI IMPROVEMENT PLAN TO APPLY:
 
 Write the complete rewritten article in Markdown now following all editorial and verification rules strictly in {lang_instruction}. Every paragraph and FAQ answer must be autonomous and self-contained, starting by naming the subject explicitly without pronouns or referential starters.
 """
-
-    orig_text = ctx.main_text or ""
-    orig_words = len(orig_text.split())
 
     url = f"{llm.base_url}/chat/completions"
     headers = {
@@ -2952,6 +3013,8 @@ Write the complete rewritten article in Markdown now following all editorial and
         TM_SYMBOLS_RE = re.compile(r'[\u2122\xae\xa9]')
         draft_norm_incons = normalize_heading(draft_markdown)
         for inc in (plan.inconsistencies or []):
+            if getattr(inc, "acknowledged", False):
+                continue
             if inc.values and len(inc.values) >= 2:
                 val_stripped_set = {normalize_heading(TM_SYMBOLS_RE.sub('', v)) for v in inc.values}
                 if len(val_stripped_set) == 1 and len(set(inc.values)) > 1:
@@ -3203,32 +3266,74 @@ Write the complete rewritten article in Markdown now following all editorial and
     comp_1, orig_audit_1, draft_audit_1 = await compute_rewrite_score_comparison_with_audits(orig_html_to_compare, draft_1, target_q)
     regressions_1 = [dim for dim in comp_1.dimensions if dim.difference < -2.0]
 
+    draft_figs_1 = set(num_pattern.findall(draft_1))
+    missing_figs_1 = [
+        f for f in unique_orig_figs
+        if f not in draft_figs_1 and f not in draft_1 and f.replace(",", "").replace(".", "") not in draft_1
+    ]
+
     chosen_draft = draft_1
     chosen_warnings = warnings_1
     chosen_comp = comp_1
 
-    # Attempt 2: Regression Safety Net (second pass retry if any included dimension dropped by > 2.0)
-    if regressions_1:
-        logger.info(f"AI rewrite draft 1 regressed on dimensions: {[d.name for d in regressions_1]}. Starting second pass...")
+    def _find_figure_sentence(text: str, figure: str) -> str:
+        if not text:
+            return ""
+        sentences = re.split(r'(?<=[.!?])\s+', text)
+        clean_fig = figure.replace(",", "").replace(".", "")
+        for s in sentences:
+            s_clean = s.strip()
+            if not s_clean:
+                continue
+            if figure in s_clean or clean_fig in s_clean.replace(",", "").replace(".", ""):
+                single_line = " ".join(s_clean.split())
+                if len(single_line) > 160:
+                    single_line = single_line[:157] + "..."
+                return single_line
+        return ""
+
+    # Attempt 2: Regression Safety Net (second pass retry if any included dimension dropped by > 2.0 or original figures are missing)
+    if regressions_1 or missing_figs_1:
+        logger.info(
+            f"AI rewrite draft 1 issues: regressions={[d.name for d in regressions_1]}, "
+            f"missing_figs={len(missing_figs_1)}. Starting second pass..."
+        )
         if req_id:
             rewrite_statuses[req_id] = "improving"
 
-        feedback_items, concrete_reasons_1 = build_regression_feedback(
-            regressions=regressions_1,
-            orig_audit=orig_audit_1,
-            draft_audit=draft_audit_1,
-            draft_markdown=draft_1,
-            ctx_main_html=ctx.main_html or "",
-            lang=lang,
-        )
+        feedback_items: list[str] = []
+        concrete_reasons_1: dict[str, str] = {}
+        if regressions_1:
+            feedback_items, concrete_reasons_1 = build_regression_feedback(
+                regressions=regressions_1,
+                orig_audit=orig_audit_1,
+                draft_audit=draft_audit_1,
+                draft_markdown=draft_1,
+                ctx_main_html=ctx.main_html or "",
+                lang=lang,
+            )
 
-        feedback_msg = "\n".join(feedback_items)
+        if missing_figs_1:
+            missing_fig_lines = []
+            for f in missing_figs_1:
+                orig_sent = _find_figure_sentence(orig_text, f)
+                if orig_sent:
+                    missing_fig_lines.append(f"- Figure '{f}' from original sentence: \"{orig_sent}\"")
+                else:
+                    missing_fig_lines.append(f"- Figure '{f}'")
+            feedback_items.append(
+                "Original numerical figures/statistics missing from the draft (all MUST be included):\n"
+                + "\n".join(missing_fig_lines)
+            )
+
+        feedback_msg = "\n\n".join(feedback_items)
         pass2_user_prompt = f"""SECOND PASS IMPROVEMENT REQUIRED:
-The first draft regressed on key quality dimensions compared to the original content:
+The first draft has the following issues compared to the original content:
 {feedback_msg}
 
 CRITICAL FIXES FOR THIS SECOND PASS:
-1. Fix all regressed dimensions listed above:
+1. Fix all issues and regressed dimensions listed above:
+   - Include ALL missing original figures and statistics mentioned above into their relevant context.
    - Include ALL original tables formatted as clean Markdown tables with pipes, and ensure blank lines before and after each table.
    - Include ALL original bullet and numbered lists (- item or 1. item); do not convert them to continuous prose paragraphs.
    - Retain ALL original facts, figures, links, and images.
@@ -3248,15 +3353,20 @@ FIRST DRAFT:
             draft_2, warnings_2 = _post_process_draft(draft_2_raw, finish_reason_2)
             comp_2, orig_audit_2, draft_audit_2 = await compute_rewrite_score_comparison_with_audits(orig_html_to_compare, draft_2, target_q)
             regressions_2 = [dim for dim in comp_2.dimensions if dim.difference < -2.0]
+            draft_figs_2 = set(num_pattern.findall(draft_2))
+            missing_figs_2 = [
+                f for f in unique_orig_figs
+                if f not in draft_figs_2 and f not in draft_2 and f.replace(",", "").replace(".", "") not in draft_2
+            ]
 
-            if not regressions_2:
+            if not regressions_2 and len(missing_figs_2) <= len(missing_figs_1):
                 # Second pass completely fixed regressions!
                 chosen_draft = draft_2
                 chosen_warnings = warnings_2
                 chosen_comp = comp_2
             else:
-                # Both have regressions -> pick the one with higher total score
-                if comp_2.total_score_after >= comp_1.total_score_after:
+                # Compare total score or regressions
+                if comp_2.total_score_after >= comp_1.total_score_after and len(missing_figs_2) <= len(missing_figs_1):
                     chosen_draft = draft_2
                     chosen_warnings = warnings_2
                     chosen_comp = comp_2
@@ -3268,7 +3378,7 @@ FIRST DRAFT:
                         draft_markdown=draft_2,
                         ctx_main_html=ctx.main_html or "",
                         lang=lang,
-                    )
+                    ) if regressions_2 else ([], {})
                 else:
                     chosen_draft = draft_1
                     chosen_warnings = warnings_1
@@ -3290,6 +3400,13 @@ FIRST DRAFT:
                 chosen_warnings.append(
                     f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: {reason}"
                 )
+
+    chosen_figs = set(num_pattern.findall(chosen_draft))
+    for f in unique_orig_figs:
+        if f not in chosen_figs and f not in chosen_draft and f.replace(",", "").replace(".", "") not in chosen_draft:
+            w_fig = f"Original figure '{f}' missing from rewritten draft"
+            if w_fig not in chosen_warnings:
+                chosen_warnings.append(w_fig)
 
     if req_id:
         rewrite_statuses[req_id] = "completed"
