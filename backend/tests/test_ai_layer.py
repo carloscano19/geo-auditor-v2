@@ -6706,6 +6706,97 @@ def test_extract_lists_as_markdown_and_prompt_preservation():
     assert "2. Step two: verify facts." in lists[1]
 
 
+def test_build_regression_feedback_lists_preserved_no_false_positive():
+    """Verify that when lists are preserved in draft markdown, neither warning nor feedback flags them as lost."""
+    from main import build_regression_feedback, check_content_elements_counts
+    from src.models.schemas import AuditResponse, DimensionScoreComparison, DetectorResult, ScoreBreakdown
+
+    orig_html = """
+    <article>
+        <h2>Fan Engagement</h2>
+        <ul>
+            <li>Club-selected polls allowing fans to vote on official topics</li>
+            <li>Rewards and exclusive experiences for loyal token holders</li>
+        </ul>
+        <ol>
+            <li>Download the app</li>
+            <li>Purchase fan tokens</li>
+        </ol>
+    </article>
+    """
+
+    # Draft markdown with both lists intact (bullet list + numbered list)
+    draft_md = """# Fan Engagement
+
+- Club-selected polls allowing fans to vote on official topics
+- Rewards and exclusive experiences for loyal token holders
+
+How to participate:
+
+1. Download the app
+2. Purchase fan tokens
+"""
+
+    # 1. Warning check reports NO lost lists
+    warnings = check_content_elements_counts(orig_html, draft_md)
+    assert not any("Original lists lost" in w for w in warnings)
+
+    # 2. Build regression feedback: should NOT include "Original lists lost"
+    orig_audit = AuditResponse(
+        url="https://example.com",
+        total_score=85.0,
+        dimensions=[],
+        scoring_version="v2.3",
+        analysis_time_ms=10.0,
+        detector_results=[
+            DetectorResult(
+                dimension="format_citability",
+                score=80.0,
+                weight=0.06,
+                contribution=4.8,
+                breakdown=[
+                    ScoreBreakdown(name="Lists/Tables Used", raw_score=100.0, weight=0.35, weighted_score=35.0, explanation="Found lists")
+                ]
+            )
+        ]
+    )
+    draft_audit = AuditResponse(
+        url="https://example.com",
+        total_score=70.0,
+        dimensions=[],
+        scoring_version="v2.3",
+        analysis_time_ms=10.0,
+        detector_results=[
+            DetectorResult(
+                dimension="format_citability",
+                score=50.0,
+                weight=0.06,
+                contribution=3.0,
+                breakdown=[
+                    ScoreBreakdown(name="Lists/Tables Used", raw_score=50.0, weight=0.35, weighted_score=17.5, explanation="Found 2 lists/tables.")
+                ]
+            )
+        ]
+    )
+
+    regressions = [
+        DimensionScoreComparison(name="format_citability", score_before=80.0, score_after=50.0, difference=-30.0)
+    ]
+
+    feedback_items, _ = build_regression_feedback(
+        regressions=regressions,
+        orig_audit=orig_audit,
+        draft_audit=draft_audit,
+        draft_markdown=draft_md,
+        ctx_main_html=orig_html,
+        lang="en",
+    )
+
+    fc_feedback = next((f for f in feedback_items if "Format Citability" in f), "")
+    assert "Original lists lost" not in fc_feedback, f"False positive list loss reported in feedback: {fc_feedback}"
+
+
+
 
 
 

@@ -355,9 +355,12 @@ On free Render tiers, instances sleep after 15 minutes of inactivity:
 ## 10. Local Development
 
 ### Backend Setup
+> [!NOTE]
+> The backend runs on **Python 3.12** (pinned via `.python-version` at repository root for compatibility with Render production).
+
 ```bash
 cd backend
-python3 -m venv venv
+python3.12 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 playwright install chromium

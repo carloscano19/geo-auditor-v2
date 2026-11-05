@@ -2163,7 +2163,7 @@ async def compute_rewrite_score_comparison_with_audits(
     orig_html: str,
     draft_markdown: str,
     target_query: Optional[str] = None
-) -> tuple[AIRewriteScoreResponse, AuditReport, AuditReport]:
+) -> tuple[AIRewriteScoreResponse, AuditResponse, AuditResponse]:
     """
     Fair content-only audit comparison between original HTML and draft Markdown.
     Splits text walls and normalizes markdown blocks before HTML conversion.
@@ -2263,8 +2263,8 @@ async def compute_rewrite_score_comparison(
 
 def build_regression_feedback(
     regressions: list[DimensionScoreComparison],
-    orig_audit: AuditReport,
-    draft_audit: AuditReport,
+    orig_audit: AuditResponse,
+    draft_audit: AuditResponse,
     draft_markdown: str,
     ctx_main_html: str,
     lang: str = "en",
@@ -2297,17 +2297,30 @@ def build_regression_feedback(
             first_10 = " ".join(b_s.split()[:10])
             long_paras.append(f"'{first_10}…'")
 
-    # 2. Lost original lists (first 2 items)
+    # 2. Lost original lists (using identical HTML parsing & comparison as check_content_elements_counts)
     lost_lists = []
-    orig_lists_list = extract_lists_as_markdown(ctx_main_html or "")
-    if orig_lists_list:
-        for o_list in orig_lists_list:
-            items = [re.sub(r'^(?:[-*+]|\d+\.)\s+', '', line).strip() for line in o_list.split("\n") if line.strip()]
-            if items:
-                present = any(it.lower() in draft_markdown.lower() for it in items[:2] if len(it) > 5)
+    if ctx_main_html:
+        orig_soup = BeautifulSoup(ctx_main_html, "html.parser")
+        norm_md = normalize_markdown_blocks(draft_markdown)
+        draft_html = markdown.markdown(norm_md, extensions=['tables', 'fenced_code'])
+        draft_soup = BeautifulSoup(draft_html, "html.parser")
+
+        orig_list_tags = orig_soup.find_all(["ul", "ol"])
+        draft_list_tags = draft_soup.find_all(["ul", "ol"])
+
+        if len(draft_list_tags) < len(orig_list_tags):
+            draft_lis_text = " ".join(li.get_text(" ", strip=True).lower() for li in draft_soup.find_all("li"))
+            for o_tag in orig_list_tags:
+                items = [li.get_text(" ", strip=True) for li in o_tag.find_all("li") if li.get_text(" ", strip=True)]
+                if not items:
+                    continue
+                present = any(it.lower()[:30] in draft_lis_text for it in items if len(it) >= 4)
                 if not present:
                     first_two = [f"'{it[:40]}'" for it in items[:2]]
                     lost_lists.append(", ".join(first_two))
+            if not lost_lists and orig_list_tags:
+                lost_count = len(orig_list_tags) - len(draft_list_tags)
+                lost_lists.append(f"{lost_count} list(s)")
 
     # 3. Paragraphs starting with referential starters (first 4 words)
     referential_paras = []
