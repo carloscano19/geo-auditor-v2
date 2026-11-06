@@ -2454,6 +2454,135 @@ async def get_rewrite_status_endpoint(request_id: str):
     return {"status": status}
 
 
+def is_significant_figure(f: str) -> bool:
+    """
+    Returns True if figure should be preserved/required in the rewrite.
+    Excludes 1-2 digit integers without decimals or % ('1', '2', '14', '20').
+    Keeps years ('1909'), decimals ('1.84', '3.5'), percentages ('15%'), and numbers of 3+ digits ('100').
+    """
+    f_clean = f.strip()
+    if not f_clean:
+        return False
+    if "%" in f_clean:
+        return True
+    if "." in f_clean or "," in f_clean:
+        return True
+    raw_digits = re.sub(r'[^\d]', '', f_clean)
+    if len(raw_digits) <= 2:
+        return False
+    return True
+
+
+def get_unacknowledged_contradiction_values(plan: Optional[AIPlanResponse]) -> set[str]:
+    """
+    Returns normalized values of unacknowledged contradictions from the plan.
+    When resolving contradictions, one value is intentionally removed.
+    """
+    if not plan or not plan.inconsistencies:
+        return set()
+    num_pat = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?(?:%|\b)')
+    excluded: set[str] = set()
+    for inc in plan.inconsistencies:
+        if not getattr(inc, "acknowledged", False):
+            for val in (inc.values or []):
+                v_str = str(val).strip().lower()
+                if v_str:
+                    excluded.add(v_str)
+                    excluded.add(v_str.replace(",", "").replace(".", ""))
+                    for m in num_pat.findall(v_str):
+                        excluded.add(m.lower())
+                        excluded.add(m.replace(",", "").replace(".", "").lower())
+    return excluded
+
+
+def extract_original_figures(text: str, plan: Optional[AIPlanResponse] = None) -> list[str]:
+    """
+    Extract significant figures from original text, excluding 1-2 digit integers
+    and values from unacknowledged contradictions in the plan.
+    """
+    if not text:
+        return []
+    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?(?:%|\b)')
+    orig_figs = num_pattern.findall(text)
+    excluded_vals = get_unacknowledged_contradiction_values(plan)
+    unique_figs: list[str] = []
+    seen = set()
+    for f in orig_figs:
+        if not is_significant_figure(f):
+            continue
+        f_norm = f.replace(",", "").replace(".", "").lower()
+        if f.lower() in excluded_vals or f_norm in excluded_vals:
+            continue
+        if f not in seen:
+            seen.add(f)
+            unique_figs.append(f)
+    return unique_figs
+
+
+def find_figure_context(figure: str, text: str, html: Optional[str] = None) -> str:
+    """
+    Find the specific sentence, table row, or list item where the figure appeared in the original text/html.
+    Prevents returning entire multi-row tables by searching line by line and table row by table row.
+    """
+    if not figure:
+        return ""
+    clean_fig = figure.replace(",", "").replace(".", "")
+
+    def matches(s: str) -> bool:
+        s_norm = s.replace(",", "").replace(".", "")
+        return (
+            re.search(rf'\b{re.escape(figure)}\b', s, re.I) is not None or
+            re.search(rf'\b{re.escape(clean_fig)}\b', s_norm, re.I) is not None or
+            figure in s or
+            clean_fig in s_norm
+        )
+
+    # 1. If HTML is provided, search table rows <tr> first
+    if html:
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            for tr in soup.find_all("tr"):
+                cells = [td.get_text(" ", strip=True) for td in tr.find_all(["th", "td"]) if td.get_text(strip=True)]
+                row_str = " | ".join(cells) if cells else tr.get_text(" ", strip=True)
+                if row_str and matches(row_str):
+                    clean_row = " ".join(row_str.split())
+                    if len(clean_row) > 160:
+                        clean_row = clean_row[:157] + "..."
+                    return clean_row
+        except Exception:
+            pass
+
+    # 2. Search lines in text (handles markdown table rows, bullet items, lines)
+    if text:
+        lines = [line.strip() for line in text.splitlines() if line.strip()]
+        for line in lines:
+            if matches(line):
+                # If it's a markdown table row or pipe/tab-separated row
+                if "|" in line or "\t" in line:
+                    clean_line = " ".join(line.split())
+                    if len(clean_line) > 160:
+                        clean_line = clean_line[:157] + "..."
+                    return clean_line
+
+                # If it's a regular prose line, find the specific sentence within it
+                sentences = re.split(r'(?<=[.!?])\s+', line)
+                for s in sentences:
+                    s_clean = s.strip()
+                    if s_clean and matches(s_clean):
+                        clean_s = " ".join(s_clean.split())
+                        if len(clean_s) > 160:
+                            clean_s = clean_s[:157] + "..."
+                        return clean_s
+
+                # Fallback to the line itself
+                clean_line = " ".join(line.split())
+                if len(clean_line) > 160:
+                    clean_line = clean_line[:157] + "..."
+                return clean_line
+
+    return ""
+
+
 @app.post("/api/ai/rewrite", response_model=AIRewriteResponse)
 async def rewrite_article(request: AIRewriteRequest):
     """
@@ -2596,14 +2725,8 @@ CRITICAL EDITORIAL & INTEGRITY RULES:
     orig_text = ctx.main_text or ""
     orig_words = len(orig_text.split())
 
-    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
-    orig_figs = num_pattern.findall(orig_text)
-    unique_orig_figs = []
-    seen_ofigs = set()
-    for f in orig_figs:
-        if f not in seen_ofigs:
-            seen_ofigs.add(f)
-            unique_orig_figs.append(f)
+    num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?(?:%|\b)')
+    unique_orig_figs = extract_original_figures(orig_text, plan)
 
     if unique_orig_figs:
         original_figures_text = ", ".join(unique_orig_figs)
@@ -2754,7 +2877,7 @@ Write the complete rewritten article in Markdown now following all editorial and
 
         # 2. Verification of figures / numbers
         plan_full_text = plan_context_text
-        num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?%?\b')
+        num_pattern = re.compile(r'\b(?:\d{1,3}(?:[,\.]\d{3})*|\d+)(?:[,\.]\d+)?(?:%|\b)')
         ext_source_urls = [s.url for s in valid_external_sources]
         orig_and_plan_numbers = set(
             num_pattern.findall(
@@ -2995,14 +3118,7 @@ Write the complete rewritten article in Markdown now following all editorial and
                             warnings.append(f"Possible duplicated content: '{snip_a}…' / '{snip_b}…'")
 
         # 8. Check for original figures missing from draft
-        orig_figs = num_pattern.findall(orig_text)
-        unique_orig_figs = []
-        seen_ofigs = set()
-        for f in orig_figs:
-            if f not in seen_ofigs:
-                seen_ofigs.add(f)
-                unique_orig_figs.append(f)
-
+        unique_orig_figs = extract_original_figures(orig_text, plan)
         draft_figs = set(num_pattern.findall(draft_markdown))
         for f in unique_orig_figs:
             f_norm = f.replace(",", "").replace(".", "")
@@ -3277,20 +3393,7 @@ Write the complete rewritten article in Markdown now following all editorial and
     chosen_comp = comp_1
 
     def _find_figure_sentence(text: str, figure: str) -> str:
-        if not text:
-            return ""
-        sentences = re.split(r'(?<=[.!?])\s+', text)
-        clean_fig = figure.replace(",", "").replace(".", "")
-        for s in sentences:
-            s_clean = s.strip()
-            if not s_clean:
-                continue
-            if figure in s_clean or clean_fig in s_clean.replace(",", "").replace(".", ""):
-                single_line = " ".join(s_clean.split())
-                if len(single_line) > 160:
-                    single_line = single_line[:157] + "..."
-                return single_line
-        return ""
+        return find_figure_context(figure, text, ctx.main_html)
 
     # Attempt 2: Regression Safety Net (second pass retry if any included dimension dropped by > 2.0 or original figures are missing)
     if regressions_1 or missing_figs_1:
@@ -3400,13 +3503,6 @@ FIRST DRAFT:
                 chosen_warnings.append(
                     f"Draft lowers {dim_label} by {abs(reg.difference):.1f}: {reason}"
                 )
-
-    chosen_figs = set(num_pattern.findall(chosen_draft))
-    for f in unique_orig_figs:
-        if f not in chosen_figs and f not in chosen_draft and f.replace(",", "").replace(".", "") not in chosen_draft:
-            w_fig = f"Original figure '{f}' missing from rewritten draft"
-            if w_fig not in chosen_warnings:
-                chosen_warnings.append(w_fig)
 
     if req_id:
         rewrite_statuses[req_id] = "completed"

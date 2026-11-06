@@ -480,7 +480,7 @@ export default function AuditForm({
                                     )}
                                     {unimportedImages > 0 && (
                                         <div className="text-amber-700 dark:text-amber-400 font-medium">
-                                            ⚠️ {unimportedImages} imágenes detectadas pero no importadas — añádelas en el CMS
+                                            ⚠️ {unimportedImages} images detected but not imported — add them in the CMS
                                         </div>
                                     )}
                                 </div>

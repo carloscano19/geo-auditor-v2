@@ -6986,6 +6986,188 @@ async def test_rewrite_missing_figures_feedback_in_attempt2():
     assert "6,000" in resp.draft_markdown
 
 
+def test_find_figure_context_table_row_only():
+    from main import find_figure_context
+
+    text = """How Barça's stadiums grew over time:
+Year | Ground | Capacity | Note
+1909 | Camp del Carrer Indústria | 6,000 | First owned ground
+1922 | Camp de Les Corts | 20,000 | Initial capacity
+1957 | Camp Nou | 93,053 | New mega stadium
+"""
+    html = """
+    <table>
+      <thead><tr><th>Year</th><th>Ground</th><th>Capacity</th></tr></thead>
+      <tbody>
+        <tr><td>1909</td><td>Camp del Carrer Indústria</td><td>6,000</td></tr>
+        <tr><td>1922</td><td>Camp de Les Corts</td><td>20,000</td></tr>
+        <tr><td>1957</td><td>Camp Nou</td><td>93,053</td></tr>
+      </tbody>
+    </table>
+    """
+
+    # HTML table row search
+    ctx_html = find_figure_context("6,000", text, html)
+    assert "6,000" in ctx_html
+    assert "1909" in ctx_html
+    assert "How Barça's stadiums grew" not in ctx_html
+    assert "Les Corts" not in ctx_html
+    assert "93,053" not in ctx_html
+
+    # Text markdown table row search (no html)
+    ctx_text = find_figure_context("20,000", text, None)
+    assert "20,000" in ctx_text
+    assert "Les Corts" in ctx_text
+    assert "How Barça's stadiums grew" not in ctx_text
+    assert "Camp Nou" not in ctx_text
+
+
+@pytest.mark.asyncio
+async def test_unacknowledged_contradiction_missing_value_does_not_trigger_attempt2_or_warning():
+    from main import rewrite_article, extract_original_figures
+    from src.models.schemas import AIContext, AIPlanResponse, AIRewriteRequest, PlanInconsistency, AIRewriteScoreResponse
+
+    text = "The stadium opened in 1920 according to the museum. Club records state 1922."
+    plan = AIPlanResponse(
+        questions_to_answer=[],
+        suggested_h2_structure=[],
+        data_opportunities=[],
+        paragraphs_to_add=[],
+        inconsistencies=[
+            PlanInconsistency(
+                issue="Opening year discrepancy",
+                values=["1920", "1922"],
+                suggestion="Use 1920 across the article",
+                acknowledged=False,
+            )
+        ],
+        combined_schema={},
+        warnings=[],
+    )
+
+    # 1. Neither 1920 nor 1922 should be in required figures
+    required_figs = extract_original_figures(text, plan)
+    assert "1920" not in required_figs
+    assert "1922" not in required_figs
+
+    # 2. When rewrite adopts 1920 and intentionally omits 1922, it must NOT trigger attempt 2
+    ctx = AIContext(
+        title="Stadium History",
+        h1="When did the stadium open?",
+        meta_description="",
+        main_text=text,
+        word_count=13,
+        lang="en",
+    )
+    req = AIRewriteRequest(
+        ai_context=ctx,
+        ai_plan=plan,
+        target_query="stadium opening year",
+        request_id="test_unack_no_retry",
+    )
+
+    calls = []
+
+    async def fake_stream(http_client, url, headers, payload):
+        calls.append(payload["messages"])
+        return (
+            "# When did the stadium open?\n\n"
+            "The stadium was officially opened in 1920 after construction completed.",
+            "stop"
+        )
+
+    mock_comp = AIRewriteScoreResponse(
+        total_score_before=80.0,
+        total_score_after=80.0,
+        difference=0.0,
+        dimensions=[],
+        excluded_dimensions=[],
+    )
+    mock_audit = MagicMock()
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("main.compute_rewrite_score_comparison_with_audits", return_value=(mock_comp, mock_audit, mock_audit)), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", side_effect=fake_stream):
+        resp = await rewrite_article(req)
+
+    # Should only run 1 attempt
+    assert len(calls) == 1, "Should NOT trigger attempt 2 when unacknowledged contradiction value is omitted"
+    # Should not emit warning for missing 1922
+    assert not any("1922" in w for w in resp.warnings)
+
+
+def test_original_figures_excludes_two_digit_integers_keeps_decimals_and_years():
+    from main import extract_original_figures, is_significant_figure
+
+    assert is_significant_figure("14") is False
+    assert is_significant_figure("2") is False
+    assert is_significant_figure("20") is False
+    assert is_significant_figure("1.84") is True
+    assert is_significant_figure("3.5") is True
+    assert is_significant_figure("1909") is True
+    assert is_significant_figure("15%") is True
+    assert is_significant_figure("100") is True
+
+    text = "In 1909, Barça won 14 trophies with 1.84 average goals and 15% possession increase over 2 years."
+    figs = extract_original_figures(text, None)
+    assert "14" not in figs
+    assert "2" not in figs
+    assert "1.84" in figs
+    assert "1909" in figs
+    assert "15%" in figs
+
+
+@pytest.mark.asyncio
+async def test_single_warning_line_for_missing_figure():
+    from main import rewrite_article
+    from src.models.schemas import AIContext, AIPlanResponse, AIRewriteRequest
+
+    ctx = AIContext(
+        title="Origins of Cules",
+        h1="Why are Barcelona fans called Cules?",
+        meta_description="",
+        main_html="<p>In 1909 the club moved to Carrer Industria with 6,000 capacity.</p>",
+        main_text="In 1909 the club moved to Carrer Industria with 6,000 capacity.",
+        word_count=12,
+        lang="en",
+    )
+    plan = AIPlanResponse(
+        questions_to_answer=[],
+        suggested_h2_structure=[],
+        data_opportunities=[],
+        paragraphs_to_add=[],
+        inconsistencies=[],
+        combined_schema={},
+        warnings=[],
+    )
+    req = AIRewriteRequest(
+        ai_context=ctx,
+        ai_plan=plan,
+        target_query="why are barcelona fans called cules",
+        request_id="test_single_warn",
+    )
+
+    # Model permanently omits 1909 and 6,000 in both attempts
+    async def fake_stream(http_client, url, headers, payload):
+        return (
+            "# Why are Barcelona fans called Cules?\n\n"
+            "The club moved to a new stadium in Barcelona.",
+            "stop"
+        )
+
+    with patch("main.get_settings", return_value=_rewrite_settings()), \
+         patch("src.services.llm_client.LLMClient._stream_and_extract_content", side_effect=fake_stream):
+        resp = await rewrite_article(req)
+
+    # Check that each missing figure appears in EXACTLY one warning line
+    warns_1909 = [w for w in resp.warnings if "1909" in w]
+    warns_6000 = [w for w in resp.warnings if "6,000" in w]
+
+    assert len(warns_1909) == 1, f"Expected exactly 1 warning for 1909, got: {warns_1909}"
+    assert len(warns_6000) == 1, f"Expected exactly 1 warning for 6,000, got: {warns_6000}"
+    assert warns_1909[0] == "Original figure missing from draft: 1909"
+    assert warns_6000[0] == "Original figure missing from draft: 6,000"
+
+
 
 
 
